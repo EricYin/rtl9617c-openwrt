@@ -1,0 +1,27 @@
+diff --git a/net/netfilter/nf_flow_table_offload.c b/net/netfilter/nf_flow_table_offload.c
+index fbb8e3954..9f2366c80 100644
+--- a/net/netfilter/nf_flow_table_offload.c
++++ b/net/netfilter/nf_flow_table_offload.c
+@@ -126,6 +126,7 @@ static int nf_flow_rule_match(struct nf_flow_match *match,
+ 		nf_flow_rule_vlan_match(&key->vlan, &mask->vlan,
+ 					tuple->encap[0].id,
+ 					tuple->encap[0].proto);
++		match->dissector.used_keys |= BIT_ULL(FLOW_DISSECTOR_KEY_VLAN);
+ 		vlan_encap = true;
+ 	}
+ 
+@@ -137,12 +138,14 @@ static int nf_flow_rule_match(struct nf_flow_match *match,
+ 			nf_flow_rule_vlan_match(&key->cvlan, &mask->cvlan,
+ 						tuple->encap[1].id,
+ 						tuple->encap[1].proto);
++			match->dissector.used_keys |= BIT_ULL(FLOW_DISSECTOR_KEY_CVLAN);
+ 		} else {
+ 			NF_FLOW_DISSECTOR(match, FLOW_DISSECTOR_KEY_VLAN,
+ 					  vlan);
+ 			nf_flow_rule_vlan_match(&key->vlan, &mask->vlan,
+ 						tuple->encap[1].id,
+ 						tuple->encap[1].proto);
++			match->dissector.used_keys |= BIT_ULL(FLOW_DISSECTOR_KEY_VLAN);
+ 		}
+ 	}
+ 

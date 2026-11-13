@@ -153,7 +153,7 @@
 		};
 
 		per_ictl: interrupt-controller@f4329004 {
-			compatible = "realtek,rtl9617c-per-ictl", "cortina,per-ictl";
+			compatible = "realtek,rtl9617c-per-ictl";
 			reg = <0 0xf4329004 0 0x10>;
 			interrupt-controller;
 			#interrupt-cells = <1>;
@@ -162,7 +162,7 @@
 		};
 
 		watchdog: watchdog@f432901c {
-			compatible = "realtek,rtl9617c-wdt", "cortina,wdt";
+			compatible = "realtek,rtl9617c-wdt";
 			reg = <0 0xf432901c 0 0x30>;
 			realtek,global-config = <&global_config>;
 			interrupt-parent = <&per_ictl>;
@@ -172,7 +172,7 @@
 		};
 
 		uart0: serial@f43291b0 {
-			compatible = "realtek,rtl9617c-uart", "cortina,serial";
+			compatible = "realtek,rtl9617c-uart";
 			reg = <0 0xf43291b0 0 0x30>;
 			interrupts = <GIC_SPI 4 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&apb_clk>;
@@ -181,14 +181,43 @@
 
 		mdio: mdio@4f4329118 {
 			compatible = "realtek,rtl9617c-mdio";
-			// MDIO, PHY OCP and wrapper windows from the stock NI reg list.
 			reg = <4 0xf4329118 0 0x48>,
-			      <4 0xf4600000 0 0x100000>,
-			      <4 0xf4700000 0 0x100>;
-			reg-names = "mdio", "gphy-ocp", "gphy-wrap";
+			      <4 0xf4600000 0 0x100000>;
+			reg-names = "mdio", "gphy";
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
+		};
+
+		serdes: phy@4f550d000 {
+			compatible = "realtek,rtl9617c-serdes";
+			reg = <4 0xf550d000 0 0x1000>,
+			      <0 0xf43200c4 0 0x20>,
+			      <0 0xf43200a0 0 0x4>,
+			      <0 0xf432036c 0 0x4>,
+			      <4 0xf433b000 0 0x1000>,
+			      <0 0xf4600000 0 0x1000>;
+			reg-names = "sds", "lane-ctrl", "lane-reset", "lane-power",
+				    "lane-analog", "lane-tx";
+			#phy-cells = <0>;
+			status = "disabled";
+		};
+
+		ni: ethernet@4f4300000 {
+			compatible = "realtek,rtl9617c-ni";
+			reg = <4 0xf4300000 0 0x10000>,
+			      <4 0xf7001000 0 0x1000>,
+			      <4 0xf432d000 0 0x1000>,
+			      <4 0xf4320098 0 0x4>,
+			      <4 0xf432f000 0 0x1000>;
+			reg-names = "ni", "dma", "qm-axi", "reset", "fe-axi";
+			interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;
+			status = "disabled";
+
+			ethernet-ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+			};
 		};
 
 		qspi: spi@4f4324000 {
@@ -222,5 +251,37 @@
 			#size-cells = <0>;
 			status = "disabled";
 		};
+		gpio0: gpio@4f43292c0 {
+			compatible = "realtek,rtl9617c-gpio";
+			reg = <4 0xf43292c0 0 0xb4>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			gpio-ranges = <&pinctrl 0 0 160>;
+			status = "disabled";
+		};
+
+		ne_irq: interrupt-controller@f4320164 {
+			compatible = "realtek,rtl9617c-per-ictl";
+			reg = <0 0xf4320164 0 0x10>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			#address-cells = <0>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 1 IRQ_TYPE_LEVEL_HIGH>;
+		};
+
+		pon: pon@4f5500000 {
+			compatible = "realtek,rtl9617c-pon";
+			reg = <4 0xf5500000 0 0xc000>, <4 0xf4320094 0 4>,
+			      <4 0xf4320074 0 4>, <4 0xf432022c 0 4>,
+			      <4 0xf4320080 0 8>, <4 0xf4320090 0 4>, <4 0xf4320180 0 8>, <4 0xf432007c 0 4>,
+			      <4 0xf4329440 0 0x10>;
+			reg-names = "mac", "control", "epon-control", "serdes-init", "optical-control", "optical-status", "top-irq", "gpon-control", "dying-gasp";
+			interrupts-extended = <&ne_irq 5>, <&per_ictl 24>;
+			interrupt-names = "pon", "dying-gasp";
+			realtek,network-engine = <&ni>;
+			status = "disabled";
+		};
+
 	};
 };

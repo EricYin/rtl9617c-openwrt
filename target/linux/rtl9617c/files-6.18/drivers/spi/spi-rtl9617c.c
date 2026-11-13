@@ -197,4 +197,4 @@ static struct platform_driver rtl_qspi_driver = {
 };
 module_platform_driver(rtl_qspi_driver);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Native RTL9617C QSPI (Taurus PIO, writes blocked by default)");
+MODULE_DESCRIPTION("Realtek RTL9617C QSPI controller");

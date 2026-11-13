@@ -1,0 +1,20 @@
+diff --git a/arch/arm64/Kconfig.platforms b/arch/arm64/Kconfig.platforms
+index 13173795c..aa9f23624 100644
+--- a/arch/arm64/Kconfig.platforms
++++ b/arch/arm64/Kconfig.platforms
+@@ -326,6 +326,15 @@ config ARCH_REALTEK
+ 	  This enables support for the ARMv8 based Realtek chipsets,
+ 	  like the RTD1295.
+ 
++config ARCH_RTL9617C
++	bool "Realtek RTL9617C (Taurus) SoC"
++	depends on ARCH_REALTEK
++	select ARM_GIC_V3
++	select COMMON_CLK
++	select PINCTRL
++	help
++	  Support for the Realtek RTL9617C Cortex-A55 PON gateway SoC.
++
+ config ARCH_RENESAS
+ 	bool "Renesas SoC Platforms"
+ 	help

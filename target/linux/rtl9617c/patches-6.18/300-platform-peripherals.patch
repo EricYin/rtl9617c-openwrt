@@ -25,15 +25,14 @@ diff --git a/drivers/spi/Kconfig b/drivers/spi/Kconfig
 index 1872f9d..e3bc34e 100644
 --- a/drivers/spi/Kconfig
 +++ b/drivers/spi/Kconfig
-@@ -1,4 +1,12 @@
+@@ -1,4 +1,11 @@
  # SPDX-License-Identifier: GPL-2.0-only
 +config SPI_RTL9617C
-+	tristate "Realtek RTL9617C QSPI"
++	tristate "Realtek RTL9617C QSPI controller"
 +	depends on OF && ARCH_RTL9617C
 +	select SPI_MEM
 +	help
-+	  Native single-lane PIO SPI-memory controller. NAND array writes
-+	  are blocked by default, pending board ECC and recovery validation.
++	  SPI-memory controller for the boot SPI-NAND.
 +
  #
  # SPI driver configuration

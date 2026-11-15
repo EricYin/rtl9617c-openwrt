@@ -108,7 +108,6 @@ static const struct pinmux_ops rtl_mux_ops = {
 	.get_function_groups = rtl_function_groups,
 	.set_mux = rtl_set_mux,
 	.gpio_request_enable = rtl_gpio_request,
-	.strict = true,
 };
 
 static int rtl_pinctrl_probe(struct platform_device *pdev)

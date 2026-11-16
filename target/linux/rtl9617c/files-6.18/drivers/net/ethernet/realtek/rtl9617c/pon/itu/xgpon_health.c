@@ -2,9 +2,9 @@
 /* XGTC health watchdog: grant/FEC/serial-number observation and restart. */
 #include <linux/io.h>
 #include <linux/jiffies.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "xgpon_hw.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/itu/xgpon_hw.h"
 
 
 /* Original one-second O1/O23/O5 checks; a reset reason is retained for diagnosis. */

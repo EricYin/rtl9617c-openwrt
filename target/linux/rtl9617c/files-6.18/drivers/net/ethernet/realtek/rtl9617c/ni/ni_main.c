@@ -11,7 +11,7 @@
 #include <linux/unaligned.h>
 
 #include "ni.h"
-#include "../fe/fe.h"
+#include "fe/fe.h"
 
 #define NITX_PORT_CFG_INIT		(BIT(31) | (4U << 16) | (29U << 20))
 #define NITX_CPU_PORT_MASK		GENMASK(14, 0)

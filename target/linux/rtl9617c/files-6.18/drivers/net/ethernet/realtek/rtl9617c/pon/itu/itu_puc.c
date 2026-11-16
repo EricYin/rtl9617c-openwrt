@@ -3,8 +3,8 @@
 #include <linux/errno.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
-#include "pon.h"
-#include "pon_priv.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
 
 int rtl_itu_puc_tcont_weights(const struct rtl_dq_io *io,
 		unsigned int index, unsigned int enabled, const unsigned char weights[8])

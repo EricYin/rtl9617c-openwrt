@@ -9,8 +9,8 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/of.h>
 #include <linux/unaligned.h>
-#include "pon.h"
-#include "pon_bosa.h"
+#include "pon/pon.h"
+#include "rtl9617c_bosa.h"
 
 enum rtl_bosa_model {
 	RTL_BOSA_A2H = 100,

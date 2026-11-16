@@ -1,28 +1,37 @@
-From: Leo <62428370+LeoooChen@users.noreply.github.com>
-Subject: [PATCH] net: phy: realtek: add RTL8221B HiSGMII support
-
-Add a driver entry for RTL8221B parts strapped for HiSGMII/SGMII
-operation. The entry is selected by the "realtek,hisgmii" device tree
-property, optionally programs the SerDes option mode, applies a built-in
-PHY patch when "realtek,vendor-patch" is set, reports the SerDes interface
-that follows the resolved speed and exposes the PHY LEDs through phylib.
-
-Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
----
+diff --git a/drivers/net/phy/realtek/Kconfig b/drivers/net/phy/realtek/Kconfig
+index 23d453c86..146324298 100644
+--- a/drivers/net/phy/realtek/Kconfig
++++ b/drivers/net/phy/realtek/Kconfig
+@@ -13,4 +13,13 @@ config REALTEK_PHY_HWMON
+ 	help
+ 	  Optional hwmon support for the temperature sensor
+ 
++config REALTEK_PHY_HISGMII
++	bool "RTL8221B HiSGMII mode support"
++	depends on OF
++	select FW_LOADER
++	help
++	  Support for the RTL8221B 2.5G PHY in HiSGMII mode, used when the
++	  PHY node has the "realtek,hisgmii" property. The PHY patch is
++	  loaded from firmware.
++
+ endif # REALTEK_PHY
+diff --git a/drivers/net/phy/realtek/Makefile b/drivers/net/phy/realtek/Makefile
+index a35e3e3c0..6b13f5f03 100644
 --- a/drivers/net/phy/realtek/Makefile
 +++ b/drivers/net/phy/realtek/Makefile
 @@ -2,5 +2,6 @@
  realtek-y			+= realtek_main.o
  realtek-y			+= phy_patch.o
  realtek-y			+= phy_patch_rtl826x.o
-+realtek-y			+= realtek_hisgmii.o
++realtek-$(CONFIG_REALTEK_PHY_HISGMII) += realtek_hisgmii.o
  realtek-$(CONFIG_REALTEK_PHY_HWMON) += realtek_hwmon.o
  obj-$(CONFIG_REALTEK_PHY)	+= realtek.o
 diff --git a/drivers/net/phy/realtek/realtek.h b/drivers/net/phy/realtek/realtek.h
-index c59089aca..e5994f8ec 100644
+index c59089aca..988f565d2 100644
 --- a/drivers/net/phy/realtek/realtek.h
 +++ b/drivers/net/phy/realtek/realtek.h
-@@ -19,4 +19,18 @@ struct rtl826x_priv {
+@@ -19,4 +19,20 @@ struct rtl826x_priv {
  
  int rtl822x_hwmon_init(struct phy_device *phydev);
  
@@ -31,6 +40,7 @@ index c59089aca..e5994f8ec 100644
 +int rtl822x_c45_read_status(struct phy_device *phydev);
 +int rtlgen_c45_resume(struct phy_device *phydev);
 +
++#if IS_ENABLED(CONFIG_REALTEK_PHY_HISGMII)
 +int rtl8221b_hisgmii_match_phy_device(struct phy_device *phydev,
 +				      const struct phy_driver *phydrv);
 +int rtl8221b_hisgmii_probe(struct phy_device *phydev);
@@ -39,10 +49,11 @@ index c59089aca..e5994f8ec 100644
 +int rtl8221b_hisgmii_read_status(struct phy_device *phydev);
 +int rtl8221b_hisgmii_led_brightness_set(struct phy_device *phydev, u8 index,
 +					enum led_brightness value);
++#endif
 +
  #endif /* REALTEK_H */
 diff --git a/drivers/net/phy/realtek/realtek_main.c b/drivers/net/phy/realtek/realtek_main.c
-index c461ccc03..f8cf1d6c6 100644
+index c461ccc03..616b261d9 100644
 --- a/drivers/net/phy/realtek/realtek_main.c
 +++ b/drivers/net/phy/realtek/realtek_main.c
 @@ -2182,7 +2182,7 @@ static int rtl822xb_read_status(struct phy_device *phydev)
@@ -81,10 +92,12 @@ index c461ccc03..f8cf1d6c6 100644
  {
  	int ret = genphy_c45_pma_resume(phydev);
  
-@@ -3813,6 +3813,17 @@ static int rtl826x_set_tunable(struct phy_device *phydev,
+@@ -3812,6 +3812,20 @@ static int rtl826x_set_tunable(struct phy_device *phydev,
+ }
  
  static struct phy_driver realtek_drvs[] = {
- 	{
++#if IS_ENABLED(CONFIG_REALTEK_PHY_HISGMII)
++	{
 +		.match_phy_device = rtl8221b_hisgmii_match_phy_device,
 +		.name		= "RTL8221B HiSGMII 2.5Gbps PHY",
 +		.probe		= rtl8221b_hisgmii_probe,
@@ -95,7 +108,8 @@ index c461ccc03..f8cf1d6c6 100644
 +		.suspend	= genphy_c45_pma_suspend,
 +		.resume		= rtlgen_c45_resume,
 +		.led_brightness_set = rtl8221b_hisgmii_led_brightness_set,
-+	}, {
++	},
++#endif
+ 	{
  		PHY_ID_MATCH_EXACT(0x00008201),
  		.name		= "RTL8201CP Ethernet",
- 		.read_page	= rtl821x_read_page,

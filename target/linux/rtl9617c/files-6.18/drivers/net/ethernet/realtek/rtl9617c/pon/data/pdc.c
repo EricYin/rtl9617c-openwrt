@@ -6,9 +6,9 @@
 #include <linux/bitfield.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
 
 /* Downstream map entry (0x9028): [2:0] cos, [8:3] destination LDPID,
  * [14:9] source, [15] bypass, [31] valid. POL_ID sits in 0x9024[12:4]. */

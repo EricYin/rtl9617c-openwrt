@@ -2,9 +2,6 @@
 #ifndef RTL9617C_ITU_H
 #define RTL9617C_ITU_H
 
-/* SPDX-License-Identifier: GPL-2.0-or-later */
-/* G.988 9.3.13 legacy EVTO rows. Tags are ordered from the Ethernet header. */
-
 #define RTL_EVTO_ROWS 32
 #define RTL_EVTO_STAGES 5
 #define RTL_EVTO_TAGS (2 + 2 * RTL_EVTO_STAGES)
@@ -15,7 +12,7 @@
 struct rtl_evto_tag { unsigned short tpid, tci; };
 struct rtl_evto_packet {
 	unsigned int count, protocol, dscp, criteria, priority;
-	unsigned int service_entry; /* A local VLAN service starts after UNI policy. */
+	unsigned int service_entry;
 	struct rtl_evto_tag tag[RTL_EVTO_TAGS];
 };
 struct rtl_evto_profile {
@@ -74,7 +71,6 @@ static inline int rtl_evto_protocol(const struct rtl_evto_packet *packet, unsign
 	return !criteria || packet->criteria == criteria;
 }
 
-/* Each filtered input field is either constrained or free. */
 static inline void rtl_evto_filter(const struct rtl_evto_profile *p, unsigned int word,
 	unsigned int value[4], unsigned int known[4])
 {
@@ -85,7 +81,6 @@ static inline void rtl_evto_filter(const struct rtl_evto_profile *p, unsigned in
 	value[3] = tpid == 7; known[3] = tpid >= 6;
 }
 
-/* Expressions distinguish constants, copies of input tags, and the DSCP map. */
 static inline int rtl_evto_compile(const struct rtl_evto_profile *p, const unsigned char row[16],
 	unsigned int count, struct rtl_evto_symbol out[RTL_EVTO_TAGS], unsigned int *total)
 {
@@ -311,7 +306,6 @@ static inline const struct rtl_itu_path *rtl_itu_path_transmit_vlan(const struct
 		if (!(path->pbits & (1U << packet.priority))) continue;
 		if (rank < best) continue;
 		if (rank > best) { selected = 0; best = rank; conflict = 0; }
-		/* Mapper/IWTP rules can reject a candidate or change its wire tags. */
 		if (!rtl_itu_path_vlan(paths, path, &packet, 3, RTL_EVTO_STAGES, 0)) continue;
 		if (!selected) { selected = path; *output = packet; }
 		else if (selected->index != path->index || packet.count != output->count ||
@@ -365,7 +359,6 @@ static inline const struct rtl_itu_path *rtl_itu_path_select(const struct rtl_it
 	return conflict ? 0 : selected;
 }
 
-/* A Linux flowtable rule matches VID but carries no Ethernet PCP match. */
 static inline const struct rtl_itu_path *rtl_itu_path_flow(const struct rtl_itu_paths *paths,
 		unsigned int vlan)
 {
@@ -382,7 +375,6 @@ static inline const struct rtl_itu_path *rtl_itu_path_flow(const struct rtl_itu_
 	return first;
 }
 
-/* Without receive GEM metadata, an offloaded ingress must resolve uniquely. */
 static inline const struct rtl_itu_path *rtl_itu_path_downstream(const struct rtl_itu_paths *paths,
 		unsigned int vlan, unsigned int pbits)
 {

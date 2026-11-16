@@ -9,11 +9,11 @@
 #include <net/netlink.h>
 #include <net/sock.h>
 #include <linux/module.h>
-#include "pon.h"
-#include "pon_priv.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
 #include "rtl9617c_ni.h"
-#include "pon_debug.h"
-#include "epon.h"
+#include "pon/pon_debug.h"
+#include "pon/epon/epon.h"
 
 unsigned int rtl_data_queue;
 module_param_named(data_queue, rtl_data_queue, uint, 0644);

@@ -4,7 +4,7 @@
 #include <linux/rcupdate.h>
 
 #include "ni.h"
-#include "../fe/fe.h"
+#include "fe/fe.h"
 
 #define NI_REPORT_HIGH_SHIFT		14
 #define NI_PUC_DEQUEUE_MASK		GENMASK(15, 0)

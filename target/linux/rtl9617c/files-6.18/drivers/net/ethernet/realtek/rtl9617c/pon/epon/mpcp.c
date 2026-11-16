@@ -8,10 +8,10 @@
 #include <linux/iopoll.h>
 #include <linux/jiffies.h>
 #include <linux/unaligned.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
-#include "epon.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
+#include "pon/epon/epon.h"
 
 static int rtl_mpcp_backoff_event(struct rtl_mpcp_backoff *state,
 	const struct rtl_mpcp_io *io, unsigned int irq, unsigned long now,

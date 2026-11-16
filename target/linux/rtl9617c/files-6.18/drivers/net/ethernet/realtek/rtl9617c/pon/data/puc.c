@@ -7,9 +7,9 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/unaligned.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
 #include "rtl9617c_ni.h"
 
 static int rtl_puc_access(struct rtl9617c_pon *pon, unsigned int reg,

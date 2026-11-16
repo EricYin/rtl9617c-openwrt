@@ -9,7 +9,7 @@
 #include <net/ip.h>
 #include <net/dsfield.h>
 #include <net/ipv6.h>
-#include "vlan.h"
+#include "pon/data/vlan.h"
 
 static int rtl_evto_tpid(const struct rtl_itu_paths *paths, unsigned int type)
 {

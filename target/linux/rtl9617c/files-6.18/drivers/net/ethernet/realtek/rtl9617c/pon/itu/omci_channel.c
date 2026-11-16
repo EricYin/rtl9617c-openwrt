@@ -6,9 +6,9 @@
 #include <linux/netdevice.h>
 #include <linux/unaligned.h>
 #include <crypto/hash.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
 #define RTL_OMCI_PREFIX_BYTES 16
 #define RTL_OMCI_MAX_BODY 1980
 

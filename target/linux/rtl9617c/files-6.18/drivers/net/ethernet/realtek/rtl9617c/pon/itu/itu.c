@@ -3,11 +3,11 @@
 #include <linux/bitfield.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
-#include "gpon_hw.h"
-#include "xgpon_hw.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
+#include "pon/itu/gpon_hw.h"
+#include "pon/itu/xgpon_hw.h"
 
 static unsigned int rtl_itu_read(void *context, unsigned int reg)
 {

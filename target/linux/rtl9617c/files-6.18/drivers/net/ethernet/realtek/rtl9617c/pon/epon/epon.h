@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* EPON stack internal interface: register offsets, NI header encoding and the
  * per-port state shared by the control and the data netdev. */
-#ifndef RTL9617C_EPON_H
-#define RTL9617C_EPON_H
+#ifndef RTL9617C_PON_EPON_EPON_H
+#define RTL9617C_PON_EPON_EPON_H
 #include <linux/types.h>
-#include "pon.h"
+#include "pon/pon.h"
 
 struct net_device;
 

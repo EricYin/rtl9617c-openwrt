@@ -1,10 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/*
- * RTL9617C UART0, rewritten for the serial core in Linux 6.18.
- * Register/baud/RX-valid reference: Copyright (C) Cortina Access 2015, GPLv2 driver,
- * serial_cortina.c/.h at GPL-for-GP3000 commit 5090fbcb6ba743dd7b1314811ef557bad0460147.
- * No SDK runtime, platform hooks or binary modules are used.
- */
 #include <linux/clk.h>
 #include <linux/console.h>
 #include <linux/io.h>
@@ -356,7 +350,6 @@ static int rtl_uart_probe(struct platform_device *pdev)
 	port->mapsize = resource_size(res);
 	port->dev = &pdev->dev;
 	port->iotype = UPIO_MEM32;
-	// Fill TX using its FULL bit; no unverified FIFO depth is needed.
 	port->fifosize = 1;
 	port->flags = UPF_BOOT_AUTOCONF;
 	port->ops = &rtl_uart_ops;

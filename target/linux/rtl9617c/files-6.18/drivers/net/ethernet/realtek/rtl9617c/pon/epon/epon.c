@@ -6,10 +6,10 @@
 #include <linux/iopoll.h>
 #include <linux/jiffies.h>
 #include <linux/unaligned.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
-#include "epon.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
+#include "pon/epon/epon.h"
 
 int rtl_pon_llid_update(struct rtl9617c_pon *pon, bool add, unsigned int index,
 			 unsigned int mac, u16 llid, bool multicast)

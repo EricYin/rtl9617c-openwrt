@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Stock CPU clock, rewritten from its stock 5.10.70 clock operations.
- * CPLL also parents CPU trace. FPLL, PE and AXI controls stay untouched.
- */
 #include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
-#include <linux/cpu.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -13,7 +9,6 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/pm_opp.h>
 #include <linux/slab.h>
 
 #define CPLLDIV		0x00
@@ -52,7 +47,6 @@ struct rtl_cpu_clock {
 	struct clk_hw hw;
 	void __iomem *base;
 	struct mutex lock;
-	int transition_error;
 };
 
 #define to_rtl_cpu(clock_hw) container_of(clock_hw, struct rtl_cpu_clock, hw)
@@ -170,11 +164,14 @@ static int rtl_cpu_set_rate(struct clk_hw *hw, unsigned long rate,
 			   unsigned long parent_rate)
 {
 	struct rtl_cpu_clock *cpu = to_rtl_cpu(hw);
+	unsigned long old_rate;
 	int ret;
 
 	mutex_lock(&cpu->lock);
+	old_rate = rtl_cpu_read_rate(cpu, parent_rate);
 	ret = rtl_cpu_program_rate(cpu, rate, parent_rate);
-	cpu->transition_error = ret;
+	if (ret)
+		rtl_cpu_program_rate(cpu, old_rate, parent_rate);
 	mutex_unlock(&cpu->lock);
 	return ret;
 }
@@ -185,59 +182,9 @@ static const struct clk_ops rtl_cpu_ops = {
 	.set_rate = rtl_cpu_set_rate,
 };
 
-static int rtl_cpu_opp_set_rate(struct device *dev, struct opp_table *table,
-			       struct dev_pm_opp *old_opp, struct dev_pm_opp *opp,
-			       void *data, bool scaling_down)
-{
-	unsigned long rate = data ? *(unsigned long *)data : dev_pm_opp_get_freq(opp);
-	struct clk *clk = clk_get(dev, "cpu");
-	struct rtl_cpu_clock *cpu;
-	unsigned long hardware_rate;
-	int ret;
-
-	if (IS_ERR(clk))
-		return PTR_ERR(clk);
-	cpu = to_rtl_cpu(__clk_get_hw(clk));
-	/* OPP owns this transition. CCF skips set_rate when Hz already match,
-	 * even if the CPU is still on FPLL after a failed transition. Use the
-	 * same serialized hardware operation, then refresh CCF's rate cache. */
-	ret = rtl_cpu_set_rate(&cpu->hw, rate, clk_get_rate(clk_get_parent(clk)));
-	hardware_rate = clk_get_rate(clk);
-	if (ret)
-		dev_err(dev, "CPU clock change failed: %d, request %lu Hz, hardware %lu Hz\n",
-			ret, rate, hardware_rate);
-	clk_put(clk);
-	return ret;
-}
-
-static ssize_t transition_error_show(struct device *dev,
-				     struct device_attribute *attr, char *buffer)
-{
-	struct rtl_cpu_clock *cpu = dev_get_drvdata(dev);
-	int error;
-
-	mutex_lock(&cpu->lock);
-	error = cpu->transition_error;
-	mutex_unlock(&cpu->lock);
-	return sysfs_emit(buffer, "%d\n", error);
-}
-static DEVICE_ATTR_RO(transition_error);
-
-static struct attribute *rtl_cpu_attrs[] = {
-	&dev_attr_transition_error.attr,
-	NULL,
-};
-ATTRIBUTE_GROUPS(rtl_cpu);
-
 static int rtl_cpu_probe(struct platform_device *pdev)
 {
-	static const char * const clock_names[] = { "cpu", NULL };
-	struct dev_pm_opp_config opp_config = {
-		.clk_names = clock_names,
-		.config_clks = rtl_cpu_opp_set_rate,
-	};
 	struct device *dev = &pdev->dev;
-	struct device *cpu_dev = get_cpu_device(0);
 	struct clk_parent_data parent = { .index = 0 };
 	struct clk_init_data init = {
 		.name = "rtl9617c-cpu",
@@ -247,10 +194,9 @@ static int rtl_cpu_probe(struct platform_device *pdev)
 		.flags = CLK_GET_RATE_NOCACHE,
 	};
 	struct rtl_cpu_clock *cpu;
+	struct clk *parent_clk;
 	int ret;
 
-	if (!cpu_dev)
-		return -EPROBE_DEFER;
 	cpu = devm_kzalloc(dev, sizeof(*cpu), GFP_KERNEL);
 	if (!cpu)
 		return -ENOMEM;
@@ -258,10 +204,33 @@ static int rtl_cpu_probe(struct platform_device *pdev)
 	cpu->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(cpu->base))
 		return PTR_ERR(cpu->base);
+	parent_clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(parent_clk))
+		return PTR_ERR(parent_clk);
 	/* Stock rtl8277c_cpu_init: guard switching to avoid a CPU stall. */
 	writel(0xff000000, cpu->base + CPLLMUX);
 	if (readl(cpu->base + CPLLMUX) != 0xff000000)
 		return -EIO;
+	if (readl(cpu->base + CPLLDIV) & CPU_FROM_FPLL) {
+		unsigned long parent_rate = clk_get_rate(parent_clk);
+		unsigned long hw_rate = rtl_cpu_read_rate(cpu, parent_rate);
+		unsigned long best = rtl_cpu_rates[0].hz;
+		unsigned long distance = ULONG_MAX;
+		unsigned int i;
+
+		for (i = 0; i < ARRAY_SIZE(rtl_cpu_rates); i++) {
+			unsigned long hz = rtl_cpu_rates[i].hz;
+			unsigned long delta = hz > hw_rate ? hz - hw_rate : hw_rate - hz;
+
+			if (delta < distance) {
+				best = hz;
+				distance = delta;
+			}
+		}
+		ret = rtl_cpu_program_rate(cpu, best, parent_rate);
+		if (ret)
+			dev_warn(dev, "failed to leave FPLL: %d\n", ret);
+	}
 	platform_set_drvdata(pdev, cpu);
 	cpu->hw.init = &init;
 	ret = devm_clk_hw_register(dev, &cpu->hw);
@@ -270,7 +239,7 @@ static int rtl_cpu_probe(struct platform_device *pdev)
 	ret = devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get, &cpu->hw);
 	if (ret)
 		return ret;
-	return devm_pm_opp_set_config(cpu_dev, &opp_config);
+	return 0;
 }
 
 static const struct of_device_id rtl_cpu_match[] = {
@@ -284,7 +253,6 @@ static struct platform_driver rtl_cpu_driver = {
 	.driver = {
 		.name = "rtl9617c-cpu-clock",
 		.of_match_table = rtl_cpu_match,
-		.dev_groups = rtl_cpu_groups,
 	},
 };
 builtin_platform_driver(rtl_cpu_driver);

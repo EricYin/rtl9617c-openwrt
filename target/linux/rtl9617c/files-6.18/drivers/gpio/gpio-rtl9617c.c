@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Taurus five-bank GPIO; Cortina GPL gpio-ca77xx.c register map. */
 #include <linux/gpio/driver.h>
 #include <linux/io.h>
 #include <linux/module.h>

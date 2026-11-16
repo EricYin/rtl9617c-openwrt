@@ -2,8 +2,8 @@
 
 /* EVTO VLAN tag rewrite helpers used by the ITU data path. */
 
-#ifndef RTL9617C_DATA_VLAN_H
-#define RTL9617C_DATA_VLAN_H
+#ifndef RTL9617C_PON_DATA_VLAN_H
+#define RTL9617C_PON_DATA_VLAN_H
 #include <linux/skbuff.h>
 #include "rtl9617c_itu.h"
 

@@ -4,8 +4,8 @@
 
  * each helper is a couple of MMIO accesses. */
 
-#ifndef RTL9617C_GPON_HW_H
-#define RTL9617C_GPON_HW_H
+#ifndef RTL9617C_PON_ITU_GPON_HW_H
+#define RTL9617C_PON_ITU_GPON_HW_H
 
 
 #include <linux/errno.h>

@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Copyright (c) Cortina-Access Limited 2015. All rights reserved.
- * Port of irq-ca-peri-ictl.c, GPL-for-GP3000
- * 5090fbcb6ba743dd7b1314811ef557bad0460147, CPU0 peripheral interrupt bank.
- */
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/irqchip.h>
@@ -73,7 +68,6 @@ static int __init rtl_per_irq_init(struct device_node *node,
 	gc->chip_types[0].regs.ack = PER_STATUS;
 	gc->chip_types[0].regs.mask = PER_ENABLE;
 	gc->chip_types[0].chip.irq_ack = irq_gc_ack_set_bit;
-	/* Hardware enable bit is active-high, unlike a conventional mask. */
 	gc->chip_types[0].chip.irq_mask = irq_gc_mask_clr_bit;
 	gc->chip_types[0].chip.irq_unmask = irq_gc_mask_set_bit;
 	irq_set_chained_handler_and_data(irq, rtl_per_irq_handler, domain);

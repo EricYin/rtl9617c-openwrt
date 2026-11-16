@@ -14,9 +14,9 @@
 #include <linux/random.h>
 #include <crypto/aes.h>
 #include <crypto/hash.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "xgpon_hw.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/itu/xgpon_hw.h"
 #define RTL_OMCI_PREFIX_BYTES 16
 
 /* Original ca_generate_msk -> ca_generate_sk, with Class332 MSK replacement. */

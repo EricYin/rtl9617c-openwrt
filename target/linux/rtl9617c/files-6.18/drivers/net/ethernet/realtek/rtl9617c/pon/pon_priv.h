@@ -7,7 +7,7 @@
 #ifndef RTL9617C_PON_PRIV_H
 #define RTL9617C_PON_PRIV_H
 #include <linux/io.h>
-#include "pon.h"
+#include "pon/pon.h"
 
 /* The PON MAC register window is the base every submodule works on. */
 static inline u32 rtl_pon_rd(struct rtl9617c_pon *pon, u32 reg)

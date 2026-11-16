@@ -1,10 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/*
- * RTL9617C peripheral watchdog, ported from cortina_per_wdt.c.
- * Copyright (C) 2017 Cortina Access, Inc.
- * Hardware sequence: GPL-for-GP3000 5090fbcb6ba743dd7b1314811ef557bad0460147.
- * Use watchdog core/procd instead of vendor SDK hooks or private kick threads.
- */
 #include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/interrupt.h>
@@ -29,7 +23,6 @@
 #define WDT_IRQ_ENABLE	0x18
 #define WDT_IRQ_PENDING	0x1c
 #define WDT_RELOAD_BOTH	(BIT(0) | BIT(1))
-/* Vendor Taurus reset routing: subsystem, PCIe, all blocks, remap, external. */
 #define WDT_RESET_ROUTE	GENMASK(8, 4)
 
 struct rtl9617c_wdt {
@@ -115,7 +108,6 @@ static irqreturn_t rtl_wdt_irq(int irq, void *arg)
 	writel(1, wdt->base + WDT_IRQ_PENDING);
 	writel(0, wdt->base + WDT_IRQ_ENABLE);
 	spin_unlock(&wdt->lock);
-	/* Hardware resets after its configured delay; do not reload here. */
 	return IRQ_HANDLED;
 }
 
@@ -188,7 +180,6 @@ static int rtl_wdt_probe(struct platform_device *pdev)
 	watchdog_stop_on_unregister(&wdt->wdd);
 	running = readl(wdt->base + WDT_CTRL) & WDT_ENABLE;
 	if (running) {
-		/* Trial-slot boot enables WDT in U-Boot. Core must bridge to procd. */
 		rtl_wdt_start(&wdt->wdd);
 		set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
 	}

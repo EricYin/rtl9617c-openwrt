@@ -11,7 +11,7 @@ CPU_TYPE:=cortex-a53
 KERNEL_PATCHVER:=6.18
 
 include $(INCLUDE_DIR)/target.mk
-DEFAULT_PACKAGES += ubi-utils nand-utils ucode-mod-uci
+DEFAULT_PACKAGES += ubi-utils nand-utils ucode-mod-uci kmod-gpio-button-hotplug
 
 define Target/Description
   Native OpenWrt support for the Realtek RTL9617C (Taurus) SoC family routers

@@ -17,10 +17,10 @@
 #include <linux/platform_device.h>
 #include <linux/rtnetlink.h>
 #include <linux/unaligned.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
-#include "pon_bosa.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
+#include "rtl9617c_bosa.h"
 
 /* Every dev_attr_* and bin_attr_* below is defined by the file that owns the
  * corresponding protocol block; the group only references them. */

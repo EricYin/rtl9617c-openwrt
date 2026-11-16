@@ -3,11 +3,11 @@
 #include <linux/device.h>
 #include <linux/io.h>
 #include <linux/unaligned.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
 #include "rtl9617c_ni.h"
-#include "epon.h"
+#include "pon/epon/epon.h"
 #define RTL_CTC_PM_COUNTERS 37
 #define RTL_EPON_MIB_COUNTERS 42
 

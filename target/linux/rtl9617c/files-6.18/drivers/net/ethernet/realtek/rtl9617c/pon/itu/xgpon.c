@@ -7,10 +7,10 @@
 #include <linux/random.h>
 #include <linux/slab.h>
 #include <linux/unaligned.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
-#include "xgpon_hw.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
+#include "pon/itu/xgpon_hw.h"
 
 unsigned int rtl_xgpon_read(void *context, unsigned int reg)
 {

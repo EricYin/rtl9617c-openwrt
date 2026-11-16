@@ -23,10 +23,10 @@
 #include <linux/netdevice.h>
 #include <linux/seq_file.h>
 #include <linux/string.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
-#include "pon_bosa.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
+#include "rtl9617c_bosa.h"
 
 unsigned int rtl9617c_pon_debug;
 module_param_named(debug, rtl9617c_pon_debug, uint, 0644);

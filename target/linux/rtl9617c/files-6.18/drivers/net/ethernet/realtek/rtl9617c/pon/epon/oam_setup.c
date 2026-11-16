@@ -7,10 +7,10 @@
 #include <linux/rtnetlink.h>
 #include <net/netlink.h>
 #include <net/sock.h>
-#include "pon.h"
-#include "pon_priv.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
 #include "rtl9617c_ni.h"
-#include "epon.h"
+#include "pon/epon/epon.h"
 
 
 static struct net_device *rtl_oam_allocate(struct rtl9617c_pon *pon, unsigned int index, bool control)

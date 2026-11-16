@@ -15,8 +15,8 @@
 #include <linux/io.h>
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
-#include "pon.h"
-#include "pon_debug.h"
+#include "pon/pon.h"
+#include "pon/pon_debug.h"
 #define PON_REG_MAX_OFFSET 0x20000
 
 /* Allowed modes per window; 0 means every mode. */

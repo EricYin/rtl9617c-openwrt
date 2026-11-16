@@ -10,7 +10,7 @@
 #include <linux/rtnetlink.h>
 
 #include "ni.h"
-#include "../fe/fe.h"
+#include "fe/fe.h"
 
 #define PORT_STATIC_MAC			GENMASK(31, 24)
 #define PORT_STATIC_SPEED		GENMASK(3, 0)

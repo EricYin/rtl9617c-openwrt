@@ -9,11 +9,11 @@
 #include <linux/rcupdate.h>
 #include <linux/slab.h>
 #include <linux/unaligned.h>
-#include <linux/rtl9617c-bridge.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
-#include "vlan.h"
+#include <linux/soc/realtek/rtl9617c-bridge.h>
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
+#include "pon/data/vlan.h"
 
 static bool rtl_pon_itu_service_entry(struct net_device *dev, const struct rtl_evto_packet *packet)
 {

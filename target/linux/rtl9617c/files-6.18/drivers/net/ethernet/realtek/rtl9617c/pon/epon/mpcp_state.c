@@ -3,9 +3,9 @@
  * keeps the same text for sysfs and debugfs. */
 #include <linux/device.h>
 #include <linux/seq_file.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "epon.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/epon/epon.h"
 
 ssize_t rtl_pon_mpcp_state(struct rtl9617c_pon *pon, char *buf)
 {

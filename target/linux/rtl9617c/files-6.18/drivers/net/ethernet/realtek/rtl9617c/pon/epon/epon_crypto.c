@@ -4,10 +4,10 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/unaligned.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
-#include "epon.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
+#include "pon/epon/epon.h"
 
 static void rtl_epon_crypto_update(const struct rtl_dq_io *io,
 	unsigned int reg, unsigned int mask, unsigned int value)

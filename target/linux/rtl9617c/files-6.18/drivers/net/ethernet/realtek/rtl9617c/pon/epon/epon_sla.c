@@ -3,10 +3,10 @@
 #include <linux/errno.h>
 #include <linux/io.h>
 #include <linux/unaligned.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_debug.h"
-#include "epon.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
+#include "pon/epon/epon.h"
 #define RTL_EPON_SLA_BYTES 88
 
 static unsigned int rtl_epon_sla_u16(const unsigned char *data)

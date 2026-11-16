@@ -7,9 +7,9 @@
 #include <linux/io.h>
 #include <linux/etherdevice.h>
 #include <linux/rtnetlink.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "epon/epon.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/epon/epon.h"
 /* Stock aal_epon_fec_cfg_set and RTL8277C usFecState_set keep the
  * 1G encoder, payload scheduler and REPORT accounting consistent. */
 static void rtl_pon_fec_set(const struct rtl_dq_io *io, enum rtl_pon_mode mode, int enable)

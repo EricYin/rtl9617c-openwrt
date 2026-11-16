@@ -1,0 +1,37 @@
+diff --git a/arch/arm64/Kconfig.platforms b/arch/arm64/Kconfig.platforms
+index aa9f23624..6e2f4e40f 100644
+--- a/arch/arm64/Kconfig.platforms
++++ b/arch/arm64/Kconfig.platforms
+@@ -332,6 +332,7 @@ config ARCH_RTL9617C
+ 	select ARM_GIC_V3
+ 	select COMMON_CLK
+ 	select PINCTRL
++	select RTL9617C_PER_IRQ
+ 	help
+ 	  Support for the Realtek RTL9617C Cortex-A55 PON gateway SoC.
+ 
+diff --git a/drivers/irqchip/Kconfig b/drivers/irqchip/Kconfig
+index a61c6dc63..37682a8b2 100644
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -823,4 +823,11 @@ config SUNPLUS_SP7021_INTC
+ 	  chained controller, routing all interrupt source in P-Chip to
+ 	  the primary controller on C-Chip.
+ 
++config RTL9617C_PER_IRQ
++	bool
++	select GENERIC_IRQ_CHIP
++	select IRQ_DOMAIN
++	help
++	  Peripheral interrupt controller of the Realtek RTL9617C SoC.
++
+ endmenu
+diff --git a/drivers/irqchip/Makefile b/drivers/irqchip/Makefile
+index 3de083f54..585ba70a5 100644
+--- a/drivers/irqchip/Makefile
++++ b/drivers/irqchip/Makefile
+@@ -136,3 +136,4 @@ obj-$(CONFIG_APPLE_AIC)			+= irq-apple-aic.o
+ obj-$(CONFIG_MCHP_EIC)			+= irq-mchp-eic.o
+ obj-$(CONFIG_SOPHGO_SG2042_MSI)		+= irq-sg2042-msi.o
+ obj-$(CONFIG_SUNPLUS_SP7021_INTC)	+= irq-sp7021-intc.o
++obj-$(CONFIG_RTL9617C_PER_IRQ) += irq-rtl9617c-per.o

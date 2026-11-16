@@ -4,8 +4,8 @@
 
  * xgpon_health.c, omci.c and the ITU data path. */
 
-#ifndef RTL9617C_XGPON_HW_H
-#define RTL9617C_XGPON_HW_H
+#ifndef RTL9617C_PON_ITU_XGPON_HW_H
+#define RTL9617C_PON_ITU_XGPON_HW_H
 
 
 #include "rtl9617c_io.h"

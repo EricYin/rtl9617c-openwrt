@@ -1,0 +1,30 @@
+diff --git a/drivers/i2c/busses/Kconfig b/drivers/i2c/busses/Kconfig
+index 4515ded43..2f986d25c 100644
+--- a/drivers/i2c/busses/Kconfig
++++ b/drivers/i2c/busses/Kconfig
+@@ -1103,6 +1103,13 @@ config I2C_RTL9300
+ 	  This driver can also be built as a module. If so, the module will
+ 	  be called i2c-rtl9300.
+ 
++
++config I2C_RTL9617C
++	tristate "Realtek RTL9617C I2C controller"
++	depends on ARCH_RTL9617C && OF
++	help
++	  I2C controller of the Realtek RTL9617C SoC. It carries the optical
++	  front end (BOSA).
+ config I2C_RZV2M
+ 	tristate "Renesas RZ/V2M adapter"
+ 	depends on ARCH_RENESAS || COMPILE_TEST
+diff --git a/drivers/i2c/busses/Makefile b/drivers/i2c/busses/Makefile
+index fb985769f..e1b4b39e3 100644
+--- a/drivers/i2c/busses/Makefile
++++ b/drivers/i2c/busses/Makefile
+@@ -104,6 +104,7 @@ obj-$(CONFIG_I2C_QUP)		+= i2c-qup.o
+ obj-$(CONFIG_I2C_RIIC)		+= i2c-riic.o
+ obj-$(CONFIG_I2C_RK3X)		+= i2c-rk3x.o
+ obj-$(CONFIG_I2C_RTL9300)	+= i2c-rtl9300.o
++obj-$(CONFIG_I2C_RTL9617C)	+= i2c-rtl9617c.o
+ obj-$(CONFIG_I2C_RZV2M)		+= i2c-rzv2m.o
+ obj-$(CONFIG_I2C_S3C2410)	+= i2c-s3c2410.o
+ obj-$(CONFIG_I2C_SH7760)	+= i2c-sh7760.o

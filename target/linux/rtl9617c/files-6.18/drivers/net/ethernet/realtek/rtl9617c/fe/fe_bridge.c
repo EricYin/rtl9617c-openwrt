@@ -6,7 +6,7 @@
 #include <linux/netfilter.h>
 #include <linux/netfilter_bridge.h>
 #include <linux/ppp_defs.h>
-#include <linux/rtl9617c-bridge.h>
+#include <linux/soc/realtek/rtl9617c-bridge.h>
 #include <linux/rtnetlink.h>
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>

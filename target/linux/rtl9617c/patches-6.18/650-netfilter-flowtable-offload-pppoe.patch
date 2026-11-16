@@ -1,16 +1,8 @@
-From: Leo <62428370+LeoooChen@users.noreply.github.com>
-Subject: [PATCH] netfilter: flowtable: offload PPPoE sessions
-
-Describe the PPPoE session of a flow in the hardware offload match and
-pass the egress MTU along with the PPPoE push action, so that drivers can
-offload PPPoE encapsulated flows. Tear down routed flows whose output
-device goes down, loses carrier or changes its MTU.
-
-Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
----
+diff --git a/include/net/flow_offload.h b/include/net/flow_offload.h
+index 596ab9791..892642c28 100644
 --- a/include/net/flow_offload.h
 +++ b/include/net/flow_offload.h
-@@ -326,6 +326,7 @@
+@@ -326,6 +326,7 @@ struct flow_action_entry {
  		} gate;
  		struct {				/* FLOW_ACTION_PPPOE_PUSH */
  			u16		sid;
@@ -18,9 +10,11 @@ Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
  		} pppoe;
  	};
  	struct flow_action_cookie *user_cookie; /* user defined action cookie */
+diff --git a/include/net/netfilter/nf_flow_table.h b/include/net/netfilter/nf_flow_table.h
+index 33b7b9333..455da9734 100644
 --- a/include/net/netfilter/nf_flow_table.h
 +++ b/include/net/netfilter/nf_flow_table.h
-@@ -25,6 +25,7 @@
+@@ -25,6 +25,7 @@ struct nf_flow_key {
  	struct flow_dissector_key_basic			basic;
  	struct flow_dissector_key_vlan			vlan;
  	struct flow_dissector_key_vlan			cvlan;
@@ -28,42 +22,8 @@ Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
  	union {
  		struct flow_dissector_key_ipv4_addrs	ipv4;
  		struct flow_dissector_key_ipv6_addrs	ipv6;
---- a/net/netfilter/nf_flow_table_core.c
-+++ b/net/netfilter/nf_flow_table_core.c
-@@ -723,6 +723,21 @@
- }
- EXPORT_SYMBOL_GPL(nf_flow_table_init);
- 
-+static bool nf_flow_tuple_uses_dev(const struct flow_offload_tuple *tuple,
-+				   const struct net_device *dev)
-+{
-+	switch (tuple->xmit_type) {
-+	case FLOW_OFFLOAD_XMIT_NEIGH:
-+	case FLOW_OFFLOAD_XMIT_XFRM:
-+		return tuple->dst_cache->dev == dev;
-+	case FLOW_OFFLOAD_XMIT_DIRECT:
-+		return tuple->out.ifidx == dev->ifindex ||
-+		       tuple->out.hw_ifidx == dev->ifindex;
-+	default:
-+		return false;
-+	}
-+}
-+
- static void nf_flow_table_do_cleanup(struct nf_flowtable *flow_table,
- 				     struct flow_offload *flow, void *data)
- {
-@@ -735,7 +750,10 @@
- 
- 	if (net_eq(nf_ct_net(flow->ct), dev_net(dev)) &&
- 	    (flow->tuplehash[0].tuple.iifidx == dev->ifindex ||
--	     flow->tuplehash[1].tuple.iifidx == dev->ifindex))
-+	     flow->tuplehash[1].tuple.iifidx == dev->ifindex ||
-+	     (flow->type == NF_FLOW_OFFLOAD_ROUTE &&
-+	      (nf_flow_tuple_uses_dev(&flow->tuplehash[0].tuple, dev) ||
-+	       nf_flow_tuple_uses_dev(&flow->tuplehash[1].tuple, dev)))))
- 		flow_offload_teardown(flow);
- }
- 
+diff --git a/net/netfilter/nf_flow_table_offload.c b/net/netfilter/nf_flow_table_offload.c
+index 8e3edc7c3..fbb8e3954 100644
 --- a/net/netfilter/nf_flow_table_offload.c
 +++ b/net/netfilter/nf_flow_table_offload.c
 @@ -4,6 +4,7 @@
@@ -74,7 +34,7 @@ Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
  #include <linux/tc_act/tc_csum.h>
  #include <net/flow_offload.h>
  #include <net/netfilter/nf_flow_table.h>
-@@ -97,6 +98,7 @@
+@@ -97,6 +98,7 @@ static int nf_flow_rule_match(struct nf_flow_match *match,
  	struct nf_flow_key *key = &match->key;
  	struct ip_tunnel_info *tun_info;
  	bool vlan_encap = false;
@@ -82,30 +42,7 @@ Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
  
  	NF_FLOW_DISSECTOR(match, FLOW_DISSECTOR_KEY_META, meta);
  	NF_FLOW_DISSECTOR(match, FLOW_DISSECTOR_KEY_CONTROL, control);
-@@ -124,6 +126,7 @@
- 		nf_flow_rule_vlan_match(&key->vlan, &mask->vlan,
- 					tuple->encap[0].id,
- 					tuple->encap[0].proto);
-+		match->dissector.used_keys |= BIT_ULL(FLOW_DISSECTOR_KEY_VLAN);
- 		vlan_encap = true;
- 	}
- 
-@@ -135,12 +138,14 @@
- 			nf_flow_rule_vlan_match(&key->cvlan, &mask->cvlan,
- 						tuple->encap[1].id,
- 						tuple->encap[1].proto);
-+			match->dissector.used_keys |= BIT_ULL(FLOW_DISSECTOR_KEY_CVLAN);
- 		} else {
- 			NF_FLOW_DISSECTOR(match, FLOW_DISSECTOR_KEY_VLAN,
- 					  vlan);
- 			nf_flow_rule_vlan_match(&key->vlan, &mask->vlan,
- 						tuple->encap[1].id,
- 						tuple->encap[1].proto);
-+			match->dissector.used_keys |= BIT_ULL(FLOW_DISSECTOR_KEY_VLAN);
- 		}
- 	}
- 
-@@ -164,6 +169,20 @@
+@@ -164,6 +166,20 @@ static int nf_flow_rule_match(struct nf_flow_match *match,
  	default:
  		return -EOPNOTSUPP;
  	}
@@ -126,7 +63,7 @@ Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
  	mask->control.addr_type = 0xffff;
  	match->dissector.used_keys |= BIT_ULL(key->control.addr_type);
  	mask->basic.n_proto = 0xffff;
-@@ -726,6 +745,7 @@
+@@ -726,6 +742,7 @@ nf_flow_rule_route_common(struct net *net, const struct flow_offload *flow,
  		case htons(ETH_P_PPP_SES):
  			entry->id = FLOW_ACTION_PPPOE_PUSH;
  			entry->pppoe.sid = other_tuple->encap[i].id;
@@ -134,15 +71,3 @@ Signed-off-by: Leo <62428370+LeoooChen@users.noreply.github.com>
  			break;
  		case htons(ETH_P_8021Q):
  			entry->id = FLOW_ACTION_VLAN_PUSH;
---- a/net/netfilter/nf_flow_table_core.c
-+++ b/net/netfilter/nf_flow_table_core.c
-@@ -841,7 +841,8 @@
- {
- 	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
- 
--	if (event != NETDEV_DOWN)
-+	if (event != NETDEV_DOWN && event != NETDEV_CHANGEMTU &&
-+	    (event != NETDEV_CHANGE || netif_carrier_ok(dev)))
- 		return NOTIFY_DONE;
- 
- 	nf_flow_table_cleanup(dev);

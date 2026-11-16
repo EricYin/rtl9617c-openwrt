@@ -4,11 +4,11 @@
 #include <linux/netdevice.h>
 #include <linux/rcupdate.h>
 #include <linux/rtnetlink.h>
-#include "pon.h"
-#include "pon_priv.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
 #include "rtl9617c_ni.h"
-#include "epon.h"
-#include "pon_debug.h"
+#include "pon/epon/epon.h"
+#include "pon/pon_debug.h"
 
 extern unsigned int rtl_data_queue;
 

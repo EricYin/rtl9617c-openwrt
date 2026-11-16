@@ -16,8 +16,8 @@
 #include <linux/seq_file.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
-#include "pon.h"
-#include "pon_debug.h"
+#include "pon/pon.h"
+#include "pon/pon_debug.h"
 #define PON_EVENT_COUNT 256
 
 static const char *const pon_event_names[PON_EV_COUNT] = {

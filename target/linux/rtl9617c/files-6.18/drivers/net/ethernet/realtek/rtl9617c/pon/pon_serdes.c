@@ -11,9 +11,9 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/unaligned.h>
-#include "pon.h"
-#include "pon_priv.h"
-#include "pon_bosa.h"
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "rtl9617c_bosa.h"
 #define PSDS_MODE 0xa02c
 #define PSDS_STATUS 0xa060
 #define PSDS_GBOX 0xa064

@@ -16,7 +16,12 @@
 #include "fe.h"
 #include "fe_hw.h"
 
-#define FE_INTERFACES			64
+/* Physical EIF rows: RTL9617C L3FE_GLB_EGRESS_L3_IF_TBL_ACCESS.addr[4:0].
+ * ca-ne.ko fe_l3e_if_tbl_table @0x27cec0 declares 0x20 rows.
+ * GPL rtk_8277c_asicDriver.c hashIntfIdx2HwIntfIdx_mapping maps hash
+ * indices 32..63 to physical rows 16..31 with dual-header semantics;
+ * they are not additional physical EIF rows. */
+#define FE_INTERFACES			32
 #define FE_COUNTERS			32
 #define FE_SOURCE_MACS			15
 #define FE_LAN_PORTS			5

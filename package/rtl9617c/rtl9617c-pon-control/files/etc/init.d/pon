@@ -1,20 +1,27 @@
 #!/bin/sh /etc/rc.common
 # SPDX-License-Identifier: GPL-2.0-only
 START=25
+# procd respawn policy: threshold, timeout, retry count.
+respawn_threshold=3600
+respawn_timeout=5
+respawn_retry=3
+default_llid_count=1
+pt1500_board=youhua,pt1500-h10-2p5g
+
 USE_PROCD=1
 EXTRA_COMMANDS="offload"
-EXTRA_HELP="        offload          Apply the firewall hardware offload setting"
+EXTRA_HELP="        offload          Compatibility no-op; FE lifecycle is owned by NI"
 
+# The driver starts/stops the FE engine with NI after QM readiness, so this
+# command must stay callable but must not touch hardware.  Keeping it avoids
+# breaking old callers and retained /etc/config/firewall triggers.
 offload() {
-	local device=/sys/bus/platform/devices/4f5500000.pon
-	local enabled=0
+	return 0
+}
 
-	[ -w "$device/fe" ] || return 0
-	if [ "$(uci -q get 'firewall.@defaults[0].flow_offloading')" = 1 ] &&
-	   [ "$(uci -q get 'firewall.@defaults[0].flow_offloading_hw')" = 1 ]; then
-		enabled=1
-	fi
-	printf '%s\n' "$enabled" > "$device/fe"
+pon_event() {
+	[ -x /usr/sbin/pon-status ] || return 0
+	/usr/sbin/pon-status --event "$1" "$2" >/dev/null 2>&1
 }
 
 start_service() {
@@ -22,6 +29,7 @@ start_service() {
 	configure_link 2>/var/run/pon-service-error
 	local result=$?
 	printf 'stage=%s error=%s\n' "$pon_stage" "$result" >> /var/run/pon-service
+	pon_event "pon_service" "stage=$pon_stage error=$result"
 	if [ "$result" != 0 ]; then
 		logger -t pon "Initialization failed at $pon_stage (exit $result)"
 	fi
@@ -33,7 +41,7 @@ start_service() {
 }
 
 configure_link() {
-	local enabled mode onu_mac serial llids i
+	local enabled mode onu_mac serial llids i board factory_mode
 	local device=/sys/bus/platform/devices/4f5500000.pon
 
 	[ -w "$device/serdes" ] || return 0
@@ -43,6 +51,19 @@ configure_link() {
 	[ "$enabled" = 1 ] || return 0
 	pon_stage=mode
 	config_get mode pon mode
+	board=$(cat /tmp/sysinfo/board_name 2>/dev/null)
+	# The package default is xgpon for the generic reference image.  On the
+	# PT1500 board the factory volume and the live serdes mode describe the
+	# actual EPON line, so prefer them over that default.
+	if [ "$board" = "$pt1500_board" ] && [ "$mode" = xgpon ]; then
+		factory_mode=$(uci -q -c /var/run/tyfza1-factory \
+			get pon_factory.pon.mode)
+		[ -n "$factory_mode" ] && mode=$factory_mode
+	fi
+	[ -n "$mode" ] || mode=$(uci -q -c /var/run/tyfza1-factory \
+		get pon_factory.pon.mode)
+	[ -n "$mode" ] || mode=$(sed -n 's/^mode=\([^ ]*\).*/\1/p' \
+		"$device/serdes")
 	[ -n "$mode" ] || return 1
 	pon_stage=bosa
 	if ! printf '1\n' > "$device/bosa"; then
@@ -53,8 +74,21 @@ configure_link() {
 	pon_stage=onu_mac
 	config_get onu_mac pon onu_mac
 	[ -n "$onu_mac" ] || onu_mac=$(cat "$device/factory_onu_mac")
+	if [ -z "$onu_mac" ]; then
+		# No factory UCI partition on this unit.  Keep the PON MAC usable
+		# by deriving a stable address from the base Ethernet MAC.
+		onu_mac=$(cat /sys/class/net/eth0/address 2>/dev/null)
+		[ -n "$onu_mac" ] || onu_mac=$(cat /sys/class/net/br-lan/address 2>/dev/null)
+		logger -t pon "factory ONU MAC missing; using $onu_mac"
+	fi
 	[ -n "$onu_mac" ] || return 1
 	printf '%s\n' "$onu_mac" > "$device/onu_mac" || return $?
+	# Old drivers kept a separate data-interface MAC.  The current driver
+	# derives it from onu_mac and no longer exposes the attribute, so this
+	# is a compatibility write only when the interface exists.
+	if [ -w "$device/data_mac" ]; then
+		printf '%s\n' "$onu_mac" > "$device/data_mac" || return $?
+	fi
 	if [ "$mode" = gpon ] || [ "$mode" = xgpon ] || [ "$mode" = xgspon ]; then
 		pon_stage=identity
 		config_get serial pon serial_number
@@ -80,17 +114,15 @@ configure_link() {
 		pon_stage=omci_daemon
 		procd_open_instance omci
 		procd_set_param command /usr/sbin/pon-omcid
-		procd_set_param respawn 3600 5 3
+		procd_set_param respawn "$respawn_threshold" "$respawn_timeout" "$respawn_retry"
 		procd_set_param file /etc/config/pon
 		procd_set_param stdout 1
 		procd_set_param stderr 1
 		procd_close_instance
-		pon_stage=offload
-		offload
-		return $?
+		return 0
 	fi
 	pon_stage=llid_count
-	config_get llids pon llid_count 1
+	config_get llids pon llid_count "$default_llid_count"
 	printf '%s\n' "$llids" > "$device/llid_count" || return $?
 	pon_stage=mac
 	printf '1\n' > "$device/mac" || return $?
@@ -115,15 +147,14 @@ configure_link() {
 	while [ "$i" -lt "$llids" ]; do
 		procd_open_instance "oam-$i"
 		procd_set_param command /usr/sbin/pon-oamd --interface "pon-oam$i" --llid-index "$i"
-		procd_set_param respawn 3600 5 3
+		procd_set_param respawn "$respawn_threshold" "$respawn_timeout" "$respawn_retry"
 		procd_set_param file /etc/config/pon
 		procd_set_param stdout 1
 		procd_set_param stderr 1
 		procd_close_instance
 		i=$((i + 1))
 	done
-	pon_stage=offload
-	offload
+	return 0
 }
 
 stop_service() {
@@ -135,7 +166,6 @@ stop_service() {
 	case "$mode" in
 	mode=gpon|mode=xgpon|mode=xgspon)
 		printf '0\n' > "$device/activation" || result=$?
-		printf '0\n' > "$device/fe" || result=$?
 		ip link set pon-omci down || result=$?
 		;;
 	mode=epon|mode=epon-d10g|mode=epon-bi10g)
@@ -165,6 +195,5 @@ reload_service() {
 service_triggers() {
 	procd_open_trigger
 	procd_add_reload_trigger pon
-	procd_add_config_trigger "config.change" "firewall" /etc/init.d/pon offload
 	procd_close_trigger
 }

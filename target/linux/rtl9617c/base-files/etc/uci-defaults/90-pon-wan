@@ -1,21 +1,107 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
-[ -e /sys/class/net/pon0/llid_index ] || exit 1
-case "$(uci -q get network.wan.device || uci -q get network.wan.ifname)" in
-	'')
+# Provision the PT1500 EPON stock WAN layout: PPPoE on VLAN 3961 with the
+# stock VLAN interface MAC (PON base MAC + 3).  Credentials stay empty and an
+# existing WAN/VLAN configuration always wins.  Do not require pon0 here:
+# uci-defaults runs before the PON service and would otherwise defer the WAN
+# provisioning to a second boot.
+
+# Stock layout constants.  The values come from the reference unit's
+# /etc/config/network and ref_full_evidence.txt (PPPoE nas0_2 MAC = base + 3).
+wan_vlan_default=3961
+wan_mtu=1492
+vlan_mac_offset=3
+pon_device=/sys/bus/platform/devices/4f5500000.pon
+pon_base_netdev=pon0
+
+wan_vlan=$(uci -q get pon.pon.wan_vlan)
+[ -n "$wan_vlan" ] || wan_vlan=$wan_vlan_default
+vlan_device="$pon_base_netdev.$wan_vlan"
+
+# A fresh configuration, or the upstream pon0/dhcp default, is replaced.
+# An explicitly different WAN device is preserved.
+wan_device=$(uci -q get network.wan.device || uci -q get network.wan.ifname)
+case "$wan_device" in
+	''|"$pon_base_netdev"|"$vlan_device")
 		uci set network.wan='interface'
-		uci set network.wan.device='pon0'
-		[ -n "$(uci -q get network.wan.proto)" ] || uci set network.wan.proto='dhcp'
+		uci set network.wan.device="$vlan_device"
+		uci -q delete network.wan.ifname
+		uci set network.wan.proto='pppoe'
+		uci set network.wan.mtu="$wan_mtu"
+		uci set network.wan.ipv6='1'
+		# LOID/password are provisioned identities; do not invent or
+		# overwrite them.  Empty placeholders keep netifd from inheriting
+		# an unrelated credential.
+		[ -n "$(uci -q get network.wan.username)" ] || \
+			uci set network.wan.username=''
+		[ -n "$(uci -q get network.wan.password)" ] || \
+			uci set network.wan.password=''
 		;;
 esac
+
+# The PON base MAC is the stock MPCP/OAM identity.  Prefer an explicit UCI
+# value, then the factory volume, then the driver's factory attributes, then
+# the LAN base address.  The VLAN interface uses base + 3, matching the
+# captured stock nas0_2; this is a default, not an OLT policy.
+pon_mac=$(uci -q get pon.pon.onu_mac)
+[ -n "$pon_mac" ] || pon_mac=$(uci -q -c /var/run/tyfza1-factory \
+	get pon_factory.pon.onu_mac)
+[ -n "$pon_mac" ] || pon_mac=$(cat "$pon_device/factory_onu_mac" 2>/dev/null)
+[ -n "$pon_mac" ] || pon_mac=$(cat "$pon_device/onu_mac" 2>/dev/null)
+[ -n "$pon_mac" ] || pon_mac=$(cat /sys/class/net/br-lan/address 2>/dev/null)
+
+vlan_mac=
+mac_hex=
+case "$pon_mac" in
+	[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:\
+[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F])
+		mac_hex=$(printf '%s' "$pon_mac" | tr -d ':')
+		;;
+	[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]\
+[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+		mac_hex=$pon_mac
+		;;
+esac
+if [ -n "$mac_hex" ]; then
+	# The 48-bit addition carries across byte boundaries.
+	vlan_mac=$(printf '%012x' \
+		$(((0x$mac_hex + vlan_mac_offset) & 0xffffffffffff)) |
+		sed 's/../&:/g; s/:$//')
+fi
+
+index=0
+found=
+while uci -q get "network.@device[$index]" >/dev/null; do
+	if [ "$(uci -q get "network.@device[$index].name")" = "$vlan_device" ]; then
+		found=1
+		break
+	fi
+	index=$((index + 1))
+done
+if [ -z "$found" ]; then
+	uci add network device >/dev/null
+	uci set "network.@device[$index].type=8021q"
+	uci set "network.@device[$index].ifname=$pon_base_netdev"
+	uci set "network.@device[$index].vid=$wan_vlan"
+	uci set "network.@device[$index].name=$vlan_device"
+fi
+if [ -n "$vlan_mac" ] && [ -z "$(uci -q get "network.@device[$index].macaddr")" ]; then
+	uci set "network.@device[$index].macaddr=$vlan_mac"
+fi
+
+uci set pon.pon.wan_vlan="$wan_vlan"
+uci commit pon
+uci commit network
+
 case "$(uci -q get network.wan6.device || uci -q get network.wan6.ifname)" in
-	''|pon0)
+	''|"$pon_base_netdev"|"$vlan_device")
 		uci set network.wan6='interface'
 		uci set network.wan6.device='@wan'
+		uci -q delete network.wan6.ifname
 		uci set network.wan6.proto='dhcpv6'
 		;;
 esac
-if [ "$(uci -q get network.wan6.device)" = @wan ] &&
+if [ "$(uci -q get network.wan6.device)" = '@wan' ] &&
    [ -z "$(uci -q get network.wan.ipv6)" ]; then
 	uci set network.wan.ipv6='1'
 fi

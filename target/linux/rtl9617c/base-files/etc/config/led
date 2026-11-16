@@ -1,0 +1,31 @@
+# PT1500-H10 LED configuration
+#
+# Deliberately empty: with no "config led" section for the RTL8221B PHY LEDs,
+# /etc/init.d/led never touches them and they keep the state phylib programmed
+# at probe time - the device tree's "default-state = on" is applied by
+# phy_device.c, which makes rtl8221b_hisgmii_led_brightness_set() write
+#
+#     VEND2 LED_CFG = 0x0025, LED_EN, LED_ACT
+#
+# so the PHY indicates link and activity itself, in hardware, with no
+# userspace involvement.
+#
+# To take control instead, add sections here (or use LuCI: System -> LEDs) and
+# run "/etc/init.d/led restart".  Extract the exact sysfs name with:
+#
+#     ls /sys/class/leds/*LED_8221B_P6_*
+#
+# 2.5G port is lan1 (device tree port@6 -> phy_2p5g at mdio address 6).
+#
+# Example, per LED (repeat for P6_0, P6_1, P6_2):
+#
+#config led 'led_2p5g_p6_0'
+#	option name '2p5g_led0'
+#	option sysfs '4f4329118.mdio:06:LED_8221B_P6_0'
+#	option trigger 'netdev'
+#	option dev 'lan1'
+#	option mode 'link tx rx'
+#	option default '1'
+#
+# Note: the sysfs names embed the mdio controller address, so they change if
+# the mdio node base address in the device tree ever changes.

@@ -1,0 +1,31 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Import an explicitly provisioned PON MAC only when UCI has no value.
+# A nonempty UCI value is authoritative, including a retained factory value.
+# MPCP, OAM and PPPoE interface MACs are separate identities: the recorded
+# stock ref_full_evidence.txt uses base for MPCP/OAM and base + 3 for nas0_2.
+# This import must never rewrite a configured WAN/VLAN MAC.
+
+mac_file=
+for f in /etc/rtl9617c/pon-mac /etc/tyfza1/pon-mac; do
+	[ -f "$f" ] && { mac_file=$f; break; }
+done
+[ -n "$mac_file" ] || exit 0
+
+read -r registered_mac < "$mac_file" || exit 0
+case "$registered_mac" in
+	[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:\
+[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
+	*)
+		logger -t rtl9617c-pon-mac "ignoring malformed $mac_file"
+		exit 1
+		;;
+esac
+
+current=$(uci -q get pon.pon.onu_mac)
+[ -z "$current" ] || exit 0
+
+uci set "pon.pon.onu_mac=$registered_mac"
+uci commit pon
+logger -t rtl9617c-pon-mac "imported explicitly provisioned onu_mac"
+exit 0

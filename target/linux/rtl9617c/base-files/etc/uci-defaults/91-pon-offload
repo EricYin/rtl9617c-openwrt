@@ -1,5 +1,45 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
+# Flow-offload defaults.  On the verified PT1500 EPON profile hardware flow
+# admission breaks sustained DNS/TLS, while the software flowtable works once
+# the PON receive engine is prepared.  Do not automatically re-enable the
+# failing path on a retained configuration.  Other profiles keep the upstream
+# opt-in policy.
+
+# Board and mode names are policy identifiers, kept in one place.
+pt1500_board=youhua,pt1500-h10-2p5g
+epon_mode=epon
+epon_d10g_mode=epon-d10g
+epon_bi10g_mode=epon-bi10g
+pon_device=/sys/bus/platform/devices/4f5500000.pon
+
+board=$(cat /tmp/sysinfo/board_name 2>/dev/null)
+mode=$(uci -q get pon.pon.mode)
+[ -n "$mode" ] || mode=$(uci -q -c /var/run/tyfza1-factory \
+	get pon_factory.pon.mode)
+# The package default is xgpon for the generic reference image.  On the
+# PT1500 board the live serdes mode is EPON until the service writes a
+# mode, so use it when UCI still carries that default.
+if [ "$board" = "$pt1500_board" ] && [ "$mode" = "xgpon" ]; then
+	live_mode=$(sed -n 's/^mode=\([^ ]*\).*/\1/p' "$pon_device/serdes")
+	case "$live_mode" in
+	epon*) mode=$live_mode ;;
+	esac
+fi
+
+case "$board:$mode" in
+	"$pt1500_board:$epon_mode"|"$pt1500_board:$epon_d10g_mode"|\
+"$pt1500_board:$epon_bi10g_mode")
+		[ -n "$(uci -q get 'firewall.@defaults[0].flow_offloading')" ] || \
+			uci set 'firewall.@defaults[0].flow_offloading=1'
+		uci set 'firewall.@defaults[0].flow_offloading_hw=0'
+		uci commit firewall
+		exit 0
+		;;
+esac
+
+# Preserve the existing opt-in policy on other profiles and ITU modes.
+[ "$(uci -q get pon.pon.offload)" = '1' ] || exit 0
 device=/sys/bus/platform/devices/4f5500000.pon/fe
 [ -r "$device" ] && grep -q '^available=1' "$device" || exit 1
 uci -q get 'firewall.@defaults[0].flow_offloading_hw' >/dev/null && exit 0

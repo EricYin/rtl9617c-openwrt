@@ -2,18 +2,17 @@ diff --git a/drivers/spi/Kconfig b/drivers/spi/Kconfig
 index 1872f9d54..cbb649aaf 100644
 --- a/drivers/spi/Kconfig
 +++ b/drivers/spi/Kconfig
-@@ -944,6 +944,14 @@ config SPI_RSPI
+@@ -944,6 +944,13 @@ config SPI_RSPI
  	help
  	  SPI driver for Renesas RSPI and QSPI blocks.
  
-+
 +config SPI_RTL9617C
 +	tristate "Realtek RTL9617C QSPI controller"
 +	depends on ARCH_RTL9617C && OF
 +	select SPI_MEM
 +	help
-+	  Single-lane PIO SPI-memory controller of the Realtek RTL9617C SoC,
-+	  used for the boot SPI-NAND.
++	  SPI-memory controller for the boot SPI-NAND.
++
  config SPI_RZV2H_RSPI
  	tristate "Renesas RZ/V2H RSPI controller"
  	depends on ARCH_RENESAS || COMPILE_TEST

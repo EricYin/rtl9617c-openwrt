@@ -242,6 +242,13 @@
 					function = "multi-fn";
 				};
 			};
+
+			i2c0_gpio_pins: i2c0-gpio {
+				data-signals {
+					pins = "GPIO_204", "GPIO_205";
+					function = "gpio";
+				};
+			};
 		};
 
 		i2c0: i2c@4f4329160 {
@@ -249,8 +256,23 @@
 			reg = <4 0xf4329160 0 0x28>;
 			clocks = <&apb_clk>;
 			clock-frequency = <100000>;
-			pinctrl-names = "default";
+			interrupt-parent = <&per_ictl>;
+			interrupts = <13>;
+			pinctrl-names = "default", "gpio";
 			pinctrl-0 = <&i2c0_pins>;
+			pinctrl-1 = <&i2c0_gpio_pins>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		i2c1: i2c@4f4329188 {
+			compatible = "realtek,rtl9617c-i2c";
+			reg = <4 0xf4329188 0 0x28>;
+			clocks = <&apb_clk>;
+			clock-frequency = <100000>;
+			interrupt-parent = <&per_ictl>;
+			interrupts = <26>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";

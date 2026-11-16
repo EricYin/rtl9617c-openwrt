@@ -119,6 +119,8 @@
 
 &i2c0 {
 	status = "okay";
+	scl-gpios = <&gpio0 68 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpio0 69 GPIO_ACTIVE_HIGH>;
 
 	bosa0: optical-front-end@51 {
 		compatible = "realtek,rtl9617c-bosa";

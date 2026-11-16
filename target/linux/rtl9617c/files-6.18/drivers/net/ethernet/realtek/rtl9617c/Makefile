@@ -12,7 +12,14 @@ obj-$(CONFIG_RTL9617C_BOSA) += rtl9617c-bosa.o
 rtl9617c-bosa-y := bosa/bosa.o
 
 obj-$(CONFIG_RTL9617C_PON) += rtl9617c-pon.o
-rtl9617c-pon-y := pon/pon_main.o pon/pon_serdes.o pon/pon_path.o \
-		  pon/pon_pdc.o pon/pon_puc.o \
-		  pon/epon/epon.o pon/epon/mpcp.o pon/epon/oam.o \
-		  pon/itu/itu.o pon/itu/gpon.o pon/itu/xgpon.o pon/itu/omci.o
+rtl9617c-pon-y := pon/pon_main.o pon/pon_link.o pon/pon_serdes.o \
+		  pon/pon_debug.o pon/pon_debug_events.o pon/pon_debug_regs.o \
+		  pon/epon/epon.o pon/epon/epon_crypto.o pon/epon/epon_mib.o \
+		  pon/epon/epon_sla.o pon/epon/epon_holdover.o pon/epon/mpcp.o \
+		  pon/epon/mpcp_state.o pon/epon/oam.o pon/epon/oam_setup.o \
+		  pon/epon/data.o \
+		  pon/itu/itu.o pon/itu/itu_puc.o pon/itu/gpon.o pon/itu/xgpon.o \
+		  pon/itu/xgpon_recovery.o pon/itu/xgpon_health.o \
+		  pon/itu/omci.o pon/itu/omci_channel.o \
+		  pon/data/pdc.o pon/data/puc.o pon/data/path.o \
+		  pon/data/path_data.o pon/data/vlan.o

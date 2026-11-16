@@ -57,8 +57,24 @@ function omci_status(now_ms) {
 	return status;
 }
 
+function llid_entries() {
+	let table = readfile('/sys/bus/platform/devices/4f5500000.pon/llid_table');
+	let entries = {};
+	if (table == null)
+		return entries;
+	for (let line in split(trim(table), '\n')) {
+		// Hardware LLID values and the local session index are different.
+		let hex = match(line, /llid=([0-9a-fA-F]{4})/);
+		let idx = match(line, /index=([0-9]+)/);
+		if (hex != null && idx != null)
+			entries[+idx[1]] = +('0x' + hex[1]);
+	}
+	return entries;
+}
+
 function oam_ports(now_ms) {
 	let ports = [];
+	let llids = llid_entries();
 	for (let llid = 0; llid < 32; llid++) {
 		let text = readfile('/var/run/pon-oam/llid-' + llid + '.json');
 		if (text == null)
@@ -70,9 +86,15 @@ function oam_ports(now_ms) {
 			continue;
 		status.llid_index = llid;
 		status.live = status_live(status, now_ms);
+		status.llid = status.live && status.registered && llids[llid] != null ? llids[llid] : null;
 		if (!status.live) {
 			status.registered = false;
 			status.auth_state = null;
+			status.auth_succeeded = false;
+			status.auth_source = "none";
+			status.auth_success_ms = 0;
+			status.auth_duration_ms = 0;
+			status.auth_succ_time = 0;
 			status.discovery_stable = false;
 		}
 		push(ports, status);

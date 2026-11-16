@@ -1,12 +1,15 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
-#ifndef RTL9617C_PON_PON_VLAN_SKB_H
-#define RTL9617C_PON_PON_VLAN_SKB_H
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+/* EVTO VLAN tag extraction/rewrite, kept apart from the path state machine. */
+
 #include <linux/ip.h>
 #include <linux/udp.h>
 #include <linux/ppp_defs.h>
+#include <linux/if_vlan.h>
 #include <net/ip.h>
 #include <net/dsfield.h>
 #include <net/ipv6.h>
+#include "pon/data/vlan.h"
 
 static int rtl_evto_tpid(const struct rtl_itu_paths *paths, unsigned int type)
 {
@@ -16,7 +19,7 @@ static int rtl_evto_tpid(const struct rtl_itu_paths *paths, unsigned int type)
 	return 0;
 }
 
-static int rtl_evto_skb_read(const struct rtl_itu_paths *paths, struct sk_buff *skb,
+int rtl_evto_skb_read(const struct rtl_itu_paths *paths, struct sk_buff *skb,
 	struct rtl_evto_packet *packet, unsigned int *wire_tags)
 {
 	unsigned int type, offset = ETH_HLEN, udp_offset = 0;
@@ -72,7 +75,7 @@ static int rtl_evto_skb_read(const struct rtl_itu_paths *paths, struct sk_buff *
 	return 0;
 }
 
-static int rtl_evto_skb_write(struct sk_buff *skb, const struct rtl_evto_packet *before,
+int rtl_evto_skb_write(struct sk_buff *skb, const struct rtl_evto_packet *before,
 	const struct rtl_evto_packet *after, unsigned int wire_tags)
 {
 	int ret;
@@ -99,4 +102,3 @@ static int rtl_evto_skb_write(struct sk_buff *skb, const struct rtl_evto_packet 
 	skb_reset_mac_len(skb);
 	return 0;
 }
-#endif

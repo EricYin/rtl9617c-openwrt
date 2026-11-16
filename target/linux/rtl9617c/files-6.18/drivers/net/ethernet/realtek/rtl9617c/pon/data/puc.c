@@ -1,41 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+
+/* Native EPON PUC scheduler and queues, from GPL aal_puc.c. */
+
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/unaligned.h>
 #include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
 #include "rtl9617c_ni.h"
-#include "pon/pon_queue.h"
-#include "pon/itu/itu_puc.h"
-#include "pon/epon/epon_sla.h"
-
-#define PVT_ACCESS 0x8000
-#define PVT_DATA0 0x8014
-#define VOQ_MODE 0x804c
-#define BTC 0x8050
-#define REPORT 0x8054
-#define REPORT_Q12 0x8078
-#define REPORT_Q34 0x807c
-#define BM_STATUS 0x8088
-#define PUC_CONFIG 0x808c
-#define LIMIT_SELECT 0x8090
-#define LIMIT_A 0x80d0
-#define BACKPRESSURE 0x80e4
-#define PUC_IE 0x80f4
-#define CONTROL 0x813c
-#define CONTROL1 0x8140
-#define CONTROL2 0x8144
-#define PUC_STATUS 0x8148
-#define VALID_VOQ0 0x81bc
-#define CIR_ACCESS 0x81c4
-#define CIR_DATA1 0x81c8
-#define CIR_DATA0 0x81cc
-#define PIR_ACCESS 0x81ec
-#define PIR_DATA1 0x81f0
-#define PIR_DATA0 0x81f4
-#define AGGREGATE1 0x81f8
-#define AGGREGATE0 0x81fc
 
 static int rtl_puc_access(struct rtl9617c_pon *pon, unsigned int reg,
 			  unsigned int index, bool write)
@@ -68,7 +43,7 @@ static int rtl_puc_port(struct rtl9617c_pon *pon, unsigned int port,
 	return rtl_puc_access(pon, PVT_ACCESS, port, true);
 }
 
-static int rtl_puc_token_buckets(struct rtl9617c_pon *pon, unsigned int first)
+int rtl_puc_token_buckets(struct rtl9617c_pon *pon, unsigned int first)
 {
 	unsigned int queue;
 	int ret;
@@ -80,8 +55,12 @@ static int rtl_puc_token_buckets(struct rtl9617c_pon *pon, unsigned int first)
 		ret = rtl_puc_access(pon, CIR_ACCESS, queue, true);
 		if (ret)
 			return ret;
-		writel(32767999U, pon->mac + PIR_DATA0);
-		writel(2 << 6, pon->mac + PIR_DATA1);
+		/* ca-ne.ko aal_puc_init @0x1af080 and ca-rtk.ko
+		 * dal_rtl8277c_ponmac_queue_add @0x3c8 encode maximum PIR as
+		 * rate_k=1023, rate_m=65535, burst=4095, enable=2.
+		 * The API sentinel 32767999 is not a packed register word. */
+		writel(~0U, pon->mac + PIR_DATA0);
+		writel((2 << 6) | 0x3f, pon->mac + PIR_DATA1);
 		ret = rtl_puc_access(pon, PIR_ACCESS, queue, true);
 		if (ret)
 			return ret;
@@ -89,21 +68,21 @@ static int rtl_puc_token_buckets(struct rtl9617c_pon *pon, unsigned int first)
 	return 0;
 }
 
-static unsigned int rtl_puc_bp_read(void *context, unsigned int reg)
+unsigned int rtl_puc_bp_read(void *context, unsigned int reg)
 {
 	struct rtl9617c_pon *pon = context;
 
 	return readl(pon->mac + reg);
 }
 
-static void rtl_puc_bp_write(void *context, unsigned int reg, unsigned int value)
+void rtl_puc_bp_write(void *context, unsigned int reg, unsigned int value)
 {
 	struct rtl9617c_pon *pon = context;
 
 	writel(value, pon->mac + reg);
 }
 
-static int rtl_puc_bp_access(void *context, unsigned int reg, unsigned int value)
+int rtl_puc_bp_access(void *context, unsigned int reg, unsigned int value)
 {
 	struct rtl9617c_pon *pon = context;
 	u32 status;
@@ -113,88 +92,6 @@ static int rtl_puc_bp_access(void *context, unsigned int reg, unsigned int value
 		reg == 0x80dc ? 1000000 : 100000);
 }
 
-int rtl_pon_epon_sla_set(struct rtl9617c_pon *pon, const u8 *data, size_t count)
-{
-	const struct rtl_dq_io io = {pon, rtl_puc_bp_read, rtl_puc_bp_write, rtl_puc_bp_access};
-	unsigned int channel;
-	int ret;
-
-	if (count < 10 || count > 9 + RTL_EPON_SLA_BYTES)
-		return -EINVAL;
-	channel = data[0];
-	ret = rtl_epon_sla_validate(data + 9, count - 9);
-	if (ret)
-		return ret;
-	mutex_lock(&pon->control_lock);
-	mutex_lock(&pon->lock);
-	if (!rtl_pon_mode_is_epon(pon->mode) || readl(pon->mac + VOQ_MODE) != 0)
-		ret = -EOPNOTSUPP;
-	else if (channel >= 8 || channel >= pon->llid_count)
-		ret = -EINVAL;
-	else if (!pon->puc_configured || !pon->mpcp_enabled || !(pon->registered & BIT(channel)))
-		ret = -EAGAIN;
-	else if (get_unaligned_be64(data + 1) != pon->epon_llid_epoch[channel])
-		ret = -ESTALE;
-	else {
-		pon->epon_sla_length[channel] = 0;
-		ret = rtl_epon_sla_apply(&io, channel, data + 9);
-		if (!ret) {
-			memcpy(pon->epon_sla[channel], data + 9, count - 9);
-			pon->epon_sla_length[channel] = count - 9;
-		}
-	}
-	pon->puc_error = ret;
-	mutex_unlock(&pon->lock);
-	mutex_unlock(&pon->control_lock);
-	return ret;
-}
-
-static int rtl_puc_itu_configure(struct rtl9617c_pon *pon, const struct rtl_dq_io *io)
-{
-	u32 status;
-	unsigned int index;
-	int ret;
-
-	ret = rtl9617c_ni_report_configure(pon->ni_dev, 100,
-		pon->mode == RTL_PON_GPON ? 220 : 1024);
-	if (ret)
-		return ret;
-	rtl_pon_update(pon->control, BIT(8), BIT(8));
-	udelay(500);
-	ret = readl_poll_timeout(pon->mac + BM_STATUS, status, status & BIT(0), 1, 100000);
-	if (ret)
-		return ret;
-	ret = readl_poll_timeout(pon->mac + PUC_STATUS, status, status & BIT(31), 1, 100000);
-	if (ret)
-		return ret;
-	writel(0, pon->mac + PUC_IE);
-	rtl_pon_update(pon->mac + PUC_CONFIG, GENMASK(1, 0) | GENMASK(18, 16) | BIT(30),
-		2 | BIT(30));
-	writel(0x7a0, pon->mac + LIMIT_A);
-	writel(0x3b0, pon->mac + LIMIT_A + 4);
-	writel(0x200, pon->mac + LIMIT_A + 8);
-	for (index = 0; index < 16; index++)
-		writel(0x55555555, pon->mac + LIMIT_SELECT + index * 4);
-	ret = rtl_itu_puc_queues(io);
-	if (ret)
-		return ret;
-	if (pon->mode == RTL_PON_GPON)
-		rtl_gpon_puc_profile(io);
-	else
-		rtl_xgpon_puc_profile(io);
-	rtl_pon_update(pon->mac + BACKPRESSURE, BIT(0) | BIT(4) | GENMASK(30, 16),
-		BIT(0) | (0x100 << 16));
-	rtl_pon_update(pon->mac + CONTROL, BIT(30) | BIT(26), BIT(30));
-	rtl_pon_update(pon->mac + CONTROL1, GENMASK(14, 0), 20 | (20 << 5) | (20 << 10));
-	rtl_pon_update(pon->mac + CONTROL2, BIT(26) | GENMASK(4, 0), BIT(26) | 20);
-	/* Hardware initialization owns OMCC queues0..7; leave their buckets intact. */
-	ret = rtl_puc_token_buckets(pon, 8);
-	if (ret)
-		return ret;
-	rtl_pon_update(pon->mac + AGGREGATE0, GENMASK(25, 0), 0);
-	rtl_pon_update(pon->mac + AGGREGATE1, GENMASK(11, 0), 0);
-	return 0;
-}
 
 int __rtl_pon_puc_configure(struct rtl9617c_pon *pon)
 {
@@ -231,15 +128,19 @@ int __rtl_pon_puc_configure(struct rtl9617c_pon *pon)
 		goto unlock;
 	writel(0, pon->mac + PUC_IE);
 	/* Explicit RTL8277C OAM container addresses and EtherTypes. */
-	writel(0x25000001, pon->mac + 0x8154);
-	writel(0x00000013, pon->mac + 0x8150);
-	writel(0x00132500, pon->mac + 0x814c);
-	writel(0xfff00000, pon->mac + 0x8158);
-	writel(0xfff10000, pon->mac + 0x815c);
+	writel(0x25000001, pon->mac + RTL_PUC_8154);
+	writel(0x00000013, pon->mac + RTL_PUC_8150);
+	writel(0x00132500, pon->mac + RTL_PUC_814C);
+	writel(0xfff00000, pon->mac + RTL_PUC_8158);
+	writel(0xfff10000, pon->mac + RTL_PUC_815C);
 	rtl_pon_update(pon->mac + PUC_CONFIG, GENMASK(1, 0) | GENMASK(18, 16) | BIT(30),
 		2 | BIT(30)); /* CRC regenerate, counters retained, invalid queue drop. */
-	writel(0x7a0, pon->mac + LIMIT_A);
-	writel(0x3b0, pon->mac + LIMIT_A + 4);
+	/* Reference-unit queue limits.  The MPCP REPORT engine reports these byte
+	 * budgets to the OLT's DBA; with the smaller defaults the reported
+	 * occupancy never matches what the OLT expects and it reclaims the LLID
+	 * roughly every 97 s. */
+	writel(0xc00, pon->mac + LIMIT_A);
+	writel(0x700, pon->mac + LIMIT_A + 4);
 	writel(0x200, pon->mac + LIMIT_A + 8);
 	for (i = 0; i < 16; i++)
 		writel(0x55555555, pon->mac + LIMIT_SELECT + i * 4);
@@ -276,25 +177,30 @@ int __rtl_pon_puc_configure(struct rtl9617c_pon *pon)
 	writel(0xffff8000, pon->mac + REPORT_Q12);
 	writel(0x80008000, pon->mac + REPORT_Q34);
 	if (pon->mode == RTL_PON_EPON_BI10G) {
-		rtl_pon_update(pon->mac + 0x80fc, GENMASK(14, 0), 0x100);
-		rtl_pon_update(pon->mac + 0x80f8, BIT(28) | GENMASK(14, 12),
+		rtl_pon_update(pon->mac + RTL_PUC_80FC, GENMASK(14, 0), 0x100);
+		rtl_pon_update(pon->mac + RTL_PUC_80F8, BIT(28) | GENMASK(14, 12),
 			(pon->llid_count == 1 ? BIT(28) : 0) | (2 << 12));
 	}
 	rtl_pon_update(pon->mac + BACKPRESSURE, BIT(0) | BIT(4) | GENMASK(30, 16),
 		BIT(0) | (0x100 << 16));
 	rtl_pon_update(pon->mac + BTC,
 		GENMASK(5, 0) | BIT(8) | BIT(12) | BIT(25) | GENMASK(31, 27), 20 | BIT(8));
-	writel(pon->mode == RTL_PON_EPON_BI10G ? 0x0a000000 : 0x55550000, pon->mac + 0x8230);
-	writel(pon->mode == RTL_PON_EPON_BI10G ? 0xf0001400 : 0xffffaaaa, pon->mac + 0x8234);
-	rtl_pon_update(pon->mac + CONTROL, BIT(30) | BIT(26), BIT(30));
+	writel(pon->mode == RTL_PON_EPON_BI10G ? 0x0a000000 : 0x55550000, pon->mac + RTL_PUC_8230);
+	writel(pon->mode == RTL_PON_EPON_BI10G ? 0xf0001400 : 0xffffaaaa, pon->mac + RTL_PUC_8234);
+	/* Reference PUC scheduling: the stock enables the 29/28/24 selects and
+	 * the 0x7c sub-field set; without them the queue scheduler behaviour the
+	 * OLT expects on this port is not reproduced. */
+	rtl_pon_update(pon->mac + CONTROL, GENMASK(30, 24) | GENMASK(6, 2),
+		       BIT(30) | BIT(29) | BIT(28) | BIT(24) | 0x7c);
 	rtl_pon_update(pon->mac + CONTROL1, GENMASK(14, 0), 20 | (20 << 5) | (20 << 10));
-	rtl_pon_update(pon->mac + CONTROL2, BIT(26) | GENMASK(4, 0), BIT(26) | 20);
+	rtl_pon_update(pon->mac + CONTROL2, GENMASK(26, 24) | GENMASK(4, 0),
+		       BIT(26) | BIT(25) | BIT(24) | 20);
 	/* Stock dal_rtl8277c_ponmac_queue_add() ends with
 	 * aal_puc_voq_drop_set(0, 3, cfg): cfg[0] is the physical VOQ index
 	 * and cfg[1] is 0. The last queue added by stock is queue 0, so the
 	 * resulting 0x80e0 state has low byte 0 and bit31 clear. Reproduce
 	 * that state; the register is the PUC VOQ drop selector. */
-	rtl_pon_update(pon->mac + 0x80e0, GENMASK(7, 0) | BIT(31), 0);
+	rtl_pon_update(pon->mac + RTL_PUC_80E0, GENMASK(7, 0) | BIT(31), 0);
 	ret = rtl_puc_token_buckets(pon, 0);
 	if (ret)
 		goto unlock;
@@ -313,6 +219,7 @@ int __rtl_pon_puc_configure(struct rtl9617c_pon *pon)
 	dev_info(pon->dev, "PUC: %u LLID ports, %u queues each, 256 CIR/PIR entries\n", ports, queues);
 unlock:
 	pon->puc_error = ret;
+	pon_dbg("puc configure: ret=%d configured=%u\n", ret, pon->puc_configured);
 	return ret;
 }
 
@@ -368,7 +275,33 @@ ssize_t rtl_pon_puc_state(struct rtl9617c_pon *pon, char *buf)
 		if (ret)
 			return ret;
 		length += scnprintf(buf + length, PAGE_SIZE - length, "bp%u=%u\n",
-			sample[i], readl(pon->mac + 0x80ec) & 255);
+			sample[i], readl(pon->mac + RTL_PUC_80EC) & 255);
 	}
 	return length;
 }
+
+
+static ssize_t puc_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+	ssize_t size;
+	mutex_lock(&pon->lock);
+	size = rtl_pon_puc_state(pon, buf);
+	mutex_unlock(&pon->lock);
+	return size;
+}
+
+static ssize_t puc_store(struct device *dev, struct device_attribute *attr,
+			const char *buf, size_t count)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+	bool enabled;
+	int ret = kstrtobool(buf, &enabled);
+	if (ret)
+		return ret;
+	if (!enabled)
+		return -EINVAL;
+	ret = rtl_pon_puc_configure(pon);
+	return ret ? ret : count;
+}
+DEVICE_ATTR_RW(puc);

@@ -1,26 +1,70 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-#ifndef RTL9617C_PON_PON_H
-#define RTL9617C_PON_PON_H
-
+/*
+ * Native Taurus PON data model and submodule interface.
+ *
+ * Only what a different translation unit of this module needs lives here:
+ * the mode enumeration, the per-device state and the prototypes shared by the
+ * core, the EPON stack and the ITU stack.
+ */
+#ifndef RTL9617C_PON_H
+#define RTL9617C_PON_H
 #include <linux/device.h>
 #include <linux/bitmap.h>
 #include <linux/gpio/consumer.h>
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
+#include "rtl9617c_io.h"
+#include "rtl9617c_itu.h"
 #include "rtl9617c_ni.h"
-#include "pon/pon_mode.h"
-#include "pon/epon/mpcp_backoff.h"
-#include "pon/pon_path.h"
-#include "pon/itu/xgtc_recovery.h"
 
-struct sock;
+/* NI destination LDPID of business traffic: 32 + llid (see ni_fe_add_port). */
+#define RTL_NI_HDR_DATA_LDPID_BASE	32
+
+enum rtl_pon_mode {
+	RTL_PON_EPON_1G,
+	RTL_PON_EPON_D10G,
+	RTL_PON_EPON_BI10G,
+	RTL_PON_GPON,
+	RTL_PON_XGPON,
+	RTL_PON_XGSPON,
+	RTL_PON_MODE_COUNT,
+};
+
+struct rtl_pon_mode_configuration {
+	const char *name;
+	const char *profile;
+	unsigned int sds_mode;
+	unsigned int burst_page;
+	unsigned int epon_onu_mode;
+};
+
+struct rtl_mpcp_backoff {
+	unsigned long until;
+	unsigned int active, nacks, register_flag;
+};
+
+struct rtl_mpcp_io {
+	void *context;
+	unsigned int (*read)(void *context, unsigned int reg);
+	void (*write)(void *context, unsigned int reg, unsigned int value);
+};
+
+/* Stock aal_xgpon_backup_puc/restore_puc and the actual AAL setters. */
+
+struct rtl_xgtc_puc_saved {
+	unsigned int ni_enable, mac, burst, laser, to1, to2;
+	unsigned int control[5], limit_select[16], limit[3], valid[8];
+	unsigned int pvt[32][5], cir[256][2], pir[256][2], backpressure[192];
+};
 
 struct rtl_itu_path_state {
 	struct rcu_head rcu;
 	struct rtl_itu_paths paths;
 };
 
+struct sock;
 struct platform_device;
+
 
 enum rtl_gpon_drain_phase {
 	RTL_GPON_DRAIN_IDLE, RTL_GPON_DRAIN_INVALIDATE, RTL_GPON_DRAIN_PORT, RTL_GPON_DRAIN_ALLOC,
@@ -102,6 +146,8 @@ struct rtl9617c_pon {
 	int mac_error;
 	u8 onu_mac[6];
 	u8 factory_mac[6];
+	/* Business-port base address; MPCP/OAM stay on onu_mac. */
+	u8 data_mac[6];
 	unsigned int llid_count;
 	bool mpcp_configured;
 	bool mpcp_enabled;
@@ -147,7 +193,6 @@ struct rtl9617c_pon {
 	u32 last_optical_irq;
 	int mpcp_irq;
 	struct rtl_mpcp_backoff backoff;
-	bool fe_enabled;
 	u64 ploam_rx, ploam_tx, ploam_mic_errors;
 	u8 gpon_serial[8], gpon_password[10];
 	bool gpon_identity_configured;
@@ -191,12 +236,19 @@ struct rtl9617c_pon {
 	DECLARE_BITMAP(itu_gpon_gems, 4096);
 };
 
+static inline int rtl_pon_mode_is_epon(enum rtl_pon_mode mode)
+{
+	return mode <= RTL_PON_EPON_BI10G;
+}
+
+
 void rtl_pon_update(void __iomem *reg, u32 mask, u32 value);
 int rtl_pon_serdes_restart_locked(struct rtl9617c_pon *pon);
 int rtl_pon_serdes_configure(struct rtl9617c_pon *pon, enum rtl_pon_mode mode);
 void rtl_pon_serdes_init_work(struct rtl9617c_pon *pon);
 void rtl_pon_serdes_stop_work(struct rtl9617c_pon *pon);
 const char *rtl_pon_mode_name(enum rtl_pon_mode mode);
+extern const struct rtl_pon_mode_configuration rtl_pon_modes[];
 ssize_t rtl_pon_serdes_state(struct rtl9617c_pon *pon, char *buf);
 ssize_t rtl_pon_serdes_registers(struct rtl9617c_pon *pon, char *buf);
 int rtl_pon_epon_prepare(struct rtl9617c_pon *pon);
@@ -251,8 +303,8 @@ int rtl_pon_llid_update(struct rtl9617c_pon *pon, bool add, unsigned int index,
 int rtl_pon_pdc_configure(struct rtl9617c_pon *pon);
 int rtl_pon_pdc_refresh(struct rtl9617c_pon *pon);
 ssize_t rtl_pon_pdc_state(struct rtl9617c_pon *pon, char *buf);
-int rtl_pon_fe_configure_locked(struct rtl9617c_pon *pon,bool enable);
 int rtl_pon_puc_configure(struct rtl9617c_pon *pon);
+int rtl_puc_itu_configure(struct rtl9617c_pon *pon, const struct rtl_dq_io *io);
 ssize_t rtl_pon_puc_state(struct rtl9617c_pon *pon, char *buf);
 int rtl_pon_oam_init(struct rtl9617c_pon *pon);
 void rtl_pon_oam_remove(struct rtl9617c_pon *pon);
@@ -279,4 +331,15 @@ int rtl_pon_pdc_configure_locked(struct rtl9617c_pon *pon);
 int rtl_pon_puc_configure_locked(struct rtl9617c_pon *pon);
 int __rtl_pon_pdc_configure(struct rtl9617c_pon *pon);
 int __rtl_pon_puc_configure(struct rtl9617c_pon *pon);
+
+/* Shared by more than one subdirectory, so no longer a header helper. */
+int rtl_itu_puc_tcont_weights(const struct rtl_dq_io *io, unsigned int index,
+			      unsigned int enabled, const unsigned char weights[8]);
+int rtl_itu_puc_schedule(const struct rtl_dq_io *io, unsigned int index,
+			 unsigned int enabled, const unsigned char weights[8]);
+int rtl_pon_queue_backpressure(const struct rtl_dq_io *io);
+unsigned int rtl_omci_receive_offset(const unsigned char *data, unsigned int length);
+int rtl_pon_epon_sla_set(struct rtl9617c_pon *pon, const u8 *data, size_t count);
+int rtl_pon_pm_counters_read(struct rtl9617c_pon *pon, unsigned int port, char *buf);
+
 #endif

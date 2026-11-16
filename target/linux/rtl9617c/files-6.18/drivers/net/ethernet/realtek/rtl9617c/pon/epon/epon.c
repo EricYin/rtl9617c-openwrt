@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+/* Native EPON MAC/PCS/FEC setup and the LLID table; GPL aal_epon_mac.c. */
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -6,32 +7,33 @@
 #include <linux/jiffies.h>
 #include <linux/unaligned.h>
 #include "pon/pon.h"
-#include "pon/epon/epon_crypto.h"
-#include "pon/pon_mib.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
+#include "pon/epon/epon.h"
 
-#define EPON_STATIC 0x0014
-#define EPON_FEC_XG 0x0024
-#define EPON_MISC 0x0180
-#define MIB_STATUS 0x0600
-#define MIB_CTRL 0x0604
-#define FEC_1G 0x0810
-#define TX_1G 0x0834
-#define MAX_PACKET_1G 0x0838
-#define RX_1G 0x088c
-#define RTT_RX 0x0f08
-#define RTT_TX 0x0f0c
-#define TX_XG 0x1004
-#define RX_XG 0x10b4
-#define RX_LOCALTIME 0x10bc
-#define RX_DROP 0x1250
-#define RX_MPCP_MIB 0x1288
-#define TX_MPCP_MIB 0x12a0
-#define PCS_TX 0x130c
-#define PCS_RX 0x137c
-#define LINK_DETECT 0x13cc
-#define PUC_BTC 0x8050
-#define PUC_REPORT 0x8054
-#define EPON_FRAME_LIMIT 1700
+int rtl_pon_llid_update(struct rtl9617c_pon *pon, bool add, unsigned int index,
+			 unsigned int mac, u16 llid, bool multicast)
+{
+	u32 status;
+	int ret;
+
+	writel(llid | (index << 16) | ((u32)multicast << 22) |
+	       ((u32)add << 23) | (mac << 24), pon->mac + LLID_DATA);
+	writel(BIT(0), pon->mac + LLID_ACCESS);
+	ret = readl_poll_timeout(pon->mac + LLID_ACCESS, status, !(status & BIT(0)), 1, 100000);
+	if (ret)
+		return ret;
+	status = readl(pon->mac + LLID_RESULT) & 7;
+	if (add && (status == 6 || status == 7))
+		return 0;
+	if (!add && status == 5)
+		return 0;
+	if (status == 1)
+		return -ENOSPC;
+	if (status == 2)
+		return -ENOENT;
+	return -EIO;
+}
 
 static int rtl_epon_tx_apply(struct rtl9617c_pon *pon)
 {
@@ -88,6 +90,9 @@ int rtl_pon_epon_tx_control(struct rtl9617c_pon *pon, const u8 *data, size_t cou
 	else if (get_unaligned_be64(data + 1) != pon->epon_llid_epoch[channel])
 		ret = -ESTALE;
 	else {
+		/* Stock actions: 0 resumes, 0xffff inhibits indefinitely, otherwise
+		 * inhibit for N seconds. The shared timer always follows the latest
+		 * command, including when an older worker is already waiting. */
 		pon->epon_tx_action = action;
 		ret = rtl_epon_tx_apply(pon);
 		if (action && action != 0xffff) {
@@ -97,134 +102,6 @@ int rtl_pon_epon_tx_control(struct rtl9617c_pon *pon, const u8 *data, size_t cou
 			cancel_delayed_work(&pon->epon_tx_work);
 		}
 	}
-	mutex_unlock(&pon->lock);
-	mutex_unlock(&pon->control_lock);
-	return ret;
-}
-
-static unsigned int rtl_crypto_read(void *context, unsigned int reg)
-{
-	struct rtl9617c_pon *pon = context;
-
-	return readl(pon->mac + reg);
-}
-
-static void rtl_crypto_write(void *context, unsigned int reg, unsigned int value)
-{
-	struct rtl9617c_pon *pon = context;
-
-	writel(value, pon->mac + reg);
-}
-
-static int rtl_crypto_indirect(void *context, unsigned int reg, unsigned int value)
-{
-	struct rtl9617c_pon *pon = context;
-	u32 status, busy = reg == 0x1438 || reg == 0x1578 ? BIT(0) : BIT(31);
-
-	writel(value, pon->mac + reg);
-	return readl_poll_timeout(pon->mac + reg, status, !(status & busy), 1, 100000);
-}
-
-int rtl_pon_epon_pm(struct rtl9617c_pon *pon, unsigned long long counters[37])
-{
-	const struct rtl_dq_io io = {pon, rtl_crypto_read, rtl_crypto_write, rtl_crypto_indirect};
-	unsigned int raw[RTL_EPON_MIB_COUNTERS];
-	int ret;
-
-	lockdep_assert_held(&pon->lock);
-	if (!rtl_pon_mode_is_epon(pon->mode))
-		return -EOPNOTSUPP;
-	if (!pon->mac_prepared)
-		return -EAGAIN;
-	ret = rtl_epon_mib_read(&io, raw);
-	if (!ret)
-		rtl_epon_mib_pm(pon->epon_mib_total, raw, counters);
-	return ret;
-}
-
-int rtl_pon_epon_crypto_forget(struct rtl9617c_pon *pon, u32 lost)
-{
-	const struct rtl_dq_io io = {pon, rtl_crypto_read, rtl_crypto_write, rtl_crypto_indirect};
-	unsigned int channel;
-	int ret;
-
-	lockdep_assert_held(&pon->lock);
-	for (channel = 0; channel < 8; channel++) {
-		if (!(lost & BIT(channel)))
-			continue;
-		ret = rtl_epon_crypto_llid(&io, pon->mode, channel, 0, false);
-		if (ret) {
-			pon->epon_crypto_error = ret;
-			return ret;
-		}
-		pon->epon_crypto_llids &= ~BIT(channel);
-	}
-	if (pon->mode != RTL_PON_EPON_1G && !pon->epon_crypto_llids)
-		rtl_pon_update(pon->mac + 0x10b8, BIT(3), BIT(3));
-	pon->epon_crypto_error = 0;
-	return 0;
-}
-
-int rtl_pon_epon_key(struct rtl9617c_pon *pon, const u8 *data, size_t count)
-{
-	const struct rtl_dq_io io = {pon, rtl_crypto_read, rtl_crypto_write, rtl_crypto_indirect};
-	const u8 zero_key[9] = {};
-	u32 entry;
-	unsigned int channel, slot, row;
-	int ret;
-
-	if (count < 10)
-		return -EINVAL;
-	channel = data[0];
-	slot = data[1];
-	mutex_lock(&pon->control_lock);
-	mutex_lock(&pon->lock);
-	if (!rtl_pon_mode_is_epon(pon->mode)) {
-		ret = -EOPNOTSUPP;
-		goto unlock;
-	}
-	if (channel >= 8 || channel >= pon->llid_count || slot > 1 ||
-	    count != (pon->mode == RTL_PON_EPON_1G ? 13 : 19)) {
-		ret = -EINVAL;
-		goto unlock;
-	}
-	if (!pon->mac_prepared || !pon->mpcp_enabled || !(pon->registered & BIT(channel))) {
-		ret = -EAGAIN;
-		goto unlock;
-	}
-	if (get_unaligned_be64(data + 2) != pon->epon_llid_epoch[channel]) {
-		ret = -ESTALE;
-		goto unlock;
-	}
-	for (row = 0; row < 64; row++) {
-		entry = readl(pon->mac + 0x64 + row * 4);
-		if ((entry & BIT(23)) && !(entry & BIT(22)) &&
-		    FIELD_GET(GENMASK(28, 24), entry) == channel)
-			break;
-	}
-	if (row == 64) {
-		ret = -ENOENT;
-		goto unlock;
-	}
-	/* A new line must not re-enable an old session's other key slot. The
-	 * 1G common key pool is shared by registered LLIDs. */
-	if (!(pon->epon_crypto_llids & BIT(channel)) &&
-	    (pon->mode != RTL_PON_EPON_1G || !pon->epon_crypto_llids)) {
-		ret = rtl_epon_crypto_key(&io, pon->mode, channel, slot ^ 1, zero_key);
-		if (ret)
-			goto unlock;
-	}
-	ret = rtl_epon_crypto_key(&io, pon->mode, channel, slot, data + 10);
-	if (ret)
-		goto unlock;
-	ret = rtl_epon_crypto_llid(&io, pon->mode, channel, entry & 0xffff, true);
-	if (ret)
-		goto unlock;
-	pon->epon_crypto_llids |= BIT(channel);
-	if (pon->mode != RTL_PON_EPON_1G)
-		rtl_pon_update(pon->mac + 0x10b8, BIT(3), 0);
-unlock:
-	pon->epon_crypto_error = ret;
 	mutex_unlock(&pon->lock);
 	mutex_unlock(&pon->control_lock);
 	return ret;
@@ -355,8 +232,6 @@ int rtl_pon_epon_traffic_locked(struct rtl9617c_pon *pon, bool enable)
 		pon->traffic_enabled = false;
 		gpiod_set_value_cansleep(pon->tx_disable, 1);
 		mutex_unlock(&pon->lock);
-		if (pon->fe_enabled)
-			ret = rtl_pon_fe_configure_locked(pon, false);
 	}
 	mutex_lock(&pon->lock);
 	if (enable && (!pon->puc_configured || !pon->pdc_configured ||
@@ -394,3 +269,92 @@ ssize_t rtl_pon_epon_state(struct rtl9617c_pon *pon, char *buf)
 		pon->epon_crypto_llids, pon->epon_crypto_error, pon->epon_rx_resets, pon->epon_link_events,
 		pon->epon_tx_action, pon->epon_tx_error);
 }
+
+static ssize_t llid_count_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+	if (!rtl_pon_mode_is_epon(READ_ONCE(pon->mode)))
+		return -EOPNOTSUPP;
+	return sysfs_emit(buf, "%u\n", pon->llid_count);
+}
+
+static ssize_t llid_count_store(struct device *dev, struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret = kstrtouint(buf, 0, &value);
+	if (ret)
+		return ret;
+	if (!value || value > 32)
+		return -EINVAL;
+	mutex_lock(&pon->control_lock);
+	mutex_lock(&pon->lock);
+	if (!rtl_pon_mode_is_epon(pon->mode)) {
+		mutex_unlock(&pon->lock);
+		mutex_unlock(&pon->control_lock);
+		return -EOPNOTSUPP;
+	}
+	if (pon->mpcp_enabled) {
+		mutex_unlock(&pon->lock);
+		mutex_unlock(&pon->control_lock);
+		return -EBUSY;
+	}
+	mutex_unlock(&pon->lock);
+	ret = rtl_pon_oam_resize(pon, value);
+	mutex_lock(&pon->lock);
+	if (!ret)
+		pon->llid_count = value;
+	mutex_unlock(&pon->lock);
+	mutex_unlock(&pon->control_lock);
+	return ret ? ret : count;
+}
+DEVICE_ATTR_RW(llid_count);
+
+static ssize_t llid_table_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+	ssize_t size;
+	mutex_lock(&pon->lock);
+	size = rtl_pon_mode_is_epon(pon->mode) ? rtl_pon_llid_table(pon, buf) : -EOPNOTSUPP;
+	mutex_unlock(&pon->lock);
+	return size;
+}
+
+static ssize_t llid_table_store(struct device *dev, struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+	char operation[7];
+	unsigned int index, mac, llid, multicast;
+	bool add;
+	int ret;
+	if (sscanf(buf, "%6s %u %u %x %u", operation, &index, &mac, &llid, &multicast) != 5 ||
+	    index > 63 || mac > 31 || llid > 0xffff || multicast > 1)
+		return -EINVAL;
+	if (!strcmp(operation, "add"))
+		add = true;
+	else if (!strcmp(operation, "delete"))
+		add = false;
+	else
+		return -EINVAL;
+	mutex_lock(&pon->control_lock);
+	mutex_lock(&pon->lock);
+	ret = rtl_pon_mode_is_epon(pon->mode) ?
+		rtl_pon_llid_update(pon, add, index, mac, llid, multicast) : -EOPNOTSUPP;
+	if (!ret)
+		ret = rtl_pon_pdc_refresh(pon);
+	mutex_unlock(&pon->lock);
+	mutex_unlock(&pon->control_lock);
+	return ret ? ret : count;
+}
+DEVICE_ATTR_RW(llid_table);
+
+static ssize_t epon_tx_control_write(struct file *file, struct kobject *kobj,
+	const struct bin_attribute *attr, char *buf, loff_t offset, size_t count)
+{
+	if (offset)
+		return -EINVAL;
+	return rtl_pon_epon_tx_control(dev_get_drvdata(kobj_to_dev(kobj)), buf, count) ?: count;
+}
+BIN_ATTR(epon_tx_control, 0200, NULL, epon_tx_control_write, 0);

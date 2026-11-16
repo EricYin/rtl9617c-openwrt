@@ -6,12 +6,35 @@
 #include <errno.h>
 #include <string.h>
 #include <syslog.h>
+#include <time.h>
 #include "pon-oam.h"
 
 #define LOCAL_EVAL 0x0008
 #define LOCAL_STABLE 0x0010
 #define REMOTE_EVAL 0x0020
 #define REMOTE_STABLE 0x0040
+
+/* Per-frame diagnostics are gated; state transitions stay unconditional. */
+#define oam_dbg(fmt, ...) do { \
+	if (pon_oam_debug) \
+		syslog(LOG_INFO, fmt, ##__VA_ARGS__); \
+} while (0)
+
+static uint64_t oam_ms(void)
+{
+	struct timespec time;
+
+	clock_gettime(CLOCK_REALTIME, &time);
+	return (uint64_t)time.tv_sec * 1000 + time.tv_nsec / 1000000;
+}
+
+static uint64_t oam_monotonic_ms(void)
+{
+	struct timespec time;
+
+	clock_gettime(CLOCK_MONOTONIC, &time);
+	return (uint64_t)time.tv_sec * 1000 + time.tv_nsec / 1000000;
+}
 
 static uint16_t be16(const uint8_t *data)
 {
@@ -29,6 +52,22 @@ static bool ctc_oui(const uint8_t *oui)
 	return !memcmp(oui, "\x11\x11\x11", 3) || !memcmp(oui, "\x00\x0d\xb6", 3);
 }
 
+/* CTC extension versions the stock ONU accepts, from the capability tables
+ * at 0x4575a0 (A, five entries) and 0x4575b8 (B, ten entries) compared by
+ * FUN_00417d9c.  Every entry is OUI 11:11:11 plus one of these version
+ * bytes; the match checks no MAC and no LOID, so it only establishes the
+ * extension tuple, never subscriber authorisation. */
+static bool ctc_version_supported(uint8_t version)
+{
+	switch (version) {
+	case 0x01: case 0x13: case 0x20: case 0x21: case 0x30:
+	case 0xc1: case 0xc2: case 0xc3: case 0xc4: case 0xc5:
+		return true;
+	default:
+		return false;
+	}
+}
+
 void pon_oam_reset(struct pon_oam_session *session)
 {
 	session->have_peer = false;
@@ -38,7 +77,12 @@ void pon_oam_reset(struct pon_oam_session *session)
 	/* The captured stock ONU does not advertise CTC OAM before the OLT
 	 * selects an extension. Keep IEEE discovery clean first. */
 	session->extension_advertised = false;
-	session->extension_version = 0x30;
+	session->extension_list_answered = false;
+	session->extension_echo_answered = false;
+	session->extension_quiet = false;
+	session->extension_negotiated = false;
+	session->last_information_ms = 0;
+	session->extension_version = PON_OAM_CTC_EXT_VERSION_DEFAULT;
 	memset(session->key, 0, sizeof(session->key));
 	session->key_length = 0;
 	session->extension_oui[0] = 0x00;
@@ -47,39 +91,61 @@ void pon_oam_reset(struct pon_oam_session *session)
 	session->peer_flags = 0;
 	session->auth = PON_AUTH_WAITING;
 	session->auth_failure = 0;
+	session->auth_succeeded = false;
+	session->auth_result_seen = false;
+	session->auth_source = PON_AUTH_SOURCE_NONE;
+	session->auth_set_attributes = 0;
+	session->auth_success_ms = 0;
+	session->auth_success_monotonic_ms = 0;
+	session->last_type5_ms = 0;
+	session->last_type5_code = 0;
+	session->provisioning_seen = false;
 	session->generation++;
 }
 
 uint16_t pon_oam_flags(const struct pon_oam_session *session)
 {
-	/* Captured stock discovery frames use 0x0030 once the peer is present
-	 * and 0x0032 when the local information has been echoed. They do not
-	 * advertise LOCAL_EVAL (0x08), which made the OLT keep discovery open. */
-	uint16_t flags = session->have_peer ? LOCAL_STABLE : 0;
+	/* IEEE 802.3 clause 57 discovery flags only. Bit 1 is Dying Gasp;
+	 * it is not a response marker. Normal stock Information frames
+	 * (ref_tx_dump.txt:69,77,79,145) use 0x0050 after discovery. */
+	uint16_t flags = session->have_peer ? LOCAL_STABLE : LOCAL_EVAL;
 
 	if (session->peer_flags & LOCAL_STABLE)
 		flags |= REMOTE_STABLE;
 	else if (session->peer_flags & LOCAL_EVAL)
 		flags |= REMOTE_EVAL;
-	/* Captured stock ONU sends 0x0032 as soon as it has the OLT Local TLV;
-	 * it does not wait for the OLT to echo the ONU Local TLV. */
-	if (session->have_peer)
-		flags |= 0x0002;
 	return flags;
 }
 
-static void local_information(const struct pon_oam_session *session, uint8_t *local)
+static void local_information(const struct pon_oam_session *session,
+			      const struct pon_oam_identity *identity, uint8_t *local)
 {
 	(void)session;
-	/* Stock PT1500 OAM Local Information TLV value, captured from a
-	 * registered reference unit. The TLV length field is 16 and includes
-	 * the two-byte type/length header, so only these 14 bytes are sent. */
-	static const uint8_t information[PON_OAM_INFO_VALUE_LEN] = {
-		0x01, 0x00, 0x01, 0x00, 0x14, 0x05, 0xee, 0x1c,
-		0xe5, 0x04, 0x54, 0x4d, 0x42, 0x42,
-	};
-
-	memcpy(local, information, sizeof(information));
+	/* IEEE 802.3 clause 57 Local Information TLV value (14 bytes), laid out
+	 * the way both the Beijing Unicom OLT and the captured stock ONU do:
+	 *   [0]     version/state   0x01
+	 *   [1]     revision        0x00
+	 *   [2..3]  PDU config      0x0001
+	 *   [4]     OAM identification (0x14 on the stock unit, 0x0f on the OLT)
+	 *   [5]     OUI byte 0x05
+	 *   [6]     OUI byte 0xee
+	 *   [7..12] vendor information: the ONU's own MAC address
+	 *   [13]    trailing zero
+	 *
+	 * A previous revision hard-coded the captured stock constant, which
+	 * embedded another unit's MAC.  The OLT echoed that
+	 * address back in its Remote Information TLV, never matched it to the
+	 * registered ONU, and kept sending deregister frames on its own timer.
+	 * Build the vendor block from the live identity instead. */
+	local[0] = 0x01;
+	local[1] = 0x00;
+	local[2] = 0x01;
+	local[3] = 0x00;
+	local[4] = 0x14;
+	local[5] = 0x05;
+	local[6] = 0xee;
+	memcpy(local + 7, identity->mac, 6);
+	local[13] = 0x00;
 }
 
 static void ethernet_header(const struct pon_oam_session *session, const struct pon_oam_identity *identity,
@@ -107,26 +173,49 @@ size_t pon_oam_information(struct pon_oam_session *session, const struct pon_oam
 	ethernet_header(session, identity, output, 0);
 	output[offset++] = 1;
 	output[offset++] = PON_OAM_INFO_TLV_LEN;
-	local_information(session, output + offset);
+	local_information(session, identity, output + offset);
 	offset += PON_OAM_INFO_VALUE_LEN;
 	if (session->have_peer) {
-		syslog(LOG_INFO, "OAM info peer branch offset=%zu", offset);
+		oam_dbg("OAM info peer branch offset=%zu", offset);
 		output[offset++] = 2;
 		output[offset++] = PON_OAM_INFO_TLV_LEN;
 		memcpy(output + offset, session->peer_local, PON_OAM_INFO_VALUE_LEN);
 		offset += PON_OAM_INFO_VALUE_LEN;
 	}
-	if (session->extension_advertised || session->extension_selected) {
+	if (session->extension_selected && !session->extension_echo_answered) {
+		/* Stock frame 009 (ref_tx_dump.txt): fe 07 11 11 11 01 30 =
+		 * OUI, fixed 0x01, the version the OLT selected.  The stock
+		 * daemon answers the selection exactly once and then stops
+		 * carrying the extension TLV: of 242 captured frames the TLV
+		 * appeared in only the capability list and this echo.  Its
+		 * discovery state machine reaches state 3 (0x48b3f0[idx]) and
+		 * state 3 answers nothing; repeating the echo every second kept
+		 * the OLT's CTC negotiation from ever settling. */
 		output[offset++] = 0xfe;
-		output[offset++] = session->extension_selected ? 7 : 11;
+		output[offset++] = PON_OAM_CTC_EXT_TLV_ECHO_BYTES;
 		memcpy(output + offset, session->extension_oui, 3);
-		offset += 3;
-		output[offset++] = 1;
-		output[offset++] = session->extension_selected ? session->extension_version : 0;
-		if (!session->extension_selected) {
+		output[offset + 3] = 1;
+		output[offset + 4] = session->extension_version;
+		offset += 5;
+	} else if (session->extension_advertised && !session->extension_list_answered) {
+		/* Stock frame 008: when the OLT lists its CTC versions, the ONU
+		 * answers with its own list before the OLT selects one:
+		 * fe 1b OUI 01 00 then OUI+{01,13,20,21,30}.  Skipping this step
+		 * leaves the OLT's CTC negotiation unanswered and it drops the
+		 * LLID when its ~97 s negotiation retry gives up. */
+		static const uint8_t versions[] = {0x01, 0x13, 0x20, 0x21, 0x30};
+		size_t i;
+
+		output[offset++] = 0xfe;
+		output[offset++] = PON_OAM_CTC_EXT_TLV_LIST_BYTES;
+		memcpy(output + offset, session->extension_oui, 3);
+		output[offset + 3] = 1;
+		output[offset + 4] = 0;
+		offset += 5;
+		for (i = 0; i < sizeof(versions); i++) {
 			memcpy(output + offset, session->extension_oui, 3);
-			offset += 3;
-			output[offset++] = session->extension_version;
+			output[offset + 3] = versions[i];
+			offset += 4;
 		}
 	}
 	offset += 2; /* end TLV and zero Ethernet padding */
@@ -138,6 +227,20 @@ void pon_oam_information_sent(struct pon_oam_session *session, const uint8_t *fr
 	memcpy(session->last_local, frame + 20, PON_OAM_INFO_VALUE_LEN);
 	session->have_sent = true;
 	session->tx_frames++;
+	/* The capability list and the selection echo are each answered once.
+	 * Only the echo retires the extension TLV: after the list the OLT still
+	 * has to select a version, and the stock ONU carried the TLV in exactly
+	 * two frames (the list and the echo) before its discovery state reached
+	 * 3.  Retiring on the list instead suppressed the echo entirely. */
+	if (session->extension_selected && !session->extension_echo_answered) {
+		session->extension_list_answered = true;
+		session->extension_echo_answered = true;
+		session->extension_quiet = true;
+		session->extension_advertised = false;
+	} else if (session->extension_advertised && !session->extension_list_answered) {
+		session->extension_list_answered = true;
+		session->extension_advertised = false;
+	}
 }
 
 static int receive_information(struct pon_oam_session *session, const uint8_t *input, size_t length)
@@ -164,7 +267,7 @@ static int receive_information(struct pon_oam_session *session, const uint8_t *i
 			else
 				remote = input + offset + 2;
 		} else if (type == 0xfe && size >= 7 && ctc_oui(input + offset + 2)) {
-			if ((size - 7) % 4)
+			if ((size - PON_OAM_CTC_EXT_TLV_ECHO_BYTES) % 4)
 				return -EPROTO;
 			extension = input + offset;
 		}
@@ -172,6 +275,7 @@ static int receive_information(struct pon_oam_session *session, const uint8_t *i
 	}
 	if (!local)
 		return -EPROTO;
+	session->last_information_ms = oam_ms();
 	/* A missing/mismatched Remote echo ends the established discovery session,
 	 * even when the peer's Local TLV has not changed. Require a new revision
 	 * echo before accepting authentication for the next session. */
@@ -190,21 +294,36 @@ static int receive_information(struct pon_oam_session *session, const uint8_t *i
 	session->have_peer = true;
 	session->local_echoed = remote && session->have_sent && !memcmp(remote, session->last_local, PON_OAM_INFO_VALUE_LEN);
 	session->peer_flags = be16(input + 15);
-	if (extension && (extension[1] > 7 || session->local_echoed)) {
+	if (extension && (extension[1] > PON_OAM_CTC_EXT_TLV_ECHO_BYTES || session->local_echoed)) {
 		unsigned int version = 0;
 		/* OLT advertisements contain any number of OUI/version tuples. */
 		for (offset = 7; offset + 4 <= extension[1]; offset += 4)
-			if (ctc_oui(extension + offset) && extension[offset + 3] <= 0x30 &&
+			if (ctc_oui(extension + offset) && extension[offset + 3] <= PON_OAM_CTC_EXT_VERSION_MAX &&
 			    extension[offset + 3] > version)
 				version = extension[offset + 3];
-		if (extension[1] == 7)
+		if (extension[1] == PON_OAM_CTC_EXT_TLV_ECHO_BYTES)
 			version = extension[6];
 		if (version) {
-			syslog(LOG_INFO, "CTC info ext size=%u version=%u selected=%u echoed=%u",
+			oam_dbg("CTC info ext size=%u version=%u selected=%u echoed=%u",
 				extension[1], version, extension[1] == 7, session->local_echoed);
 			memcpy(session->extension_oui, extension + 2, 3);
 			session->extension_selected = extension[1] == 7;
-			session->extension_advertised = extension[1] > 7;
+			session->extension_advertised = extension[1] > PON_OAM_CTC_EXT_TLV_ECHO_BYTES;
+			/* FUN_00417d9c/FUN_0041c29c establish an extension tuple,
+			 * not subscriber authorisation.  Keep the negotiation
+			 * result separate from the type-5 auth result. */
+			session->extension_negotiated = ctc_oui(extension + 2) &&
+				extension[5] == 1 && ctc_version_supported(extension[6]);
+			/* A fresh OLT advertisement (size > 7) restarts the
+			 * negotiation, so the one-shot list/echo answers become
+			 * pending again.  This mirrors the stock transition from
+			 * state 3 back to state 1 when the TLV chain starts with
+			 * 0x01 at 0x41c5c0. */
+			if (session->extension_advertised) {
+				session->extension_list_answered = false;
+				session->extension_echo_answered = false;
+				session->extension_quiet = false;
+			}
 			session->extension_version = version;
 		}
 	}
@@ -221,6 +340,40 @@ static void identity_field(uint8_t *output, size_t width, const uint8_t *value, 
 	memcpy(output + width - length, value, length);
 }
 
+uint64_t pon_oam_auth_duration_ms(const struct pon_oam_session *session, uint64_t now_ms)
+{
+	if (!session->auth_succeeded || session->auth != PON_AUTH_ACCEPTED ||
+	    now_ms < session->auth_success_monotonic_ms)
+		return 0;
+	return now_ms - session->auth_success_monotonic_ms;
+}
+
+static void auth_accept(struct pon_oam_session *session, enum pon_oam_auth_source source)
+{
+	session->auth = PON_AUTH_ACCEPTED;
+	session->auth_failure = 0;
+	session->auth_succeeded = true;
+	session->auth_source = source;
+	/* eponoamd FUN_00416460/0041649c stores CLOCK_MONOTONIC and exposes
+	 * elapsed time, not the wall-clock time at which success happened. */
+	session->auth_success_monotonic_ms = oam_monotonic_ms();
+	session->auth_success_ms = oam_ms();
+	session->auth_successes++;
+}
+
+static void auth_set_progress(struct pon_oam_session *session, uint8_t branch)
+{
+	/* Stock FUN_00419338 @0x41968c..0x419790: selector branches 36/37
+	 * do not count. Three bounded attributes from 07/09/c7/c9 complete
+	 * the pending state before handler lookup, even for unsupported leaves.
+	 * FUN_0041651c disables this path after an explicit accept/reject. */
+	if (session->auth_result_seen || session->auth_source == PON_AUTH_SOURCE_CTC_SET_PROGRESS ||
+	    (branch != 7 && branch != 9 && branch != 0xc7 && branch != 0xc9))
+		return;
+	if (++session->auth_set_attributes == 3)
+		auth_accept(session, PON_AUTH_SOURCE_CTC_SET_PROGRESS);
+}
+
 static int receive_auth(struct pon_oam_session *session, const struct pon_oam_identity *identity,
 			const uint8_t *input, size_t length, uint8_t *output)
 {
@@ -233,46 +386,88 @@ static int receive_auth(struct pon_oam_session *session, const struct pon_oam_id
 	code = input[22];
 	size = be16(input + 23);
 	/* CTC field interoperability: 0101 encodes an implicit type1 challenge. */
-	if (!(code == 1 && size == 0x0101) && size > length - 25)
+	if (!(code == PON_OAM_CTC_AUTH_CHALLENGE && size == PON_OAM_CTC_AUTH_IMPLICIT_TYPE1) &&
+	    size > length - 25)
 		return -EMSGSIZE;
-	if (code == 3) {
-		if (size)
-			return -EPROTO;
-		session->auth = PON_AUTH_ACCEPTED;
+	if (code == PON_OAM_CTC_AUTH_ACCEPT) {
+		/* Stock FUN_00419c5c accepts any bounded code-3 body. */
+		session->auth_result_seen = true;
+		session->auth_set_attributes = 0;
+		auth_accept(session, PON_AUTH_SOURCE_CTC_RESULT);
+		session->last_type5_code = PON_OAM_CTC_AUTH_ACCEPT;
+		session->last_type5_ms = oam_ms();
 		session->auth_results++;
-		session->auth_successes++;
 		return PON_OAM_HANDLED;
 	}
-	if (code == 4) {
-		if (size != 1)
+	if (code == PON_OAM_CTC_AUTH_REJECT) {
+		if (size < 1)
 			return -EPROTO;
+		session->auth_result_seen = true;
+		session->auth_source = PON_AUTH_SOURCE_CTC_RESULT;
+		session->auth_set_attributes = 0;
 		session->auth = PON_AUTH_REJECTED;
+		session->auth_succeeded = false;
+		session->auth_success_ms = 0;
+		session->auth_success_monotonic_ms = 0;
+		session->last_type5_code = PON_OAM_CTC_AUTH_REJECT;
+		session->last_type5_ms = oam_ms();
 		session->auth_failure = input[25];
 		session->auth_results++;
 		session->auth_failures++;
 		return PON_OAM_HANDLED;
 	}
-	if (code != 1 || (size != 1 && size != 0x0101))
+	if (code != PON_OAM_CTC_AUTH_CHALLENGE ||
+	    (size != 1 && size != PON_OAM_CTC_AUTH_IMPLICIT_TYPE1))
 		return -EPROTO;
-	auth_type = size == 0x0101 ? 1 : input[25];
-	session->auth = PON_AUTH_CHALLENGE;
-	session->auth_failure = 0;
-	session->auth_challenges++;
-	output[21] = 5;
-	output[22] = 2;
-	if (auth_type == 1) {
-		/* Stock answers LOID+Password even when the fields are empty. The
-		 * OLT then proceeds with MAC authentication; a Nak stalls here. */
-		set_be16(output + 23, 37);
-		output[25] = 1;
-		identity_field(output + 26, 24, identity->loid, sizeof(identity->loid));
-		identity_field(output + 50, 12, identity->password, sizeof(identity->password));
-		return 62;
+	auth_type = size == PON_OAM_CTC_AUTH_IMPLICIT_TYPE1 ? PON_OAM_CTC_AUTH_TYPE_LOID : input[25];
+	/* Stock challenge handling sends a reply without overwriting the
+	 * last authentication result. Keep a pending challenge observable. */
+	if (!session->auth_result_seen && !session->auth_succeeded) {
+		session->auth = PON_AUTH_CHALLENGE;
+		session->auth_failure = 0;
 	}
-	set_be16(output + 23, 2);
-	output[25] = 2;
-	output[26] = 1;
-	return 27;
+	session->auth_challenges++;
+	session->last_type5_code = PON_OAM_CTC_AUTH_CHALLENGE;
+	session->last_type5_ms = oam_ms();
+	output[21] = PON_OAM_CTC_TYPE_AUTH;
+	output[22] = PON_OAM_CTC_AUTH_REPLY_ACTION;
+	if (auth_type == PON_OAM_CTC_AUTH_TYPE_LOID) {
+		/* The reference ONU always answers the CTC challenge, even with
+		 * nothing provisioned, using the factory LOID "user" and password
+		 * "password" (ref_tx_dump.txt frames 19-21 carry 05 02 00 25 01,
+		 * 24-byte LOID right-aligned to "user", 12-byte password to
+		 * "password").  Staying silent instead leaves the OLT retrying
+		 * the challenge until it reclaims the LLID on its own timer
+		 * (~97 s on Beijing Unicom), so use the factory pair when none
+		 * is configured. */
+		static const char factory_loid[] = "user";
+		static const char factory_password[] = "password";
+		const char *loid = identity->loid_configured ? (const char *)identity->loid : factory_loid;
+		const char *password = identity->loid_configured ? (const char *)identity->password
+								: factory_password;
+
+		oam_dbg("CTC auth reply method=1 configured=%u", identity->loid_configured);
+		/* Reference wire format (captured from the stock ONU):
+		 * 05 02 | size 0x25 | method 1 | LOID 24 right-aligned |
+		 * password 12 right-aligned | one trailing zero = 63 bytes. */
+		set_be16(output + 23, PON_OAM_CTC_AUTH_BODY_BYTES);
+		output[25] = PON_OAM_CTC_AUTH_TYPE_LOID;
+		identity_field(output + PON_OAM_CTC_AUTH_LOID_OFFSET, PON_OAM_CTC_LOID_BYTES, (const uint8_t *)loid,
+			       identity->loid_configured ? sizeof(identity->loid) : sizeof(factory_loid) - 1);
+		identity_field(output + PON_OAM_CTC_AUTH_PASSWORD_OFFSET, PON_OAM_CTC_PASSWORD_BYTES, (const uint8_t *)password,
+			       identity->loid_configured ? sizeof(identity->password) : sizeof(factory_password) - 1);
+		output[PON_OAM_CTC_AUTH_REPLY_BYTES - 1] = 0;
+		return PON_OAM_CTC_AUTH_REPLY_BYTES;
+	}
+	/* Non-LOID challenge method (method 2).  The reference capture only
+	 * contains method-1 LOID replies (ref_tx_dump.txt frames 19-21), and
+	 * no stock disassembly of this 27-byte shape was located.  This branch
+	 * is an inferred protocol-completeness fallback inherited from the
+	 * earlier upstream implementation; it is NOT capture-verified. */
+	set_be16(output + 23, PON_OAM_CTC_AUTH_NON_LOID_BYTES);
+	output[25] = PON_OAM_CTC_AUTH_METHOD_NON_LOID;
+	output[26] = 1; /* trailing method-specific byte; unverified */
+	return PON_OAM_CTC_AUTH_NON_LOID_REPLY_BYTES;
 }
 
 /* A zero width encodes 128 data bytes. Longer values repeat the descriptor,
@@ -304,7 +499,7 @@ static int variable_reply(uint8_t *output, size_t offset, uint8_t branch,
 	return offset;
 }
 
-static int receive_variables(const struct pon_oam_session *session,
+static int receive_variables(struct pon_oam_session *session,
 	const struct pon_oam_identity *identity, const uint8_t *input,
 	size_t length, uint8_t *output, bool set)
 {
@@ -330,7 +525,7 @@ static int receive_variables(const struct pon_oam_session *session,
 			return -EMSGSIZE;
 		request.branch = input[position];
 		request.leaf = be16(input + position + 1);
-		syslog(LOG_INFO, "CTC %s branch=%02x leaf=%04x",
+		oam_dbg("CTC %s branch=%02x leaf=%04x",
 			set ? "set" : "get", request.branch, request.leaf);
 		if (request.branch == 0x36 || request.branch == 0x37) {
 			size_t width = request.branch == 0x36 ? 5 : 8;
@@ -372,9 +567,10 @@ static int receive_variables(const struct pon_oam_session *session,
 					position += 3;
 				}
 			}
+			auth_set_progress(session, request.branch);
 			if (identity->set_parameter) {
 				indication = identity->set_parameter(identity->backend_context, &request, value, size);
-				syslog(LOG_INFO, "CTC set branch=%02x leaf=%04x size=%zu indication=%02x",
+				oam_dbg("CTC set branch=%02x leaf=%04x size=%zu indication=%02x",
 					request.branch, request.leaf, size, indication);
 			}
 		} else {
@@ -468,17 +664,18 @@ int pon_oam_receive(struct pon_oam_session *session, const struct pon_oam_identi
 	if (length < 22)
 		return -EMSGSIZE;
 	if (!ctc_oui(input + 18) ||
-	    (input[21] != 1 && input[21] != 3 && input[21] != 5 && input[21] != 9))
+	    (input[21] != PON_OAM_CTC_TYPE_GET && input[21] != PON_OAM_CTC_TYPE_SET &&
+	     input[21] != PON_OAM_CTC_TYPE_AUTH && input[21] != PON_OAM_CTC_TYPE_CHURNING))
 		return PON_OAM_IGNORED;
 	/* OLT may issue CTC variable/auth requests while the IEEE discovery
 	 * session is still settling; responding keeps the CTC session alive. */
 	ethernet_header(session, identity, output, 0xfe);
 	memcpy(output + 18, input + 18, 3);
-	if (input[21] == 5)
+	if (input[21] == PON_OAM_CTC_TYPE_AUTH)
 		ret = receive_auth(session, identity, input, length, output);
-	else if (input[21] == 9)
+	else if (input[21] == PON_OAM_CTC_TYPE_CHURNING)
 		ret = receive_churning(session, identity, input, length, output);
-	else if (input[21] == 1)
+	else if (input[21] == PON_OAM_CTC_TYPE_GET)
 		ret = receive_variables(session, identity, input, length, output, false);
 	else
 		ret = receive_variables(session, identity, input, length, output, true);
@@ -486,5 +683,12 @@ int pon_oam_receive(struct pon_oam_session *session, const struct pon_oam_identi
 		session->extension_selected = true;
 		memcpy(session->extension_oui, input + 18, 3);
 	}
+	/* GET/SET traffic is provisioning evidence only.  Information
+	 * OUI/version negotiation is separate; only an explicit type-5
+	 * confirmation updates the authentication result.  Neither proves
+	 * end-to-end PPPoE authorisation or an OLT policy. */
+	if (ret > PON_OAM_IGNORED && (input[21] == PON_OAM_CTC_TYPE_GET ||
+					      input[21] == PON_OAM_CTC_TYPE_SET))
+		session->provisioning_seen = true;
 	return ret;
 }

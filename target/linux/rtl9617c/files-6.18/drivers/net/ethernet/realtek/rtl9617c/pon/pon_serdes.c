@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * Native PON SerDes initialization for Taurus EPON and ITU modes.
+ * Sequence: Cortina-Access 2015 GPL-2.0+ aal_psds.c, checked against
+ * Stock V1.0.5 ca-ne.ko aal_psds_{init,out_of_reset} machine code.
+ * Register parameter firmware is generated from this device's stock tables.
+ */
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/unaligned.h>
-
 #include "pon/pon.h"
-
+#include "pon/pon_priv.h"
+#include "rtl9617c_bosa.h"
 #define PSDS_MODE 0xa02c
 #define PSDS_STATUS 0xa060
 #define PSDS_GBOX 0xa064
@@ -19,6 +25,15 @@
 #define PSDS_GBOX_RESET_N BIT(1)
 #define PSDS_SYNC_MASK (BIT(0) | BIT(10) | BIT(11) | BIT(12) | BIT(15))
 #define PSDS_SYNC_GOAL (BIT(10) | BIT(11) | BIT(12) | BIT(15))
+
+const struct rtl_pon_mode_configuration rtl_pon_modes[] = {
+	{"epon", "realtek/rtl9617c/pon_serdes_epon.bin", 0x40c, 62, 1},
+	{"epon-d10g", "realtek/rtl9617c/pon_serdes_epon_d10g.bin", 0x44c, 60, 2},
+	{"epon-bi10g", "realtek/rtl9617c/pon_serdes_epon_bi10g.bin", 0x46c, 60, 3},
+	{"gpon", "realtek/rtl9617c/pon_serdes_gpon.bin", 0x408, 61, 0},
+	{"xgpon", "realtek/rtl9617c/pon_serdes_xgpon.bin", 0x448, 45, 0},
+	{"xgspon", "realtek/rtl9617c/pon_serdes_xgspon.bin", 0x428, 45, 0},
+};
 
 const char *rtl_pon_mode_name(enum rtl_pon_mode mode)
 {
@@ -120,7 +135,7 @@ int rtl_pon_serdes_restart_locked(struct rtl9617c_pon *pon)
 	}
 	msleep(10);
 	rtl_pon_gearbox_release(pon);
-	rtl_pon_update(pon->mac + 0xa084, BIT(0), BIT(0));
+	rtl_pon_update(pon->mac + RTL_SERDES_A084, BIT(0), BIT(0));
 	msleep(1);
 	/* Activation also starts on LOS; expose the original RX-init wait result. */
 	pon->sync_result = readl_poll_timeout(pon->mac + PSDS_STATUS, pon->serdes_status,
@@ -229,7 +244,7 @@ int rtl_pon_serdes_configure_locked(struct rtl9617c_pon *pon, enum rtl_pon_mode 
 	if (!epon) {
 		/* The GPL ITU out-of-reset sequence disables automatic LOS resets. */
 		rtl_pon_update(pon->epon_control, BIT(0), BIT(0));
-		rtl_pon_update(pon->mac + 0x1c8, BIT(31), BIT(31));
+		rtl_pon_update(pon->mac + RTL_EPON_01C8, BIT(31), BIT(31));
 	}
 	rtl_pon_update(pon->serdes_init, PSDS_POWER, PSDS_POWER);
 	msleep(100);
@@ -284,3 +299,91 @@ ssize_t rtl_pon_serdes_registers(struct rtl9617c_pon *pon, char *buf)
 	}
 	return length;
 }
+
+
+static ssize_t serdes_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+	ssize_t size;
+
+	mutex_lock(&pon->lock);
+	size = rtl_pon_serdes_state(pon, buf);
+	mutex_unlock(&pon->lock);
+	return size;
+}
+
+static ssize_t serdes_store(struct device *dev, struct device_attribute *attr,
+			   const char *buf, size_t count)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+	unsigned int mode;
+	int ret;
+
+	for (mode = 0; mode < RTL_PON_MODE_COUNT; mode++)
+		if (sysfs_streq(buf, rtl_pon_mode_name(mode)))
+			break;
+	if (mode == RTL_PON_MODE_COUNT)
+		return -EINVAL;
+	ret = rtl_pon_serdes_configure(pon, mode);
+	return ret ? ret : count;
+}
+DEVICE_ATTR_RW(serdes);
+
+static ssize_t serdes_registers_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+	ssize_t size;
+	mutex_lock(&pon->lock);
+	size = rtl_pon_serdes_registers(pon, buf);
+	mutex_unlock(&pon->lock);
+	return size;
+}
+DEVICE_ATTR_RO(serdes_registers);
+
+static ssize_t optical_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+	u32 status = readl(pon->optical_status);
+	return sysfs_emit(buf, "control=%08x status=%08x rx_los=%u module_absent=%u tx_signal_detect=%u tx_fault=%u tx_disabled=%u irq_count=%u last_irq=%08x xgpon_rogue_at0=%u xgpon_rogue_at1=%u xgpon_rogue_pending=%u\n",
+		readl(pon->optical_control), status, !!(status & BIT(3)), !!(status & BIT(2)),
+		!!(status & BIT(1)), !!(status & BIT(0)), gpiod_get_value_cansleep(pon->tx_disable),
+		pon->optical_irq_count, pon->last_optical_irq,
+		READ_ONCE(pon->xgpon_rogue_count[0]), READ_ONCE(pon->xgpon_rogue_count[1]),
+		READ_ONCE(pon->xgpon_rogue_pending));
+}
+DEVICE_ATTR_RO(optical);
+
+static ssize_t transceiver_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+
+	return rtl9617c_bosa_diagnostics(pon->bosa_dev, buf);
+}
+DEVICE_ATTR_RO(transceiver);
+
+static ssize_t bosa_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+
+	return rtl9617c_bosa_state(pon->bosa_dev, buf);
+}
+
+static ssize_t bosa_store(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
+	bool prepare;
+	int ret = kstrtobool(buf, &prepare);
+
+	if (ret)
+		return ret;
+	if (!prepare)
+		return -EINVAL;
+	mutex_lock(&pon->control_lock);
+	ret = rtl_pon_stop_locked(pon);
+	if (!ret)
+		ret = rtl9617c_bosa_prepare(pon->bosa_dev);
+	mutex_unlock(&pon->control_lock);
+	return ret ? ret : count;
+}
+DEVICE_ATTR_RW(bosa);

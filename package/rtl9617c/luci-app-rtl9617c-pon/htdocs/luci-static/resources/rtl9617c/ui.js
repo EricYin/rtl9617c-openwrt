@@ -64,10 +64,15 @@ function authentication(data) {
 		var text = !port.live ? '会话已失效' : !port.registered ? '等待注册' :
 			port.auth_state === 'accepted' && !accepted ? '等待 OAM 发现' : labels[port.auth_state] || '等待状态';
 		return E('section', { class: 'tyf-session' }, [
-			E('div', { class: 'tyf-card-head' }, [E('strong', {}, ['LLID ' + port.llid_index]), status.badge(text,
+			E('div', { class: 'tyf-card-head' }, [E('strong', {}, ['LLID ' + status.value(port.llid)]), status.badge(text,
 				accepted ? 'good' : port.live && port.registered && port.auth_state === 'rejected' ? 'danger' : 'muted')]),
 			status.rows([['注册', port.live && port.registered ? '已注册' : '未注册'],
 				['OAM 发现', port.live && port.discovery_stable ? '已完成' : '未完成'],
+				[_('认证方式'), port.auth_mode === 'mac' ? 'MAC' : port.auth_mode === 'loid' ? 'LOID' : '—'],
+				[_('认证依据'), port.auth_source === 'ctc-result' ? _('OLT 认证结果') :
+					port.auth_source === 'ctc-set-progress' ? _('OLT 配置下发（原厂判据）') : _('等待结果')],
+				[_('认证持续时间'), accepted && port.auth_duration_ms != null ?
+					Math.floor(port.auth_duration_ms / 1000) + ' ' + _('秒') : '—'],
 				['接收 / 发送帧', status.value(port.rx_frames) + ' / ' + status.value(port.tx_frames)]])
 		]);
 	})) : note('暂无 OAM 认证会话，等待逻辑链路注册。');

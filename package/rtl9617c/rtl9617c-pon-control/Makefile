@@ -23,17 +23,26 @@ define Build/Prepare
 endef
 
 RTL9617C_CARGO?=$(firstword $(wildcard $(HOME)/.cargo/bin/cargo) $(shell command -v cargo))
+# Keep the user-space code C11-clean; these are the flags used for the manual
+# syntax gate as well, so a compile-time regression fails the package build.
+PON_CFLAGS:=-std=gnu11 -Wall -Wextra -Werror -Wshadow -Wformat=2 -Wundef \
+	-Wcast-align -Wstrict-prototypes
 define Build/Compile
 	cd $(PKG_BUILD_DIR)/omci && RUSTC="$(dir $(RTL9617C_CARGO))rustc" \
 		RUSTFLAGS="-C target-cpu=cortex-a53" $(RTL9617C_CARGO) build --release --locked --target aarch64-unknown-linux-musl
-	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -Wall -Wextra -Werror \
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) $(PON_CFLAGS) \
 		-DPON_FIRMWARE_VERSION='"$(PKG_VERSION)"' \
 		$(PKG_BUILD_DIR)/pon-oamd.c $(PKG_BUILD_DIR)/pon-oam.c $(PKG_BUILD_DIR)/pon-backend.c \
+		$(PKG_BUILD_DIR)/pon-events.c \
 		$(TARGET_LDFLAGS) -luci -o $(PKG_BUILD_DIR)/pon-oamd
-	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -Wall -Wextra -Werror \
-		$(PKG_BUILD_DIR)/pon-identity.c $(TARGET_LDFLAGS) -luci -o $(PKG_BUILD_DIR)/pon-identity
-	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -Wall -Wextra -Werror \
-		$(PKG_BUILD_DIR)/pon-omcid.c $(PKG_BUILD_DIR)/omci/target/aarch64-unknown-linux-musl/release/librtl9617c_omci.a \
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) $(PON_CFLAGS) \
+		$(PKG_BUILD_DIR)/pon-identity.c $(PKG_BUILD_DIR)/pon-events.c \
+		$(PKG_BUILD_DIR)/pon-sha256.c $(TARGET_LDFLAGS) -luci -o $(PKG_BUILD_DIR)/pon-identity
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) $(PON_CFLAGS) \
+		$(PKG_BUILD_DIR)/pon-status.c $(PKG_BUILD_DIR)/pon-events.c $(TARGET_LDFLAGS) -o $(PKG_BUILD_DIR)/pon-status
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) $(PON_CFLAGS) \
+		$(PKG_BUILD_DIR)/pon-omcid.c $(PKG_BUILD_DIR)/pon-events.c \
+		$(PKG_BUILD_DIR)/omci/target/aarch64-unknown-linux-musl/release/librtl9617c_omci.a \
 		$(TARGET_LDFLAGS) -luci -lgcc_s -lpthread -lm -ldl -o $(PKG_BUILD_DIR)/pon-omcid
 endef
 
@@ -42,6 +51,7 @@ define Package/rtl9617c-pon-control/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/pon-oamd $(1)/usr/sbin/pon-oamd
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/pon-identity $(1)/usr/sbin/pon-identity
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/pon-omcid $(1)/usr/sbin/pon-omcid
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/pon-status $(1)/usr/sbin/pon-status
 	$(INSTALL_DIR) $(1)/usr/share/rtl9617c
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_DIR) $(1)/etc/config

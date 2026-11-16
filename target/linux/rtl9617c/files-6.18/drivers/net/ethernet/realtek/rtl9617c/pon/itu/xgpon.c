@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+/* XG-PON/XGS-PON preparation and the PLoam state machine. */
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -7,20 +8,21 @@
 #include <linux/slab.h>
 #include <linux/unaligned.h>
 #include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
 #include "pon/itu/xgpon_hw.h"
-#include "pon/itu/xgpon_reset.h"
 
-static unsigned int rtl_xgpon_read(void *context, unsigned int reg)
+unsigned int rtl_xgpon_read(void *context, unsigned int reg)
 {
 	return readl(((struct rtl9617c_pon *)context)->mac + reg);
 }
 
-static void rtl_xgpon_write(void *context, unsigned int reg, unsigned int value)
+void rtl_xgpon_write(void *context, unsigned int reg, unsigned int value)
 {
 	writel(value, ((struct rtl9617c_pon *)context)->mac + reg);
 }
 
-static int rtl_xgpon_indirect(void *context, unsigned int reg, unsigned int value)
+int rtl_xgpon_indirect(void *context, unsigned int reg, unsigned int value)
 {
 	struct rtl9617c_pon *pon = context;
 	u32 status;
@@ -129,15 +131,15 @@ void rtl_pon_xgpon_stop_locked(struct rtl9617c_pon *pon)
 		pon->xgpon_key_valid = 0;
 		pon->xgpon_key_state = 0;
 		pon->omci_master_key_valid = false;
-		rtl_pon_update(pon->mac + 0x4124, 3, 0);
-		rtl_pon_update(pon->mac + 0x4128, 3, 0);
+		rtl_pon_update(pon->mac + RTL_XGTC_4124, 3, 0);
+		rtl_pon_update(pon->mac + RTL_XGTC_4128, 3, 0);
 		spin_lock_bh(&pon->omci_key_lock);
 		pon->xgpon_key_ready = false;
 		spin_unlock_bh(&pon->omci_key_lock);
-		writel(0, pon->mac + 0x400c);
-		writel(0, pon->mac + 0x4d20);
-		writel(0, pon->mac + 0x4aa8);
-		writel(0, pon->mac + 0x411c);
+		writel(0, pon->mac + RTL_XGTC_400C);
+		writel(0, pon->mac + RTL_XGTC_4D20);
+		writel(0, pon->mac + RTL_XGTC_4AA8);
+		writel(0, pon->mac + RTL_XGTC_411C);
 		rtl_xgpon_active(&io, false, pon->mode == RTL_PON_XGSPON);
 		rtl_pon_update(pon->top_irq + 4, BIT(0), 0);
 		gpiod_set_value_cansleep(pon->tx_disable, 1);
@@ -158,8 +160,10 @@ int rtl_pon_xgpon_activation_locked(struct rtl9617c_pon *pon, bool enable)
 	int ret = 0;
 
 	lockdep_assert_held(&pon->control_lock);
+	pon_event_at(pon, PON_EV_XGPON_STATE, 0, (u32)enable, 0, 0);
 	if (!enable) {
 		rtl_pon_xgpon_stop_locked(pon);
+		pon_event_at(pon, PON_EV_XGPON_STATE, 1, 0, pon->xgpon_omcc_id, 0);
 		return 0;
 	}
 	mutex_lock(&pon->lock);
@@ -182,15 +186,15 @@ int rtl_pon_xgpon_activation_locked(struct rtl9617c_pon *pon, bool enable)
 	pon->xgpon_health_state = ~0U;
 	pon->xgpon_health_at = jiffies + HZ;
 	pon->xgpon_watchdog_armed = false;
-	writel(readl(pon->mac + 0x4d1c), pon->mac + 0x4d1c);
-	writel(readl(pon->mac + 0x4aa4), pon->mac + 0x4aa4);
-	writel(readl(pon->mac + 0x4118), pon->mac + 0x4118);
+	writel(readl(pon->mac + RTL_XGTC_4D1C), pon->mac + RTL_XGTC_4D1C);
+	writel(readl(pon->mac + RTL_XGTC_4AA4), pon->mac + RTL_XGTC_4AA4);
+	writel(readl(pon->mac + RTL_XGTC_4118), pon->mac + RTL_XGTC_4118);
 	/* ACTP controls activation; capture PLOAMs to maintain OMCC and its key. */
-	writel(0x0fffffff, pon->mac + 0x4d2c);
-	writel(15, pon->mac + 0x4d20);
-	writel(BIT(5) | BIT(6) | BIT(7) | BIT(30) | BIT(31), pon->mac + 0x4aa8);
-	writel(BIT(5), pon->mac + 0x411c);
-	writel(BIT(0) | BIT(2) | BIT(4), pon->mac + 0x400c);
+	writel(0x0fffffff, pon->mac + RTL_XGTC_4D2C);
+	writel(15, pon->mac + RTL_XGTC_4D20);
+	writel(BIT(5) | BIT(6) | BIT(7) | BIT(30) | BIT(31), pon->mac + RTL_XGTC_4AA8);
+	writel(BIT(5), pon->mac + RTL_XGTC_411C);
+	writel(BIT(0) | BIT(2) | BIT(4), pon->mac + RTL_XGTC_400C);
 	rtl_pon_update(pon->top_irq + 4, BIT(0), BIT(0));
 	rtl_pon_update(pon->serdes_init, BIT(4), BIT(4));
 	ret = rtl_pon_serdes_restart_locked(pon);
@@ -203,12 +207,16 @@ int rtl_pon_xgpon_activation_locked(struct rtl9617c_pon *pon, bool enable)
 		netif_carrier_off(pon->omci_device);
 		goto unlock;
 	}
-	pon->xgpon_last_state = readl(pon->mac + 0x4d30) & 7;
+	pon->xgpon_last_state = readl(pon->mac + RTL_XGTC_4D30) & 7;
 	rtl_xgpon_active(&io, true, pon->mode == RTL_PON_XGSPON);
 	msleep(1);
 	gpiod_set_value_cansleep(pon->tx_disable, 0);
 	mod_delayed_work(system_wq, &pon->xgpon_health_work, msecs_to_jiffies(100));
 unlock:
+	pon_event_at(pon, PON_EV_XGPON_STATE, 1, (u32)ret, pon->xgpon_omcc_id,
+		     (u32)pon->xgpon_activation_error);
+	pon_dbg("xgpon state exit: ret=%d omcc_id=%u\n", ret,
+		pon->xgpon_omcc_id);
 	mutex_unlock(&pon->lock);
 	return ret;
 }
@@ -217,9 +225,13 @@ void rtl_pon_xgpon_optical_irq(struct rtl9617c_pon *pon, u32 events)
 {
 	u32 now, elapsed;
 
+	pon_event_at(pon, PON_EV_IRQ, 0, 3, events, pon->xgpon_irq_count);
+
 	lockdep_assert_held(&pon->lock);
-	if (!pon->xgpon_enabled || (events & BIT(0)) || !(events & (BIT(8) | BIT(9))))
+	if (!pon->xgpon_enabled || (events & BIT(0)) || !(events & (BIT(8) | BIT(9)))) {
+		pon_event_at(pon, PON_EV_IRQ, 2, 3, events, pon->xgpon_irq_count);
 		return;
+	}
 	now = jiffies_to_msecs(jiffies);
 	elapsed = now - pon->xgpon_rogue_last_ms;
 	pon->xgpon_rogue_last_ms = now;
@@ -233,276 +245,9 @@ void rtl_pon_xgpon_optical_irq(struct rtl9617c_pon *pon, u32 events)
 	/* Original optical worker rearms detection after either interval outcome. */
 	rtl_pon_update(pon->optical_control, BIT(1), 0);
 	rtl_pon_update(pon->optical_control, BIT(1), BIT(1));
+	pon_event_at(pon, PON_EV_IRQ, 1, 3, events, pon->xgpon_irq_count);
 }
 
-static int rtl_xgpon_mac_restart_locked(struct rtl9617c_pon *pon, bool phy)
-{
-	const struct rtl_dq_io io = {pon, rtl_xgpon_read, rtl_xgpon_write, rtl_xgpon_indirect};
-	struct rtl_xgpon_mac_saved *saved;
-	const char *stage = "snapshot";
-	u32 control, gpon;
-	int ret;
-
-	lockdep_assert_held(&pon->control_lock);
-	lockdep_assert_held(&pon->lock);
-	saved = NULL;
-	ret = rtl_pon_itu_paths_invalidate(pon, pon->mode);
-	if (ret)
-		goto free;
-	saved = kvmalloc(sizeof(*saved), GFP_KERNEL);
-	if (!saved) {
-		ret = -ENOMEM;
-		goto free;
-	}
-	pon->xgpon_enabled = false;
-	rtl_pon_dying_gasp_stop(pon);
-	pon->itu_line_epoch++;
-	pon->xgpon_omcc_ready = false;
-	pon->omci_master_key_valid = false;
-	pon->xgpon_key_valid = 0;
-	pon->xgpon_key_state = 0;
-	spin_lock_bh(&pon->omci_key_lock);
-	pon->xgpon_key_ready = false;
-	spin_unlock_bh(&pon->omci_key_lock);
-	netif_carrier_off(pon->omci_device);
-	saved->puc.ni_enable = rtl9617c_ni_pon_gate(pon->ni_dev, 0);
-	saved->puc.mac = readl(pon->mac + 0x4004);
-	saved->puc.burst = readl(pon->serdes_init) & BIT(4);
-	saved->puc.laser = readl(pon->mac + 0x4600) & BIT(2);
-	saved->puc.to1 = readl(pon->mac + 0x4d0c);
-	saved->puc.to2 = readl(pon->mac + 0x4d10);
-	if (pon->xgpon_restore_pending) {
-		for (unsigned int i = 0; i < 8; i++)
-			writel(pon->xgpon_puc_saved.valid[i], pon->mac + 0x81bc - i * 4);
-		pon->xgpon_restore_pending = false;
-	}
-	if (!(readl(pon->mac + 0xa064) & BIT(15)))
-		rtl_pon_update(pon->serdes_init, BIT(4), 0);
-	rtl_xgpon_active(&io, false, pon->mode == RTL_PON_XGSPON);
-	udelay(500);
-	ret = rtl_xgpon_mac_save(&io, saved);
-	if (ret)
-		goto ungate;
-	stage = "reset";
-	writel(0, pon->mac + 0x400c);
-	rtl_pon_update(pon->top_irq + 4, BIT(0), 0);
-	control = readl(pon->control) & ~0x300U;
-	gpon = readl(pon->gpon_control) & ~7U;
-	writel(gpon, pon->gpon_control);
-	writel(control, pon->control);
-	msleep(1);
-	if (phy) {
-		ret = rtl_pon_serdes_restart_locked(pon);
-		pon->serdes_error = ret;
-		if (ret)
-			goto ungate;
-	}
-	writel(gpon | 5, pon->gpon_control);
-	writel(control | 0x300, pon->control);
-	msleep(1);
-	rtl_xgpon_mac_parameters(&io, pon->mode == RTL_PON_XGSPON);
-	rtl_xgpon_identity(&io, pon->xgpon_serial, pon->xgpon_registration);
-	pon->mac_prepared = true;
-	pon->puc_configured = false;
-	pon->pdc_configured = false;
-	stage = "datapath initialization";
-	ret = __rtl_pon_pdc_configure(pon);
-	if (!ret)
-		ret = __rtl_pon_puc_configure(pon);
-	if (ret)
-		goto ungate;
-	stage = "configuration restore";
-	ret = rtl_xgpon_mac_restore(&io, saved);
-	if (ret)
-		goto ungate;
-	memcpy(pon->xgpon_puc_saved.valid, saved->puc.valid, sizeof(saved->puc.valid));
-	pon->xgpon_restore_pending = true;
-	pon->xgpon_restore_at = 0;
-	writel(0x1007f, pon->mac + 0x402c);
-	rtl_xgpon_random_load(&io, get_random_u32());
-	writel(0x0fffffff, pon->mac + 0x4d28);
-	writel(0x0fffffff, pon->mac + 0x4d2c);
-	writel(readl(pon->mac + 0x4d1c), pon->mac + 0x4d1c);
-	writel(readl(pon->mac + 0x4aa4), pon->mac + 0x4aa4);
-	writel(readl(pon->mac + 0x4118), pon->mac + 0x4118);
-	writel(15, pon->mac + 0x4d20);
-	writel(BIT(5) | BIT(6) | BIT(7) | BIT(30) | BIT(31), pon->mac + 0x4aa8);
-	writel(BIT(5), pon->mac + 0x411c);
-	writel(BIT(0) | BIT(2) | BIT(4), pon->mac + 0x400c);
-	rtl_pon_update(pon->top_irq + 4, BIT(0), BIT(0));
-	rtl_pon_update(pon->mac + 0x4600, BIT(2), saved->puc.laser);
-	writel(saved->puc.to1, pon->mac + 0x4d0c);
-	writel(saved->puc.to2, pon->mac + 0x4d10);
-	writel(saved->puc.mac, pon->mac + 0x4004);
-	if (saved->puc.burst)
-		udelay(500);
-	rtl_pon_update(pon->serdes_init, BIT(4), saved->puc.burst);
-	pon->xgpon_enabled = true;
-	pon->xgpon_last_state = readl(pon->mac + 0x4d30) & 7;
-	pon->xgpon_health_state = ~0U;
-	pon->xgpon_pending_valid = false;
-	pon->xgpon_mac_resets++;
-ungate:
-	rtl9617c_ni_pon_gate(pon->ni_dev, saved->puc.ni_enable);
-free:
-	if (ret)
-		dev_err(pon->dev, "XGTC MAC recovery failed at %s: %d\n", stage, ret);
-	kvfree(saved);
-	return ret;
-}
-
-/* Original one-second O1/O23/O5 checks; a reset reason is retained for diagnosis. */
-static unsigned int rtl_xgpon_health_check(struct rtl9617c_pon *pon, u32 state)
-{
-	u32 grants, sn, fec, delta, optical;
-
-	if (pon->xgpon_health_state != state) {
-		pon->xgpon_health_state = state;
-		pon->xgpon_health_grants = 0;
-		pon->xgpon_health_matches = 0;
-		pon->xgpon_health_no_grants = 0;
-		return 0;
-	}
-	if (!state) {
-		optical = readl(pon->optical_status);
-		if (optical & (BIT(3) | BIT(2))) {
-			pon->xgpon_health_matches = 0;
-			return 0;
-		}
-		fec = readl(pon->mac + 0x4d98);
-		pon->xgpon_health_fec += fec;
-		if (fec > 0x2000 &&
-		    (readl(pon->mac + 0x452c) & 7) != 3) {
-			if (++pon->xgpon_health_matches >= 3)
-				return 1;
-		} else {
-			pon->xgpon_health_matches = 0;
-		}
-	} else if (state == 1) {
-		grants = readl(pon->mac + 0x4860);
-		sn = readl(pon->mac + 0x4c50);
-		pon->xgpon_health_sn += sn;
-		if (grants == pon->xgpon_health_grants) {
-			if (++pon->xgpon_health_no_grants >= 20)
-				return 2;
-		} else {
-			pon->xgpon_health_no_grants = 0;
-			if (!sn && pon->xgpon_health_grants)
-				pon->xgpon_health_matches++;
-			else
-				pon->xgpon_health_matches = 0;
-			pon->xgpon_health_grants = grants;
-		}
-		if (pon->xgpon_health_matches >= 2)
-			return 3;
-	} else if (state == 3) {
-		grants = readl(pon->mac + 0x4860);
-		delta = grants > pon->xgpon_health_grants ? grants - pon->xgpon_health_grants :
-			pon->xgpon_health_grants - grants;
-		pon->xgpon_health_grants = grants;
-		if (delta > 32)
-			pon->xgpon_health_matches = 0;
-		else if (++pon->xgpon_health_matches >= 5)
-			return 4;
-	} else {
-		pon->xgpon_health_matches = 0;
-		pon->xgpon_health_no_grants = 0;
-	}
-	return 0;
-}
-
-void rtl_pon_xgpon_health(struct work_struct *work)
-{
-	struct rtl9617c_pon *pon = container_of(to_delayed_work(work), struct rtl9617c_pon, xgpon_health_work);
-	const struct rtl_dq_io io = {pon, rtl_xgpon_read, rtl_xgpon_write, rtl_xgpon_indirect};
-	u32 state, ready, reason = 0;
-	int ret;
-
-	mutex_lock(&pon->control_lock);
-	mutex_lock(&pon->lock);
-	if (!pon->xgpon_enabled)
-		goto unlock;
-	if (pon->xgpon_rogue_pending) {
-		pon->xgpon_rogue_pending = false;
-		rtl_pon_dying_gasp_stop(pon);
-		netif_carrier_off(pon->omci_device);
-		msleep(1);
-		rtl_pon_update(pon->serdes_init, BIT(4), BIT(4));
-		ret = rtl_pon_serdes_restart_locked(pon);
-		pon->serdes_error = ret;
-		if (ret)
-			goto stop;
-		rtl_xgpon_active(&io, true, pon->mode == RTL_PON_XGSPON);
-		rtl_pon_update(pon->mac + 0x4d00, BIT(0), BIT(0));
-		rtl_pon_update(pon->mac + 0x4d30, 7, 5);
-		rtl_pon_update(pon->mac + 0x4d00, BIT(0), 0);
-		rtl_pon_itu_carrier(pon);
-	}
-	if (pon->xgpon_recover)
-		goto reschedule;
-	state = readl(pon->mac + 0x4d30) & 7;
-	if (pon->xgpon_restore_pending) {
-		if (state < 3) {
-			pon->xgpon_restore_at = 0;
-		} else if (!pon->xgpon_restore_at && state == 3) {
-			for (unsigned int i = 1; i < 32; i++) {
-				u32 word = pon->xgpon_restore_tcont[i];
-
-				if (!(word & BIT(24)))
-					continue;
-				ret = rtl_xgpon_tcont_set(&io, i, word & 0x3fff, false, true);
-				if (ret) {
-					dev_err(pon->dev, "XGTC T-CONT restore failed index=%u: %d\n", i, ret);
-					goto stop;
-				}
-			}
-			pon->xgpon_restore_at = jiffies + msecs_to_jiffies(3000);
-		} else if (pon->xgpon_restore_at && time_after_eq(jiffies, pon->xgpon_restore_at)) {
-			for (unsigned int i = 0; i < 8; i++)
-				writel(pon->xgpon_puc_saved.valid[i], pon->mac + 0x81bc - i * 4);
-			pon->xgpon_restore_pending = false;
-			rtl_pon_itu_carrier(pon);
-		}
-	}
-	if (pon->xgpon_watchdog_armed) {
-		for (unsigned int i = 0; i < 20; i++) {
-			ready = readl(pon->mac + 0x4afc);
-			if (!(ready & BIT(31)))
-				break;
-		}
-		if (ready & BIT(31))
-			reason = 5;
-	}
-	if (!reason && time_after_eq(jiffies, pon->xgpon_health_at)) {
-		pon->xgpon_health_at = jiffies + HZ;
-		reason = rtl_xgpon_health_check(pon, state);
-	}
-	if (reason) {
-		pon->xgpon_reset_reason = reason;
-		dev_err(pon->dev, "XGTC hardware stalled reason=%u ACTP=%08x grants=%08x PLOAM_TX=%08x\n",
-			reason, readl(pon->mac + 0x4d30), readl(pon->mac + 0x4860), readl(pon->mac + 0x4afc));
-		ret = rtl_xgpon_mac_restart_locked(pon, reason != 5);
-		pon->xgpon_activation_error = ret;
-		if (ret)
-			goto stop;
-	}
-reschedule:
-	schedule_delayed_work(&pon->xgpon_health_work, msecs_to_jiffies(100));
-	goto unlock;
-stop:
-	pon->xgpon_activation_error = ret;
-	pon->xgpon_enabled = false;
-	rtl_pon_dying_gasp_stop(pon);
-	pon->mac_prepared = false;
-	rtl_xgpon_active(&io, false, pon->mode == RTL_PON_XGSPON);
-	rtl_pon_update(pon->serdes_init, BIT(4), 0);
-	gpiod_set_value_cansleep(pon->tx_disable, 1);
-	netif_carrier_off(pon->omci_device);
-	rtl_pon_itu_carrier(pon);
-unlock:
-	mutex_unlock(&pon->lock);
-	mutex_unlock(&pon->control_lock);
-}
 
 void rtl_pon_xgpon_irq(struct rtl9617c_pon *pon)
 {
@@ -514,21 +259,24 @@ void rtl_pon_xgpon_irq(struct rtl9617c_pon *pon)
 	int ret = 0;
 
 	lockdep_assert_held(&pon->lock);
-	global = readl(pon->mac + 0x4008);
-	act = readl(pon->mac + 0x4d1c) & readl(pon->mac + 0x4d20);
-	plmp = readl(pon->mac + 0x4aa4) & readl(pon->mac + 0x4aa8);
-	dsfp = readl(pon->mac + 0x4118) & readl(pon->mac + 0x411c);
-	key_control = readl(pon->mac + 0x4ab8);
-	transitions = readl(pon->mac + 0x4d28) & readl(pon->mac + 0x4d2c);
-	state = readl(pon->mac + 0x4d30) & 7;
-	writel(act, pon->mac + 0x4d1c);
-	writel(plmp, pon->mac + 0x4aa4);
-	writel(dsfp, pon->mac + 0x4118);
-	writel(transitions, pon->mac + 0x4d28);
+	pon_event_at(pon, PON_EV_IRQ, 0, 2, 0, pon->xgpon_irq_count);
+	global = readl(pon->mac + RTL_XGTC_4008);
+	act = readl(pon->mac + RTL_XGTC_4D1C) & readl(pon->mac + RTL_XGTC_4D20);
+	plmp = readl(pon->mac + RTL_XGTC_4AA4) & readl(pon->mac + RTL_XGTC_4AA8);
+	dsfp = readl(pon->mac + RTL_XGTC_4118) & readl(pon->mac + RTL_XGTC_411C);
+	key_control = readl(pon->mac + RTL_XGTC_4AB8);
+	transitions = readl(pon->mac + RTL_XGTC_4D28) & readl(pon->mac + RTL_XGTC_4D2C);
+	state = readl(pon->mac + RTL_XGTC_4D30) & 7;
+	writel(act, pon->mac + RTL_XGTC_4D1C);
+	writel(plmp, pon->mac + RTL_XGTC_4AA4);
+	writel(dsfp, pon->mac + RTL_XGTC_4118);
+	writel(transitions, pon->mac + RTL_XGTC_4D28);
 	pon->xgpon_irq_count++;
 	pon->xgpon_last_irq = global;
-	if (!pon->xgpon_enabled)
+	if (!pon->xgpon_enabled) {
+		pon_event_at(pon, PON_EV_IRQ, 2, 2, global, pon->xgpon_irq_count);
 		return;
+	}
 	/* Original ACTP dispatch gates the laser in O7 and releases it in O23. */
 	if (state == 5)
 		gpiod_set_value_cansleep(pon->tx_disable, 1);
@@ -552,12 +300,12 @@ void rtl_pon_xgpon_irq(struct rtl9617c_pon *pon)
 		spin_lock_bh(&pon->omci_key_lock);
 		pon->xgpon_key_ready = false;
 		spin_unlock_bh(&pon->omci_key_lock);
-		rtl_pon_update(pon->mac + 0x4e00, BIT(6), BIT(6));
-		rtl_pon_update(pon->mac + 0x4124, 3, 0);
-		rtl_pon_update(pon->mac + 0x4128, 3, 0);
+		rtl_pon_update(pon->mac + RTL_XGTC_4E00, BIT(6), BIT(6));
+		rtl_pon_update(pon->mac + RTL_XGTC_4124, 3, 0);
+		rtl_pon_update(pon->mac + RTL_XGTC_4128, 3, 0);
 	}
-	status[0] = readl(pon->mac + 0x4b28);
-	status[1] = readl(pon->mac + 0x4b2c);
+	status[0] = readl(pon->mac + RTL_XGTC_4B28);
+	status[1] = readl(pon->mac + RTL_XGTC_4B2C);
 	count = rtl_xgpon_ploam_order(status[0], status[1], order);
 	/* Copy both old buffers before processing may permit a hardware refill. */
 	for (i = 0; i < count; i++)
@@ -636,81 +384,17 @@ void rtl_pon_xgpon_irq(struct rtl9617c_pon *pon)
 			transitions, plmp);
 		pon->xgpon_last_state = state;
 	}
+	pon_event_at(pon, PON_EV_IRQ, 1, 2, global, pon->xgpon_irq_count);
 }
 
-void rtl_pon_xgpon_recovery(struct work_struct *work)
+
+
+static ssize_t xgpon_identity_write(struct file *file, struct kobject *kobj,
+				    const struct bin_attribute *attr, char *buf,
+				    loff_t offset, size_t count)
 {
-	struct rtl9617c_pon *pon = container_of(to_delayed_work(work), struct rtl9617c_pon, xgpon_recovery_work);
-	const struct rtl_dq_io io = {pon, rtl_xgpon_read, rtl_xgpon_write, rtl_xgpon_indirect};
-	struct rtl_xgtc_puc_saved *saved = &pon->xgpon_puc_saved;
-	u32 status;
-	int ret = 0;
-
-	mutex_lock(&pon->control_lock);
-	mutex_lock(&pon->lock);
-	if (!pon->xgpon_recover) goto unlock;
-	if (!pon->xgpon_recovery_phase) {
-		status = readl(pon->mac + 0x4d30) & 7;
-		if (status == 3 || status == 4) {
-			pon->xgpon_recover = false;
-			goto unlock;
-		}
-		if (pon->xgpon_restore_pending) {
-			for (unsigned int i = 0; i < 8; i++)
-				writel(pon->xgpon_puc_saved.valid[i], pon->mac + 0x81bc - i * 4);
-			pon->xgpon_restore_pending = false;
-		}
-		saved->ni_enable = rtl9617c_ni_pon_gate(pon->ni_dev, 0);
-		saved->mac = readl(pon->mac + 0x4004);
-		saved->burst = readl(pon->serdes_init) & BIT(4);
-		saved->laser = readl(pon->mac + 0x4600) & BIT(2);
-		saved->to1 = readl(pon->mac + 0x4d0c);
-		saved->to2 = readl(pon->mac + 0x4d10);
-		if (!(readl(pon->mac + 0xa064) & BIT(15)))
-			rtl_pon_update(pon->serdes_init, BIT(4), 0);
-		rtl_pon_update(pon->mac + 0x4004, 3, 0);
-		udelay(500);
-		pon->xgpon_recovery_phase = 1;
-	}
-	if (pon->xgpon_recovery_phase == 1) {
-		ret = rtl_pon_itu_paths_invalidate(pon, pon->mode);
-		if (ret) goto retry;
-		ret = rtl_xgtc_puc_save(&io, saved);
-		if (ret) goto retry;
-		pon->xgpon_recovery_phase = 2;
-	}
-	if (pon->xgpon_recovery_phase == 2) {
-		for (unsigned int index = 0; index < 32; index++) {
-			ret = readl_poll_timeout(pon->mac + 0x4004, status, !(status & BIT(31)), 0, 100000);
-			if (ret) goto retry;
-			rtl_pon_update(pon->mac + 0x4004, GENMASK(28, 24) | GENMASK(11, 8) | BIT(31),
-				(index << 24) | BIT(31));
-			ret = readl_poll_timeout(pon->mac + 0x4004, status, !(status & BIT(31)), 0, 100000);
-			if (ret) goto retry;
-		}
-		rtl_pon_update(pon->control, BIT(8), 0);
-		msleep(5);
-		rtl_pon_update(pon->control, BIT(8), BIT(8));
-		msleep(5);
-		ret = __rtl_pon_puc_configure(pon);
-		if (ret) goto retry;
-		pon->xgpon_recovery_phase = 3;
-	}
-	ret = rtl_xgtc_puc_restore(&io, saved);
-	if (ret) goto retry;
-	rtl_pon_update(pon->mac + 0x4600, BIT(2), saved->laser);
-	writel(saved->to1, pon->mac + 0x4d0c);
-	writel(saved->to2, pon->mac + 0x4d10);
-	writel(saved->mac, pon->mac + 0x4004);
-	if (saved->burst) udelay(500);
-	rtl_pon_update(pon->serdes_init, BIT(4), saved->burst);
-	rtl9617c_ni_pon_gate(pon->ni_dev, saved->ni_enable);
-	pon->xgpon_recovery_phase = 0;
-retry:
-	pon->xgpon_recover = !!ret;
-	pon->xgpon_activation_error = ret;
-	if (ret) schedule_delayed_work(&pon->xgpon_recovery_work, HZ);
-unlock:
-	mutex_unlock(&pon->lock);
-	mutex_unlock(&pon->control_lock);
+	if (offset)
+		return -EINVAL;
+	return rtl_pon_xgpon_identity(dev_get_drvdata(kobj_to_dev(kobj)), buf, count);
 }
+BIN_ATTR(xgpon_identity, 0200, NULL, xgpon_identity_write, 0);

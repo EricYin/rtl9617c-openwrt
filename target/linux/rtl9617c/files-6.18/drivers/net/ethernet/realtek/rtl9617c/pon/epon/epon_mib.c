@@ -1,13 +1,17 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
-#ifndef RTL9617C_PON_PON_MIB_H
-#define RTL9617C_PON_PON_MIB_H
-#include "rtl9617c_io.h"
+// SPDX-License-Identifier: GPL-2.0-or-later
+/* EPON/NI MIB collection and the CTC PM counter projection. */
+#include <linux/device.h>
+#include <linux/io.h>
+#include <linux/unaligned.h>
+#include "pon/pon.h"
+#include "pon/pon_priv.h"
+#include "pon/pon_debug.h"
 #include "rtl9617c_ni.h"
-
+#include "pon/epon/epon.h"
 #define RTL_CTC_PM_COUNTERS 37
 #define RTL_EPON_MIB_COUNTERS 42
 
-static inline int rtl_epon_mib_read(const struct rtl_dq_io *io, unsigned int raw[RTL_EPON_MIB_COUNTERS])
+static int rtl_epon_mib_read(const struct rtl_dq_io *io, unsigned int raw[RTL_EPON_MIB_COUNTERS])
 {
 	unsigned int index;
 	int ret;
@@ -24,7 +28,7 @@ static inline int rtl_epon_mib_read(const struct rtl_dq_io *io, unsigned int raw
 	return 0;
 }
 
-static inline void rtl_mib_extend(unsigned long long *total, unsigned long long raw, int wide)
+static void rtl_mib_extend(unsigned long long *total, unsigned long long raw, int wide)
 {
 	if (wide)
 		*total = raw;
@@ -32,7 +36,7 @@ static inline void rtl_mib_extend(unsigned long long *total, unsigned long long 
 		*total += (unsigned int)((unsigned int)raw - (unsigned int)*total);
 }
 
-static inline void rtl_ni_mib_pm(const u64 total[RTL9617C_NI_MIB_COUNTERS],
+static void rtl_ni_mib_pm(const u64 total[RTL9617C_NI_MIB_COUNTERS],
 	unsigned long long pm[RTL_CTC_PM_COUNTERS])
 {
 	unsigned int index;
@@ -65,7 +69,7 @@ static inline void rtl_ni_mib_pm(const u64 total[RTL9617C_NI_MIB_COUNTERS],
 	pm[35] = rx[8];
 }
 
-static inline int rtl_ni_pm_read(struct device *ni, unsigned int port,
+static int rtl_ni_pm_read(struct device *ni, unsigned int port,
 	unsigned long long pm[RTL_CTC_PM_COUNTERS])
 {
 	u64 total[RTL9617C_NI_MIB_COUNTERS];
@@ -76,7 +80,7 @@ static inline int rtl_ni_pm_read(struct device *ni, unsigned int port,
 	return ret;
 }
 
-static inline void rtl_epon_mib_pm(unsigned long long total[RTL_EPON_MIB_COUNTERS],
+static void rtl_epon_mib_pm(unsigned long long total[RTL_EPON_MIB_COUNTERS],
 	const unsigned int raw[RTL_EPON_MIB_COUNTERS], unsigned long long pm[RTL_CTC_PM_COUNTERS])
 {
 	unsigned int index;
@@ -112,4 +116,47 @@ static inline void rtl_epon_mib_pm(unsigned long long total[RTL_EPON_MIB_COUNTER
 	pm[34] = rx[2];
 	pm[35] = tx[2];
 }
-#endif
+
+
+int rtl_pon_epon_pm(struct rtl9617c_pon *pon, unsigned long long counters[37])
+{
+	const struct rtl_dq_io io = {pon, rtl_crypto_read, rtl_crypto_write, rtl_crypto_indirect};
+	unsigned int raw[RTL_EPON_MIB_COUNTERS];
+	int ret;
+
+	lockdep_assert_held(&pon->lock);
+	if (!rtl_pon_mode_is_epon(pon->mode))
+		return -EOPNOTSUPP;
+	if (!pon->mac_prepared)
+		return -EAGAIN;
+	ret = rtl_epon_mib_read(&io, raw);
+	if (!ret)
+		rtl_epon_mib_pm(pon->epon_mib_total, raw, counters);
+	return ret;
+}
+
+#define RTL_PON_PM_RECORD_BYTES (8 + 37 * 8)
+static ssize_t pm_counters_read(struct file *file, struct kobject *kobj,
+	const struct bin_attribute *attr, char *buf, loff_t offset, size_t count)
+{
+	struct rtl9617c_pon *pon = dev_get_drvdata(kobj_to_dev(kobj));
+	unsigned long long counters[37];
+	unsigned int port = offset / RTL_PON_PM_RECORD_BYTES;
+	int ret;
+
+	if (port >= 5 || offset % RTL_PON_PM_RECORD_BYTES || count < RTL_PON_PM_RECORD_BYTES)
+		return -EINVAL;
+	mutex_lock(&pon->control_lock);
+	mutex_lock(&pon->lock);
+	ret = port ? rtl_ni_pm_read(pon->ni_dev, pon->uni_ports[port - 1],
+		counters) : rtl_pon_epon_pm(pon, counters);
+	if (!ret) {
+		put_unaligned_be64(port ? 0 : pon->epon_mib_generation, buf);
+		for (unsigned int i = 0; i < 37; i++)
+			put_unaligned_be64(counters[i], buf + 8 + i * 8);
+	}
+	mutex_unlock(&pon->lock);
+	mutex_unlock(&pon->control_lock);
+	return ret ?: RTL_PON_PM_RECORD_BYTES;
+}
+BIN_ATTR(pm_counters, 0400, pm_counters_read, NULL, 5 * RTL_PON_PM_RECORD_BYTES);

@@ -1,10 +1,15 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+
+/* GPON register primitives: gpon.c and the ITU data path both drive them and
+
+ * each helper is a couple of MMIO accesses. */
+
 #ifndef RTL9617C_PON_ITU_GPON_HW_H
 #define RTL9617C_PON_ITU_GPON_HW_H
 
+
 #include <linux/errno.h>
 #include "rtl9617c_io.h"
-
 #define RTL_GPON_PLOAM_BYTES 13
 
 static inline unsigned int rtl_gpon_be32(const unsigned char *bytes)
@@ -153,4 +158,5 @@ static inline int rtl_gpon_upstream_gem_set(const struct rtl_dq_io *io,
 	io->write(io->context, 0x6174, (io->read(io->context, 0x6174) & ~4095U) | gem_id);
 	return io->indirect(io->context, 0x6170, 0xc0000000U | index);
 }
+
 #endif

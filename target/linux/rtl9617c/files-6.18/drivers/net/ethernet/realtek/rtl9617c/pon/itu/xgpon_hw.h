@@ -1,9 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+
+/* XGTC register primitives shared by xgpon.c, xgpon_recovery.c,
+
+ * xgpon_health.c, omci.c and the ITU data path. */
+
 #ifndef RTL9617C_PON_ITU_XGPON_HW_H
 #define RTL9617C_PON_ITU_XGPON_HW_H
 
-#include "rtl9617c_io.h"
 
+#include "rtl9617c_io.h"
 #define RTL_XGPON_PLOAM_BYTES 48
 #define RTL_XGPON_PLOAM_TX_BYTES 40
 #define RTL_XGPON_ALLOC_ID_INVALID 0xbaadU /* Original ASIC invalid Alloc-ID. */
@@ -292,4 +297,12 @@ static inline void rtl_xgpon_ploam_transmit(const struct rtl_dq_io *io,
 	word = (io->read(io->context, 0x4afc) & ~1U) | (default_key ? 1U : 0);
 	io->write(io->context, 0x4afc, word | 0x80000000U);
 }
+
+void rtl_xgtc_restart_sync(const struct rtl_dq_io *io);
+int rtl_xgpon_mac_restart_locked(struct rtl9617c_pon *pon, bool phy);
+
+unsigned int rtl_xgpon_read(void *context, unsigned int reg);
+void rtl_xgpon_write(void *context, unsigned int reg, unsigned int value);
+int rtl_xgpon_indirect(void *context, unsigned int reg, unsigned int value);
+
 #endif

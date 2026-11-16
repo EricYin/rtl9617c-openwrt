@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Native EPON PUC scheduler and queues, from GPL aal_puc.c. */
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/io.h>

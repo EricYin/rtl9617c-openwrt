@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Register ranges, MPIDRs and reservations verified against the stock DTB:
-// 5124f860df3bcd2e20b87d058e19b1ddfdc7a46c9d876663ba9feeff5a0f13ac.
+
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 
 / {
@@ -11,6 +10,7 @@
 	cpus {
 		#address-cells = <2>;
 		#size-cells = <0>;
+
 		cpu0: cpu@0 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a55";
@@ -20,6 +20,7 @@
 			clock-names = "cpu";
 			operating-points-v2 = <&cpu_opp>;
 		};
+
 		cpu1: cpu@100 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a55";
@@ -29,6 +30,7 @@
 			clock-names = "cpu";
 			operating-points-v2 = <&cpu_opp>;
 		};
+
 		cpu2: cpu@200 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a55";
@@ -38,6 +40,7 @@
 			clock-names = "cpu";
 			operating-points-v2 = <&cpu_opp>;
 		};
+
 		cpu3: cpu@300 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a55";
@@ -52,6 +55,7 @@
 	cpu_opp: opp-table-cpu {
 		compatible = "operating-points-v2";
 		opp-shared;
+
 		opp-400000000 {
 			opp-hz = /bits/ 64 <400000000>;
 		};
@@ -251,6 +255,7 @@
 			#size-cells = <0>;
 			status = "disabled";
 		};
+
 		gpio0: gpio@4f43292c0 {
 			compatible = "realtek,rtl9617c-gpio";
 			reg = <4 0xf43292c0 0 0xb4>;
@@ -274,14 +279,16 @@
 			compatible = "realtek,rtl9617c-pon";
 			reg = <4 0xf5500000 0 0xc000>, <4 0xf4320094 0 4>,
 			      <4 0xf4320074 0 4>, <4 0xf432022c 0 4>,
-			      <4 0xf4320080 0 8>, <4 0xf4320090 0 4>, <4 0xf4320180 0 8>, <4 0xf432007c 0 4>,
+			      <4 0xf4320080 0 8>, <4 0xf4320090 0 4>,
+			      <4 0xf4320180 0 8>, <4 0xf432007c 0 4>,
 			      <4 0xf4329440 0 0x10>;
-			reg-names = "mac", "control", "epon-control", "serdes-init", "optical-control", "optical-status", "top-irq", "gpon-control", "dying-gasp";
+			reg-names = "mac", "control", "epon-control", "serdes-init",
+				    "optical-control", "optical-status", "top-irq",
+				    "gpon-control", "dying-gasp";
 			interrupts-extended = <&ne_irq 5>, <&per_ictl 24>;
 			interrupt-names = "pon", "dying-gasp";
 			realtek,network-engine = <&ni>;
 			status = "disabled";
 		};
-
 	};
 };

@@ -1,10 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Native RTL9617C spi-mem PIO driver, single chip select / single data lane.
- * Register and Taurus transaction reference: Cortina Access Inc. 2020,
- * GPL-2.0+ spi-cortina-qspi.c in GPL-for-GP3000 at
- * 5090fbcb6ba743dd7b1314811ef557bad0460147. Not a vendor-kernel wrapper.
- */
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/ktime.h>
@@ -40,10 +34,6 @@ static int rtl_qspi_kick(struct rtl_qspi *qspi, bool out)
 	ktime_t timeout;
 
 	writel(BUSY_START | (out ? BUSY_WRITE : 0), qspi->base + BUSY);
-	// One kick moves at most 4 bytes, and the GPL ca_qspi_wait_{rd,wr}_cmd
-	// spin on BUSY without delay. A sleeping poll turned every word into an
-	// hrtimer sleep and dominated UBI attach time. Bound the spin by wall
-	// clock: a zero-delay read_poll_timeout_atomic() counts iterations.
 	timeout = ktime_add_us(ktime_get(), 100000);
 	for (;;) {
 		if (!(readl(qspi->base + BUSY) & BUSY_MASK))
@@ -81,8 +71,6 @@ static int rtl_qspi_data(struct rtl_qspi *qspi, const struct spi_mem_op *op)
 	u32 ext, word;
 	int ret = 0;
 
-	// COUNT-1, including wrap for absent address/dummy, follows the Taurus
-	// SDK encoding. EXT_ACCESS holds the FULL data length, not a 4-byte chunk.
 	ext = op->cmd.opcode | EXT_ENABLE |
 	      (((op->addr.nbytes - 1) & 7) << 21) |
 	      (((op->dummy.nbytes * 8 - 1) & 63) << 24) |
@@ -117,8 +105,6 @@ static int rtl_qspi_data(struct rtl_qspi *qspi, const struct spi_mem_op *op)
 		}
 		offset += n;
 	}
-	// Always release burst CS, including on timeout; do not leave a partial
-	// command live while the caller handles a failed transaction.
 	if (burst)
 		writel(ACCESS_EXT | ACCESS_TERM, qspi->base + ACCESS);
 	writel(0, qspi->base + ACCESS);
@@ -141,9 +127,6 @@ static int rtl_qspi_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 	       qspi->base + ACCESS);
 	if (op->addr.nbytes)
 		writel(op->addr.val, qspi->base + ADDR);
-	// Taurus issues command-only/address-only operations with WR_ACCESS clear,
-	// including RESET and PAGE_READ. WR_ACCESS describes a data phase, not
-	// whether the command changes chip state. Match the GPL Taurus sequence.
 	ret = rtl_qspi_kick(qspi, false);
 	if (!ret)
 		udelay(10);
@@ -180,8 +163,6 @@ static int rtl_qspi_probe(struct platform_device *pdev)
 	ctlr->bits_per_word_mask = SPI_BPW_MASK(8);
 	ctlr->mem_ops = &rtl_qspi_mem_ops;
 	ctlr->dev.of_node = pdev->dev.of_node;
-	// Do not invent/program QSPI frequency, pinmux, reset or ECC. The NAND
-	// core selects JEDEC geometry and chip-specific on-die ECC support.
 	dev_info(&pdev->dev, "native SPI-mem PIO\n");
 	return devm_spi_register_controller(&pdev->dev, ctlr);
 }

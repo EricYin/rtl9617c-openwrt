@@ -10,8 +10,6 @@ struct rtl_xgpon_mac_saved {
 	unsigned int upstream[256], downstream[256], pdc[256][2];
 };
 
-/* Original backup_ponmac covers GEM maps as well as the PUC scheduler state.
- * PDC additionally retains the native CPU/FE delivery policy across its reset. */
 static inline int rtl_xgpon_mac_save(const struct rtl_dq_io *io,
 		struct rtl_xgpon_mac_saved *saved)
 {

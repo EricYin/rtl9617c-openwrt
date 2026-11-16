@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Native Taurus pinmux, from GPL Cortina pinctrl and the stock stock DT. */
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Raw OMCI transport through the board's NI/PUC management container. */
 #include <linux/if_arp.h>
 #include <linux/netdevice.h>
 #include <linux/unaligned.h>

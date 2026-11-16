@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* ITU business configuration follows original ca_gpon_port_{tcont_set,gem_port_add}. */
 #include <linux/delay.h>
 #include <linux/etherdevice.h>
 #include <linux/if_vlan.h>

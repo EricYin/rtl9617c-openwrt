@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* GPON MAC preparation; register values from this board's original ca-ne.ko. */
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>

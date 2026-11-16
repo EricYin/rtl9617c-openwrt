@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Taurus BIW I2C, native Linux adapter; Cortina/OpenCores register model. */
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>

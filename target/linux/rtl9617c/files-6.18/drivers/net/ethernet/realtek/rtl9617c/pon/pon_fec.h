@@ -4,8 +4,6 @@
 #include "pon/pon_mode.h"
 #include "rtl9617c_io.h"
 
-/* Stock aal_epon_fec_cfg_set and RTL8277C usFecState_set keep the
- * 1G encoder, payload scheduler and REPORT accounting consistent. */
 static inline void rtl_pon_fec_set(const struct rtl_dq_io *io, enum rtl_pon_mode mode, int enable)
 {
 	unsigned int value;

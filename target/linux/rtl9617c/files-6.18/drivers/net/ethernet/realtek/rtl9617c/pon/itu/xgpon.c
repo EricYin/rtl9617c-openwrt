@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* XG-PON/XGS-PON preparation from this board's original XGTC initializers. */
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>

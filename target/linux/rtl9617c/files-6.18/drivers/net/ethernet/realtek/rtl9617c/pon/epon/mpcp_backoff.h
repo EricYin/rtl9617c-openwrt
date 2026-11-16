@@ -16,9 +16,6 @@ struct rtl_mpcp_io {
 	void (*write)(void *context, unsigned int reg, unsigned int value);
 };
 
-/* PKT_FLAG has no MAC index. Silence the shared registration engine; the
- * Stock driver only establishes NACK ownership for LLID0. Event gating avoids
- * extending the deadline every time a sticky register_flag is polled. */
 static inline int rtl_mpcp_backoff_event(struct rtl_mpcp_backoff *state,
 	const struct rtl_mpcp_io *io, unsigned int irq, unsigned long now,
 	unsigned long period)

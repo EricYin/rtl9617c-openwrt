@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Native EPON MAC/PCS/FEC setup, from GPL aal_epon_mac.c/aal_epon_fec.c. */
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -89,9 +88,6 @@ int rtl_pon_epon_tx_control(struct rtl9617c_pon *pon, const u8 *data, size_t cou
 	else if (get_unaligned_be64(data + 1) != pon->epon_llid_epoch[channel])
 		ret = -ESTALE;
 	else {
-		/* Stock actions: 0 resumes, 0xffff inhibits indefinitely, otherwise
-		 * inhibit for N seconds. The shared timer always follows the latest
-		 * command, including when an older worker is already waiting. */
 		pon->epon_tx_action = action;
 		ret = rtl_epon_tx_apply(pon);
 		if (action && action != 0xffff) {

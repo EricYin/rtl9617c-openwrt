@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Stock CPU clock, rewritten from its stock 5.10.70 clock operations.
- * CPLL also parents CPU trace. FPLL, PE and AXI controls stay untouched.
- */
 #include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>

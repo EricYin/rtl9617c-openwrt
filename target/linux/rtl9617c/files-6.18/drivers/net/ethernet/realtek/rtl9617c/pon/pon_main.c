@@ -1,9 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Native Taurus PON platform binding and MAC state observation.
- * Register definitions: GPL Cortina-Access 2015 aal_pon.c/aal_mpcp.c,
- * Realtek Taurus register header, and the stock stock DTB NI resources.
- */
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/io.h>

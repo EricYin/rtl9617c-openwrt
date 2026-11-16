@@ -1,10 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Native PON SerDes initialization for Taurus EPON and ITU modes.
- * Sequence: Cortina-Access 2015 GPL-2.0+ aal_psds.c, checked against
- * Stock V1.0.5 ca-ne.ko aal_psds_{init,out_of_reset} machine code.
- * Register parameter firmware is generated from this device's stock tables.
- */
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>

@@ -1,5 +1,4 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Semtech MCU calibration sequence, checked against the stock rtkbosa ELF. */
 #ifndef RTL9617C_BOSA_SEQ_H
 #define RTL9617C_BOSA_SEQ_H
 

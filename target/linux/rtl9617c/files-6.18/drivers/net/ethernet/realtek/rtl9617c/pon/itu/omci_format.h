@@ -5,7 +5,6 @@
 #define RTL_OMCI_PREFIX_BYTES 16
 #define RTL_OMCI_MAX_BODY 1980
 
-/* Original ca_generate_msk -> ca_generate_sk, with Class332 MSK replacement. */
 static inline int rtl_omci_session_key(void *context,
 	int (*cmac)(void *, const unsigned char *, const unsigned char *, unsigned int, unsigned char *),
 	const unsigned char serial[8], const unsigned char registration[36],
@@ -43,7 +42,6 @@ static inline int rtl_omci_derive_key(void *context,
 	return ret;
 }
 
-/* Userspace supplies the OMCI body; the transport appends CRC/MIC. */
 static inline unsigned int rtl_omci_body_length(const unsigned char *data,
 					       unsigned int length)
 {

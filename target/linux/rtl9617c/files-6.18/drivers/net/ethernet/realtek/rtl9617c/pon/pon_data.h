@@ -2,9 +2,6 @@
 #ifndef RTL9617C_PON_PON_DATA_H
 #define RTL9617C_PON_PON_DATA_H
 
-/* PDC address low6 identifies an LLID table entry, not necessarily its MAC
- * instance. A valid unicast entry supplies its actual MAC index in bits28:24.
- * Multicast LLIDs enter the primary business interface. */
 static inline unsigned int rtl_pon_data_source(unsigned int index, unsigned int entry)
 {
 	if ((entry & (1U << 23)) && !(entry & (1U << 22)))

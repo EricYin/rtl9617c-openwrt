@@ -1,11 +1,19 @@
-#!/bin/sh
-# SPDX-License-Identifier: GPL-2.0-only
+#
+# Copyright (C) 2015 OpenWrt.org
+#
+
 . /lib/functions/uci-defaults.sh
 
 board_config_update
 
-ucidef_set_led_netdev "lan2" "LAN2" "LED_EPHY1" "lan2"
-ucidef_set_led_netdev "lan3" "LAN3" "LED_EPHY2" "lan3"
-ucidef_set_led_netdev "lan4" "LAN4" "LED_EPHY3" "lan4"
+board=$(board_name)
+
+case "$board" in
+youhua,pt1500-h10-2p5g)
+    ucidef_set_led_netdev "wan" "WAN" "LED_PPP_G" "pppoe-wan"
+	;;
+esac
 
 board_config_flush
+
+exit 0

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Native GPON/XGTC control IO, verified against stock ca-ne.ko. */
 #include <linux/bitfield.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>

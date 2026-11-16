@@ -4,9 +4,6 @@
 
 #include "rtl9617c_io.h"
 
-/* RTL8277C dal_ponmac initialization + stock stock aal_puc_voq_bp_remap:
- * PUC0..127 feedback targets NI queues64..191; upper control queues have no
- * deep-Q feedback. Preserve the DATA register's unrelated upper 24 bits. */
 static inline int rtl_pon_queue_backpressure(const struct rtl_dq_io *io)
 {
 	unsigned int queue;

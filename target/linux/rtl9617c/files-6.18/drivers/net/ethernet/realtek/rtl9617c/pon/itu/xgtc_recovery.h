@@ -3,7 +3,6 @@
 #define RTL9617C_PON_ITU_XGTC_RECOVERY_H
 #include "pon/itu/itu_puc.h"
 
-/* Stock aal_xgpon_backup_puc/restore_puc and the actual AAL setters. */
 struct rtl_xgtc_puc_saved {
 	unsigned int ni_enable, mac, burst, laser, to1, to2;
 	unsigned int control[5], limit_select[16], limit[3], valid[8];
@@ -16,7 +15,6 @@ static const unsigned int rtl_xgtc_control_masks[5] = {0x7fe07f7f, 0x7fff, 0x078
 static inline void rtl_xgtc_restart_sync(const struct rtl_dq_io *io)
 {
 	unsigned int status = io->read(io->context, 0x4d30), state = status & 7;
-	/* Original clock-sequence reset applies only in O1/O8 sub-state1. */
 	if ((state == 0 || state == 6) && (status & (1U << 4)))
 		io->write(io->context, 0x4d30, (status & ~(3U << 16)) | (1U << 16));
 }
@@ -73,7 +71,6 @@ static inline int rtl_xgtc_puc_restore(const struct rtl_dq_io *io, const struct 
 		unsigned int credit[5] = {0};
 		ret = rtl_xgtc_table_restore(io, 0x8000, 0x8014, i, saved->pvt[i], pvt_mask, 5);
 		if (ret) return ret;
-		/* Seed fresh scheduler credits from weights, as original restore_puc. */
 		for (unsigned int q = 0; q < 8; q++) {
 			unsigned int weight = q < 2 ? saved->pvt[i][2] >> (16 + q * 8) :
 				q < 6 ? saved->pvt[i][3] >> ((q - 2) * 8) : saved->pvt[i][4] >> ((q - 6) * 8);

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Native AF_PACKET EPON OAM transport, from RTL8277C GPL EPON DAL. */
 #include <linux/etherdevice.h>
 #include <linux/io.h>
 #include <linux/netdevice.h>

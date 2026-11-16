@@ -4,7 +4,6 @@
 
 #define RTL_OAM_PREFIX_BYTES 16
 
-/* RTL8277C EPON DAL: PUC strips this internal Ethernet container. */
 static inline void rtl_oam_prefix(unsigned char *header, unsigned int llid)
 {
 	static const unsigned char value[RTL_OAM_PREFIX_BYTES] = {

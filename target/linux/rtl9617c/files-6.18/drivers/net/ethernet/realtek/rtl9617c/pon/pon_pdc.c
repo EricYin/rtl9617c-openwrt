@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Native PON downstream map; GPL aal_pdc.c and software CPU forwarding. */
 #include <linux/bitfield.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>

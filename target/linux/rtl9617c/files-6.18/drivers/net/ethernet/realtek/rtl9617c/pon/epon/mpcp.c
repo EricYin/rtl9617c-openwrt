@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Native MPCP control, LLID access and events; GPL aal_mpcp.c reference. */
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/etherdevice.h>
@@ -485,7 +484,6 @@ int rtl_pon_mpcp_configure_locked(struct rtl9617c_pon *pon)
 	pon->epon_epoch++;
 	for (channel = 0; channel < 32; channel++)
 		pon->epon_llid_epoch[channel] = pon->epon_epoch;
-	/* MPCP identity is the LLID0 MAC stored in this board's original MIB. */
 	rtl_pon_update(pon->mac + MAC_HIGH, GENMASK(15, 0), get_unaligned_be16(pon->onu_mac));
 	writel(get_unaligned_be32(pon->onu_mac + 2), pon->mac + MAC_LOW);
 	rtl_pon_update(pon->mac + LLID_MAPPING,

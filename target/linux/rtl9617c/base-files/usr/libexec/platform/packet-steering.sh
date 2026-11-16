@@ -14,6 +14,8 @@ case "$1" in
 		;;
 esac
 
-for irq in $(awk '$NF == "rtl9617c-rx0" { sub(":", "", $1); print $1 }' /proc/interrupts); do
+# The IRQ is registered with KBUILD_MODNAME, so /proc/interrupts shows the
+# module name of rtl9617c-ni.ko with '_' instead of '-'.
+for irq in $(awk '$NF == "rtl9617c_ni" { sub(":", "", $1); print $1 }' /proc/interrupts); do
 	[ -w "/proc/irq/$irq/smp_affinity" ] && echo "$ni_cpus" > "/proc/irq/$irq/smp_affinity" 2>/dev/null || true
 done

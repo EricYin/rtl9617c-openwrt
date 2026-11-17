@@ -12,10 +12,10 @@ luci="$top/feeds/luci"
 
 for p in "$(dirname "$0")"/luci-app-rtl9617c-pon/feed-patches/*.patch; do
 	printf "%-45s " "$(basename "$p")"
-	if git -C "$luci" apply --check "$p" 2>/dev/null; then
-		git -C "$luci" apply "$p"
-		echo applied
-	else
-		echo skipped
-	fi
+	git -C "$luci" apply --check "$p" || {
+		echo "does not apply" >&2
+		exit 1
+	}
+	git -C "$luci" apply "$p"
+	echo applied
 done

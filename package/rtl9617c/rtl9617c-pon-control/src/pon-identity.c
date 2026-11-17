@@ -193,25 +193,17 @@ int main(int argc, char **argv)
 	if (fd < 0) {
 		write_error = "identity interface unavailable";
 		perror("PON identity interface");
+	} else if (write(fd, identity, PON_IDENTITY_SERIAL_BYTES + password_size) !=
+		   (ssize_t)(PON_IDENTITY_SERIAL_BYTES + password_size)) {
+		write_error = "identity write failed";
+		perror("PON identity write");
+		close(fd);
+	} else if (close(fd)) {
+		write_error = "identity close failed";
+		perror("PON identity close");
 	} else {
-		ssize_t written = write(fd, identity, PON_IDENTITY_SERIAL_BYTES + password_size);
-		int close_error;
-
-		if (written != (ssize_t)(PON_IDENTITY_SERIAL_BYTES + password_size)) {
-			write_error = "identity write failed";
-			perror("PON identity write");
-			close_error = close(fd);
-		} else {
-			close_error = close(fd);
-			if (close_error) {
-				write_error = "identity close failed";
-				perror("PON identity close");
-			} else {
-				result = 0;
-				write_ok = true;
-			}
-		}
-		(void)close_error;
+		result = 0;
+		write_ok = true;
 	}
 	snprintf(detail, sizeof(detail), "serial_len=%zu source=%s password_len=%zu field=%s write=%s",
 		 strlen(argv[2]), serial_source, length, password_field,

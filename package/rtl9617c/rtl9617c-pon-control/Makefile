@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=rtl9617c-pon-control
 PKG_VERSION:=0.11.0
-PKG_RELEASE:=
+PKG_RELEASE:=1
 PKG_LICENSE:=GPL-2.0-or-later
 
 include $(INCLUDE_DIR)/package.mk
@@ -16,20 +16,21 @@ endef
 
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) ./src/* $(PKG_BUILD_DIR)/
+	$(CP) ./src/. $(PKG_BUILD_DIR)/
 	mkdir -p $(PKG_BUILD_DIR)/omci/src
 	$(CP) ./omci/Cargo.toml ./omci/Cargo.lock ./omci/LICENSE ./omci/UPSTREAM $(PKG_BUILD_DIR)/omci/
 	$(CP) ./omci/src/* $(PKG_BUILD_DIR)/omci/src/
 endef
 
 RTL9617C_CARGO?=$(firstword $(wildcard $(HOME)/.cargo/bin/cargo) $(shell command -v cargo))
-# Keep the user-space code C11-clean; these are the flags used for the manual
-# syntax gate as well, so a compile-time regression fails the package build.
+RTL9617C_RUST_TARGET?=$(ARCH)-unknown-linux-musl
+RTL9617C_RUST_CPU?=cortex-a53
 PON_CFLAGS:=-std=gnu11 -Wall -Wextra -Werror -Wshadow -Wformat=2 -Wundef \
 	-Wcast-align -Wstrict-prototypes
 define Build/Compile
 	cd $(PKG_BUILD_DIR)/omci && RUSTC="$(dir $(RTL9617C_CARGO))rustc" \
-		RUSTFLAGS="-C target-cpu=cortex-a53" $(RTL9617C_CARGO) build --release --locked --target aarch64-unknown-linux-musl
+		RUSTFLAGS="-C target-cpu=$(RTL9617C_RUST_CPU)" $(RTL9617C_CARGO) build --release --locked \
+		--target $(RTL9617C_RUST_TARGET)
 	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) $(PON_CFLAGS) \
 		-DPON_FIRMWARE_VERSION='"$(PKG_VERSION)"' \
 		$(PKG_BUILD_DIR)/pon-oamd.c $(PKG_BUILD_DIR)/pon-oam.c $(PKG_BUILD_DIR)/pon-backend.c \
@@ -41,8 +42,9 @@ define Build/Compile
 	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) $(PON_CFLAGS) \
 		$(PKG_BUILD_DIR)/pon-status.c $(PKG_BUILD_DIR)/pon-events.c $(TARGET_LDFLAGS) -o $(PKG_BUILD_DIR)/pon-status
 	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) $(PON_CFLAGS) \
+		-DPON_FIRMWARE_VERSION='"$(PKG_VERSION)"' \
 		$(PKG_BUILD_DIR)/pon-omcid.c $(PKG_BUILD_DIR)/pon-events.c \
-		$(PKG_BUILD_DIR)/omci/target/aarch64-unknown-linux-musl/release/librtl9617c_omci.a \
+		$(PKG_BUILD_DIR)/omci/target/$(RTL9617C_RUST_TARGET)/release/librtl9617c_omci.a \
 		$(TARGET_LDFLAGS) -luci -lgcc_s -lpthread -lm -ldl -o $(PKG_BUILD_DIR)/pon-omcid
 endef
 
@@ -57,12 +59,11 @@ define Package/rtl9617c-pon-control/install
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_DATA) ./files/etc/config/pon $(1)/etc/config/pon
-	$(INSTALL_BIN) ./files/usr/share/rtl9617c/rename-netdevs.uc $(1)/usr/share/rtl9617c/rename-netdevs.uc
 	$(INSTALL_BIN) ./files/pon-leds.uc $(1)/usr/share/rtl9617c/pon-leds.uc
 	$(INSTALL_DATA) ./omci/UPSTREAM $(1)/usr/share/rtl9617c/omci-UPSTREAM
 	$(INSTALL_BIN) ./files/etc/init.d/pon $(1)/etc/init.d/pon
 	$(INSTALL_BIN) ./files/etc/init.d/pon-leds $(1)/etc/init.d/pon-leds
-	$(INSTALL_BIN) ./files/etc/uci-defaults/89-rtl9617c-lan-ports $(1)/etc/uci-defaults/89-rtl9617c-lan-ports
+	$(INSTALL_BIN) ./files/usr/share/rtl9617c/rename-netdevs.uc $(1)/etc/uci-defaults/89-rtl9617c-lan-ports
 endef
 
 $(eval $(call BuildPackage,rtl9617c-pon-control))

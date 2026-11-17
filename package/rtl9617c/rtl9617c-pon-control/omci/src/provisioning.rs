@@ -67,16 +67,9 @@ pub struct ProvisioningSnapshot {
 }
 
 #[derive(Clone, Debug)]
-pub struct DataPathTableRow {
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
-}
-
-#[derive(Clone, Debug)]
 pub struct DataPathAttribute {
     pub index: u8,
     pub value: Vec<u8>,
-    pub table_rows: Vec<DataPathTableRow>,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +83,5 @@ pub struct DataPathEntity {
 pub struct DataPathGraph {
     pub configured_queues: BTreeSet<u16>,
     pub gem_queue_bindings: BTreeMap<u16, (u16, u16)>,
-    pub candidates: Vec<DataPathCandidate>,
     pub entities: Vec<DataPathEntity>,
 }

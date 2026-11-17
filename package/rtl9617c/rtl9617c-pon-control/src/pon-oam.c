@@ -28,11 +28,11 @@ static uint64_t oam_ms(void)
 	return (uint64_t)time.tv_sec * 1000 + time.tv_nsec / 1000000;
 }
 
-static uint64_t oam_monotonic_ms(void)
+static uint64_t oam_boot_ms(void)
 {
 	struct timespec time;
 
-	clock_gettime(CLOCK_MONOTONIC, &time);
+	clock_gettime(CLOCK_BOOTTIME, &time);
 	return (uint64_t)time.tv_sec * 1000 + time.tv_nsec / 1000000;
 }
 
@@ -96,7 +96,7 @@ void pon_oam_reset(struct pon_oam_session *session)
 	session->auth_source = PON_AUTH_SOURCE_NONE;
 	session->auth_set_attributes = 0;
 	session->auth_success_ms = 0;
-	session->auth_success_monotonic_ms = 0;
+	session->auth_success_boot_ms = 0;
 	session->last_type5_ms = 0;
 	session->last_type5_code = 0;
 	session->provisioning_seen = false;
@@ -343,9 +343,9 @@ static void identity_field(uint8_t *output, size_t width, const uint8_t *value, 
 uint64_t pon_oam_auth_duration_ms(const struct pon_oam_session *session, uint64_t now_ms)
 {
 	if (!session->auth_succeeded || session->auth != PON_AUTH_ACCEPTED ||
-	    now_ms < session->auth_success_monotonic_ms)
+	    now_ms < session->auth_success_boot_ms)
 		return 0;
-	return now_ms - session->auth_success_monotonic_ms;
+	return now_ms - session->auth_success_boot_ms;
 }
 
 static void auth_accept(struct pon_oam_session *session, enum pon_oam_auth_source source)
@@ -354,9 +354,9 @@ static void auth_accept(struct pon_oam_session *session, enum pon_oam_auth_sourc
 	session->auth_failure = 0;
 	session->auth_succeeded = true;
 	session->auth_source = source;
-	/* eponoamd FUN_00416460/0041649c stores CLOCK_MONOTONIC and exposes
+	/* eponoamd FUN_00416460/0041649c stores CLOCK_BOOTTIME and exposes
 	 * elapsed time, not the wall-clock time at which success happened. */
-	session->auth_success_monotonic_ms = oam_monotonic_ms();
+	session->auth_success_boot_ms = oam_boot_ms();
 	session->auth_success_ms = oam_ms();
 	session->auth_successes++;
 }
@@ -408,7 +408,7 @@ static int receive_auth(struct pon_oam_session *session, const struct pon_oam_id
 		session->auth = PON_AUTH_REJECTED;
 		session->auth_succeeded = false;
 		session->auth_success_ms = 0;
-		session->auth_success_monotonic_ms = 0;
+		session->auth_success_boot_ms = 0;
 		session->last_type5_code = PON_OAM_CTC_AUTH_REJECT;
 		session->last_type5_ms = oam_ms();
 		session->auth_failure = input[25];

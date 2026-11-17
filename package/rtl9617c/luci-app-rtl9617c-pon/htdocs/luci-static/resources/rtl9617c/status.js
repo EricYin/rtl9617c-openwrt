@@ -158,7 +158,6 @@ return baseclass.extend({
 	modes: modes, value: value, badge: badge, rows: rows, card: card,
 	temperature: temperature, voltage: voltage, power: power, opticalRows: opticalRows, bosaName: bosaName,
 	omciLive: omciLive, ponState: ponState, ponCard: ponCard, offloadCard: offloadCard,
-	// Track the CSS content independently of LuCI's version across sysupgrades.
-	style: function() { return E('link', { rel: 'stylesheet', href: L.resource('rtl9617c/status.css') + '?v=9f264a673f8f' }); },
+	style: function() { return E('link', { rel: 'stylesheet', href: L.resource('rtl9617c/status.css') }); },
 	callStatus: callStatus
 });

@@ -48,6 +48,8 @@ int pon_event_append(const char *mode, const char *event, const char *detail)
 	char old[PON_EVENTS_MAX_BYTES];
 	char temporary[64];
 	char escaped[PON_EVENTS_LINE_BYTES / 2];
+	char escaped_mode[64];
+	char escaped_event[64];
 	ssize_t line_length, old_length, written;
 	size_t kept = 0, offset = 0;
 	unsigned int lines = 0;
@@ -57,10 +59,12 @@ int pon_event_append(const char *mode, const char *event, const char *detail)
 		mode = "unknown";
 	if (!event)
 		event = "event";
+	pon_event_escape(mode, escaped_mode, sizeof(escaped_mode));
+	pon_event_escape(event, escaped_event, sizeof(escaped_event));
 	pon_event_escape(detail ? detail : "", escaped, sizeof(escaped));
 	line_length = snprintf(line, sizeof(line),
 		"{\"ts_ms\":%llu,\"mode\":\"%s\",\"event\":\"%s\",\"detail\":\"%s\"}\n",
-		(unsigned long long)pon_wall_ms(), mode, event, escaped);
+		(unsigned long long)pon_wall_ms(), escaped_mode, escaped_event, escaped);
 	if (line_length < 0 || (size_t)line_length >= sizeof(line))
 		return -E2BIG;
 	lock_fd = open(PON_EVENTS_LOCK, O_CREAT | O_RDWR | O_CLOEXEC, 0600);

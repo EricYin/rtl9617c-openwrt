@@ -1,6 +1,6 @@
 [package]
 name = "rtl9617c-omci"
-version = "0.8.2-beta"
+version = "0.11.0"
 edition = "2021"
 license = "GPL-2.0-only"
 

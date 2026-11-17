@@ -126,7 +126,7 @@ struct pon_oam_session {
 	enum pon_oam_auth_source auth_source;
 	unsigned int auth_set_attributes;
 	uint64_t auth_success_ms; /* wall-clock success timestamp */
-	uint64_t auth_success_monotonic_ms; /* origin of stock authSuccTime */
+	uint64_t auth_success_boot_ms; /* origin of stock authSuccTime */
 	uint64_t last_type5_ms;
 	uint8_t last_type5_code;
 	bool provisioning_seen;

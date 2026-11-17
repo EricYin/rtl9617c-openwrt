@@ -245,12 +245,12 @@ static void test_challenge_does_not_revoke_result(void)
 
 	reset_session(&session);
 	assert(send_result(&session, PON_OAM_CTC_AUTH_ACCEPT, 0, 0) == PON_OAM_HANDLED);
-	session.auth_success_monotonic_ms = 1000;
+	session.auth_success_boot_ms = 1000;
 	session.auth_success_ms = 1794656000000ULL;
 	assert(send_challenge(&session, 26) == 63);
 	assert(session.auth == PON_AUTH_ACCEPTED);
 	assert(session.auth_succeeded);
-	assert(session.auth_success_monotonic_ms == 1000);
+	assert(session.auth_success_boot_ms == 1000);
 	assert(session.auth_success_ms == 1794656000000ULL);
 	assert(session.auth_challenges == 1 && session.auth_results == 1);
 
@@ -270,7 +270,7 @@ static void test_duration_and_reset(void)
 	reset_session(&session);
 	assert(pon_oam_auth_duration_ms(&session, 5000) == 0);
 	assert(send_result(&session, PON_OAM_CTC_AUTH_ACCEPT, 0, 0) == PON_OAM_HANDLED);
-	session.auth_success_monotonic_ms = 1000;
+	session.auth_success_boot_ms = 1000;
 	session.auth_success_ms = 1794656000000ULL;
 	assert(pon_oam_auth_duration_ms(&session, 4999) == 3999);
 	/* Wall clock corrections do not alter duration. */
@@ -280,14 +280,14 @@ static void test_duration_and_reset(void)
 
 	assert(send_result(&session, PON_OAM_CTC_AUTH_REJECT, 1, 1) == PON_OAM_HANDLED);
 	assert(!session.auth_succeeded);
-	assert(session.auth_success_ms == 0 && session.auth_success_monotonic_ms == 0);
+	assert(session.auth_success_ms == 0 && session.auth_success_boot_ms == 0);
 	assert(pon_oam_auth_duration_ms(&session, 10000) == 0);
 	pon_oam_reset(&session);
 	assert(session.auth == PON_AUTH_WAITING);
 	assert(session.auth_source == PON_AUTH_SOURCE_NONE);
 	assert(!session.auth_result_seen && session.auth_set_attributes == 0);
 	assert(!session.auth_succeeded && session.auth_failure == 0);
-	assert(session.auth_success_ms == 0 && session.auth_success_monotonic_ms == 0);
+	assert(session.auth_success_ms == 0 && session.auth_success_boot_ms == 0);
 }
 
 static void test_flags_regression_not_reintroduced(void)

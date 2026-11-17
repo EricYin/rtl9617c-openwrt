@@ -50,6 +50,10 @@
 #define PON_OMCI_PATH_BYTES 512
 #define PON_OMCI_MAC_BYTES 1024
 #define PON_OMCI_DETAIL_BYTES 96
+
+#ifndef PON_FIRMWARE_VERSION
+#error PON_FIRMWARE_VERSION must identify the built firmware
+#endif
 #define PON_OMCI_STARTTIME_BYTES 32
 #define PATH_BYTES (12 + 248 * 50 + 248 * 5 * (32 + 32 * 16) + 31 * 12)
 
@@ -317,7 +321,7 @@ static int load_identity(struct omci_identity *identity)
 	fclose(serial);
 	identity_field(&config, "equipment_id", "", identity->equipment, sizeof(identity->equipment));
 	identity_field(&config, "hardware_version", "RTL9617C", identity->hardware, sizeof(identity->hardware));
-	identity_field(&config, "software_version", "0.8.2-beta", identity->software, sizeof(identity->software));
+	identity_field(&config, "software_version", PON_FIRMWARE_VERSION, identity->software, sizeof(identity->software));
 	identity_field(&config, "loid", "", identity->loid, sizeof(identity->loid));
 	identity_field(&config, "loid_password", "", identity->password, sizeof(identity->password));
 	identity_field(&config, "operator_id", "CTC", identity->operator_id, sizeof(identity->operator_id));
@@ -499,7 +503,7 @@ int main(int argc, char **argv)
 			pon_event_append(mode, "omci_session", detail);
 			previous_session = session;
 		}
-		length = rtl9617c_omci_paths(agent, paths);
+		length = rtl9617c_omci_paths(agent, paths, sizeof(paths));
 		if (length < 0) {
 			/* A rejected graph must not leave its previous business mapping active. */
 			static const uint8_t empty[12] = {4, 0, 0, 0, 0, 0, 0, 0, 12};

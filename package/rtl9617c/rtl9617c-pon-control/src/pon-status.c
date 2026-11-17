@@ -142,15 +142,41 @@ static void print_llids(const struct llid_document *documents, unsigned int coun
 	fputs("]", stdout);
 }
 
+static void print_json_string(const char *text)
+{
+	const unsigned char *cursor = (const unsigned char *)text;
+
+	fputc(0x22, stdout);
+	for (; *cursor; cursor++) {
+		unsigned char value = *cursor;
+
+		if (value == 0x22 || value == 0x5c) {
+			fputc(0x5c, stdout);
+			fputc(value, stdout);
+		} else if (value == 0x0a) {
+			fputc(0x5c, stdout);
+			fputc('n', stdout);
+		} else if (value == 0x0d) {
+			fputc(0x5c, stdout);
+			fputc('r', stdout);
+		} else if (value == 0x09) {
+			fputc(0x5c, stdout);
+			fputc('t', stdout);
+		} else if (value < 0x20) {
+			printf("%c" "u%04x", 0x5c, value);
+		} else {
+			fputc(value, stdout);
+		}
+	}
+	fputc(0x22, stdout);
+}
+
 static void print_string_or_null(const char *text)
 {
-	if (!text[0]) {
+	if (!text[0])
 		fputs("null", stdout);
-		return;
-	}
-	fputc('"', stdout);
-	fputs(text, stdout);
-	fputc('"', stdout);
+	else
+		print_json_string(text);
 }
 
 static void print_events_array(void)
@@ -309,7 +335,7 @@ static void print_summary(const char *mode, const char *mpcp, const char *mac,
 
 	fputs("{\"mpcp_registered\":", stdout);
 	if (epon && token_value(mpcp, "registered", value, sizeof(value))) {
-		printf("\"%s\"", value);
+		print_json_string(value);
 	} else {
 		fputs("null", stdout);
 	}
@@ -320,9 +346,9 @@ static void print_summary(const char *mode, const char *mpcp, const char *mac,
 		fputs("null", stdout);
 	fputs(",\"ploam_state\":", stdout);
 	if (!epon && token_value(mac, "activation", value, sizeof(value)))
-		printf("\"%s\"", value);
+		print_json_string(value);
 	else if (!epon && token_value(activation, "activation", value, sizeof(value)))
-		printf("\"%s\"", value);
+		print_json_string(value);
 	else
 		fputs("null", stdout);
 	fputs(",\"onu_id\":", stdout);
@@ -366,7 +392,7 @@ static void print_summary(const char *mode, const char *mpcp, const char *mac,
 		fputs("null", stdout);
 	fputs(",\"omci_last_error\":", stdout);
 	if (!epon && json_string(omci, "last_error", value, sizeof(value)))
-		printf("\"%s\"", value);
+		print_json_string(value);
 	else
 		fputs("null", stdout);
 	fputs(",\"pon_omci_link_up\":", stdout);

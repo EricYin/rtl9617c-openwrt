@@ -19,7 +19,7 @@ int rtl9617c_omci_dispatch_apply(struct omci_agent *agent, const uint8_t *data, 
 	uint8_t *output, int *backend_result,
 	int (*apply)(void *context, const uint8_t *paths, size_t length), void *context);
 int rtl9617c_omci_broadcast(const struct omci_agent *agent, const uint8_t *data, size_t length, uint8_t row[18]);
-int rtl9617c_omci_paths(struct omci_agent *agent, uint8_t *output);
+int rtl9617c_omci_paths(const struct omci_agent *agent, uint8_t *output, size_t capacity);
 int rtl9617c_omci_session_key(struct omci_agent *agent, uint8_t *output);
 void rtl9617c_omci_key_complete(struct omci_agent *agent, bool installed);
 int rtl9617c_omci_notification(struct omci_agent *agent, uint8_t *output);

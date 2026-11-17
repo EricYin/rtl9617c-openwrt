@@ -7,34 +7,17 @@ use super::protocol::{
     attribute_bit, Request, Response, ACTION_CREATE, ACTION_DELETE, ACTION_GET,
     ACTION_GET_ALL_ALARMS, ACTION_GET_ALL_ALARMS_NEXT, ACTION_GET_CURRENT_DATA, ACTION_GET_NEXT,
     ACTION_MIB_RESET, ACTION_MIB_UPLOAD, ACTION_MIB_UPLOAD_NEXT, ACTION_SET, ACTION_SET_TABLE,
-    ACTION_SYNCHRONIZE_TIME, RESULT_ATTRIBUTE_FAILED, RESULT_COMMAND_NOT_SUPPORTED,
-    RESULT_INSTANCE_EXISTS, RESULT_PARAMETER_ERROR, RESULT_SUCCESS, RESULT_UNKNOWN_INSTANCE,
-    RESULT_UNKNOWN_ME,
+    ACTION_SYNCHRONIZE_TIME, BASELINE_UPLOAD_VALUE_CAPACITY, RESULT_ATTRIBUTE_FAILED,
+    RESULT_COMMAND_NOT_SUPPORTED, RESULT_INSTANCE_EXISTS, RESULT_PARAMETER_ERROR,
+    RESULT_PROCESSING_ERROR, RESULT_SUCCESS, RESULT_UNKNOWN_INSTANCE, RESULT_UNKNOWN_ME,
 };
 use super::provisioning::{
-    DataPathAttribute, DataPathCandidate, DataPathEntity, DataPathGraph, DataPathTableRow,
-    ProvisioningSnapshot, DATA_PATH_VLAN_ANY, DATA_PATH_VLAN_TAGGED, DATA_PATH_VLAN_UNTAGGED,
+    DataPathAttribute, DataPathCandidate, DataPathEntity, DataPathGraph, ProvisioningSnapshot,
+    DATA_PATH_VLAN_ANY, DATA_PATH_VLAN_TAGGED, DATA_PATH_VLAN_UNTAGGED,
 };
 use super::schema::{self, AttributeAccess, AttributeKind, CreateSource, ManagedEntityOrigin};
+use super::schema::*;
 use super::security;
-
-#[allow(unused_imports)]
-pub use super::schema::{
-    CLASS_ANI_G, CLASS_CARDHOLDER, CLASS_CIRCUIT_PACK, CLASS_CTC_LOID_AUTH,
-    CLASS_ENHANCED_SECURITY_CONTROL, CLASS_ETHERNET_FRAME_EXTENDED_PM,
-    CLASS_ETHERNET_PM_HISTORY_DATA, CLASS_ETHERNET_PM_HISTORY_DATA_2,
-    CLASS_ETHERNET_PM_HISTORY_DATA_3, CLASS_EXTENDED_VLAN_TAGGING, CLASS_FEC_PM_HISTORY_DATA,
-    CLASS_GAL_ETHERNET_PROFILE, CLASS_GEM_INTERWORKING_TP, CLASS_GEM_PORT_NETWORK_CTP,
-    CLASS_GEM_PORT_PM_HISTORY_DATA, CLASS_IEEE_8021P_MAPPER, CLASS_MAC_BRIDGE_PORT_CONFIG_DATA,
-    CLASS_MAC_BRIDGE_PORT_FILTER_PREASSIGN_DATA, CLASS_MAC_BRIDGE_PORT_PM_HISTORY_DATA,
-    CLASS_MAC_BRIDGE_SERVICE_PROFILE, CLASS_MULTICAST_GEM_INTERWORKING_TP,
-    CLASS_MULTICAST_OPERATIONS_PROFILE, CLASS_MULTICAST_SUBSCRIBER_CONFIG,
-    CLASS_MULTICAST_SUBSCRIBER_MONITOR, CLASS_OLT_G, CLASS_OMCI, CLASS_ONU2_G, CLASS_ONU_DATA,
-    CLASS_ONU_G, CLASS_ONU_POWER_SHEDDING, CLASS_PPTP_ETHERNET_UNI, CLASS_PRIORITY_QUEUE,
-    CLASS_SOFTWARE_IMAGE, CLASS_TCONT, CLASS_THRESHOLD_DATA_1, CLASS_THRESHOLD_DATA_2,
-    CLASS_TRAFFIC_DESCRIPTOR, CLASS_TRAFFIC_SCHEDULER, CLASS_UNI_G, CLASS_VEIP, CLASS_VENDOR_247,
-    CLASS_VENDOR_351, CLASS_VLAN_TAGGING_FILTER,
-};
 
 const TCONT_COUNT: u16 = 31;
 const TCONT_FIRST_ENTITY: u16 = 0x8000;
@@ -601,7 +584,11 @@ impl Mib {
             return Response::new(request, RESULT_PARAMETER_ERROR);
         }
 
-        let sequence = u16::from_be_bytes([request.content[0], request.content[1]]) as usize;
+        let Some(sequence) = request.content.get(0..2)
+            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]) as usize)
+        else {
+            return Response::new(request, RESULT_PARAMETER_ERROR);
+        };
         let capacity = request.get_next_value_capacity();
         let start = sequence * capacity;
         if start >= snapshot.bytes.len() && !snapshot.bytes.is_empty() {
@@ -620,7 +607,9 @@ impl Mib {
         if request.class_id != CLASS_ONU_DATA || request.entity_id != 0 {
             return self.entity_error(request);
         }
-        self.rebuild_upload_snapshot();
+        if self.rebuild_upload_snapshot().is_err() {
+            return Response::new(request, RESULT_PROCESSING_ERROR);
+        }
         Response::mib_upload(request, self.upload_snapshot.len() as u16)
     }
 
@@ -651,7 +640,7 @@ impl Mib {
         .expect("upload records are split to baseline capacity")
     }
 
-    fn rebuild_upload_snapshot(&mut self) {
+    fn rebuild_upload_snapshot(&mut self) -> Result<(), ()> {
         let mut records = Vec::new();
         for (&(class_id, entity_id), entity) in &self.entities {
             // CTC requires LOID authentication attributes to be read with GET, not MIB Upload.
@@ -665,8 +654,13 @@ impl Mib {
                 if !attribute.upload || attribute.table_row_len.is_some() {
                     continue;
                 }
-                let bit = attribute_bit(index).expect("stored attribute index is valid");
-                if !values.is_empty() && values.len() + attribute.value.len() > 26 {
+                let bit = attribute_bit(index).ok_or(())?;
+                if attribute.value.len() > BASELINE_UPLOAD_VALUE_CAPACITY {
+                    return Err(());
+                }
+                if !values.is_empty()
+                    && values.len() + attribute.value.len() > BASELINE_UPLOAD_VALUE_CAPACITY
+                {
                     records.push(UploadRecord {
                         class_id,
                         entity_id,
@@ -676,10 +670,8 @@ impl Mib {
                     mask = 0;
                     values = Vec::new();
                 }
-                if attribute.value.len() <= 26 {
-                    mask |= bit;
-                    values.extend_from_slice(&attribute.value);
-                }
+                mask |= bit;
+                values.extend_from_slice(&attribute.value);
             }
             if mask != 0 {
                 records.push(UploadRecord {
@@ -691,6 +683,7 @@ impl Mib {
             }
         }
         self.upload_snapshot = records;
+        Ok(())
     }
 
     fn handle_get(&mut self, request: &Request<'_>) -> Response {
@@ -724,6 +717,9 @@ impl Mib {
                     .values()
                     .flat_map(|row| row.iter().copied())
                     .collect::<Vec<_>>();
+                if 4 + bytes.len() > request.get_value_capacity() {
+                    return Response::new(request, RESULT_PARAMETER_ERROR);
+                }
                 values.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
                 table = Some(TableSnapshot {
                     class_id: request.class_id,
@@ -742,8 +738,10 @@ impl Mib {
         }
 
         self.table_snapshot = table;
-        Response::get_success(request, returned_mask, &values)
-            .expect("capacity was checked before response construction")
+        match Response::get_success(request, returned_mask, &values) {
+            Ok(response) => response,
+            Err(_) => Response::new(request, RESULT_PARAMETER_ERROR),
+        }
     }
 
     fn handle_set(&mut self, request: &Request<'_>) -> Response {
@@ -779,7 +777,15 @@ impl Mib {
             if !attribute.writable {
                 return Response::new(request, RESULT_ATTRIBUTE_FAILED);
             }
-            let length = attribute.table_row_len.unwrap_or(attribute.value.len());
+            let Some(definition) = schema::managed_entity(request.class_id)
+                .and_then(|definition| definition.attributes.iter().find(|definition| definition.index == index))
+            else {
+                return Response::new(request, RESULT_ATTRIBUTE_FAILED);
+            };
+            let length = match definition.kind {
+                AttributeKind::Scalar { length } => length,
+                AttributeKind::Table { row_length } => row_length,
+            };
             if attribute.table_row_len.is_some() && request.attribute_mask.count_ones() != 1 {
                 return Response::new(request, RESULT_PARAMETER_ERROR);
             }
@@ -796,6 +802,18 @@ impl Mib {
             if request.class_id == CLASS_IEEE_8021P_MAPPER
                 && index == 10 && request.content[cursor] > 1 {
                 return Response::new(request, RESULT_PARAMETER_ERROR);
+            }
+            if request.class_id == CLASS_EXTENDED_VLAN_TAGGING && index == 6 {
+                let mut trial = attribute.table_rows.clone();
+                let key = request.content[cursor..cursor + 8].to_vec();
+                if request.content[cursor + 8..end].iter().all(|byte| *byte == 0xff) {
+                    trial.remove(&key);
+                } else {
+                    trial.insert(key, request.content[cursor..end].to_vec());
+                }
+                if trial.len() > 32 {
+                    return Response::new(request, RESULT_PROCESSING_ERROR);
+                }
             }
             updates.push((
                 index,
@@ -819,14 +837,13 @@ impl Mib {
                 .get_mut(&index)
                 .expect("attribute was validated above");
             if is_table {
+                if value.len() < 8 {
+                    return Response::new(request, RESULT_PARAMETER_ERROR);
+                }
                 let key = value[..8].to_vec();
                 if value[8..].iter().all(|byte| *byte == 0xff) {
                     attribute.table_rows.remove(&key);
                 } else {
-                    if request.class_id == CLASS_EXTENDED_VLAN_TAGGING && index == 6
-                        && !attribute.table_rows.contains_key(&key) && attribute.table_rows.len() == 32 {
-                        return Response::new(request, 1);
-                    }
                     attribute.table_rows.insert(key, value);
                 }
             } else {
@@ -1043,19 +1060,6 @@ impl Mib {
         self.pending_master_session_key.take()
     }
 
-    pub fn set_onu_serial(&mut self, serial: [u8; 8]) {
-        self.onu_serial = serial;
-        /* ONU-G attribute 3 and Class 332 use the same active PLOAM serial number. */
-        for entities in [&mut self.entities, &mut self.autonomous_defaults] {
-            if let Some(attribute) = entities
-                .get_mut(&(CLASS_ONU_G, 0))
-                .and_then(|entity| entity.attributes.get_mut(&3))
-            {
-                attribute.value = serial.to_vec();
-            }
-        }
-    }
-
     pub fn complete_master_session_key_install(&mut self, installed: bool) {
         self.set_enhanced_authentication_state(if installed { 3 } else { 4 });
     }
@@ -1112,7 +1116,7 @@ impl Mib {
             }
         }
         if request.class_id == CLASS_EXTENDED_VLAN_TAGGING && index == 6 && rows.len() > 32 {
-            return Response::new(request, 1);
+            return Response::new(request, RESULT_PROCESSING_ERROR);
         }
         attribute.table_rows = rows;
         self.increment_mib_sync();
@@ -1136,7 +1140,7 @@ impl Mib {
         self.upload_snapshot.clear();
         self.pending_master_session_key = None;
         self.attribute_value_changes.clear();
-        Response::new(request, 0)
+        Response::new(request, RESULT_SUCCESS)
     }
 
     fn handle_synchronize_time(&self, request: &Request<'_>) -> Response {
@@ -1162,7 +1166,12 @@ impl Mib {
     }
 
     pub fn loid_auth_status(&self) -> u8 {
-        self.entities[&(CLASS_CTC_LOID_AUTH, 0)].attributes[&4].value[0]
+        self.entities
+            .get(&(CLASS_CTC_LOID_AUTH, 0))
+            .and_then(|entity| entity.attributes.get(&4))
+            .and_then(|attribute| attribute.value.first())
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn provisioning_snapshot(&self) -> ProvisioningSnapshot {
@@ -1683,8 +1692,10 @@ impl Mib {
         for (_, (queue, port)) in &mut self.gem_queue_bindings {
             if (request.class_id == CLASS_PRIORITY_QUEUE && request.entity_id == *queue)
                 || (request.class_id == CLASS_TRAFFIC_SCHEDULER
-                    && self.entities[&(CLASS_PRIORITY_QUEUE, *queue)].attributes[&7].value
-                        == request.entity_id.to_be_bytes()) {
+                    && self.entities.get(&(CLASS_PRIORITY_QUEUE, *queue))
+                        .and_then(|entity| entity.attributes.get(&7))
+                        .map(|attribute| attribute.value.as_slice() == request.entity_id.to_be_bytes())
+                        .unwrap_or(false)) {
                 *port = owner(*queue)?;
             }
         }
@@ -1741,7 +1752,6 @@ impl Mib {
         ];
 
         let mut graph = DataPathGraph {
-            candidates: self.provisioning_snapshot().data_paths,
             configured_queues: self.configured_priority_queues.clone(),
             gem_queue_bindings: self.gem_queue_bindings.clone(),
             entities: Vec::new(),
@@ -1752,18 +1762,9 @@ impl Mib {
             }
             let mut attributes = Vec::with_capacity(entity.attributes.len());
             for (&index, attribute) in &entity.attributes {
-                let table_rows = attribute
-                    .table_rows
-                    .iter()
-                    .map(|(key, value)| DataPathTableRow {
-                        key: key.clone(),
-                        value: value.clone(),
-                    })
-                    .collect();
                 attributes.push(DataPathAttribute {
                     index,
                     value: attribute.value.clone(),
-                    table_rows,
                 });
             }
             graph.entities.push(DataPathEntity {
@@ -1860,6 +1861,7 @@ fn collect_multicast_acl_vlan_id(row: &[u8], output: &mut BTreeSet<u16>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::*;
 
     impl Default for IdentityConfig {
         fn default() -> Self {
@@ -2330,5 +2332,74 @@ mod tests {
 
         assert_eq!(mib.dispatch(&set).result(), Some(RESULT_SUCCESS));
         assert_eq!(mib.entities[&filter].attributes[&1].value, value);
+    }
+
+    #[test]
+    fn baseline_get_of_non_empty_table_reports_parameter_error() {
+        let mut mib = Mib::from_identity(&IdentityConfig::default());
+        let payload = [0u8, 0, 0];
+        let create = Request {
+            encoding: crate::protocol::Encoding::Extended,
+            tci: 1,
+            message_type: 0x44,
+            action: ACTION_CREATE,
+            class_id: CLASS_EXTENDED_VLAN_TAGGING,
+            entity_id: 1,
+            attribute_mask: 0,
+            payload: &payload,
+            content: &payload,
+        };
+        assert_eq!(mib.dispatch(&create).result(), Some(RESULT_SUCCESS));
+
+        let table = mib
+            .entities
+            .get_mut(&(CLASS_EXTENDED_VLAN_TAGGING, 1))
+            .unwrap()
+            .attributes
+            .get_mut(&6)
+            .unwrap();
+        for key in [1u8, 2] {
+            let mut row = [0u8; 16];
+            row[0] = key;
+            table.table_rows.insert(vec![key], row.to_vec());
+        }
+
+        let empty: [u8; 0] = [];
+        let get = Request {
+            encoding: crate::protocol::Encoding::Baseline,
+            tci: 1,
+            message_type: ACTION_GET,
+            action: ACTION_GET,
+            class_id: CLASS_EXTENDED_VLAN_TAGGING,
+            entity_id: 1,
+            attribute_mask: attribute_bit(6).unwrap(),
+            payload: &empty,
+            content: &empty,
+        };
+        assert_eq!(mib.dispatch(&get).result(), Some(RESULT_PARAMETER_ERROR));
+    }
+
+    #[test]
+    fn get_next_without_sequence_reports_parameter_error() {
+        let mut mib = Mib::from_identity(&IdentityConfig::default());
+        mib.table_snapshot = Some(TableSnapshot {
+            class_id: CLASS_EXTENDED_VLAN_TAGGING,
+            entity_id: 1,
+            attribute_mask: 0x0002,
+            bytes: vec![1, 2, 3],
+        });
+        let empty: [u8; 0] = [];
+        let request = Request {
+            encoding: crate::protocol::Encoding::Extended,
+            tci: 1,
+            message_type: ACTION_GET_NEXT,
+            action: ACTION_GET_NEXT,
+            class_id: CLASS_EXTENDED_VLAN_TAGGING,
+            entity_id: 1,
+            attribute_mask: 0x0002,
+            payload: &empty,
+            content: &empty,
+        };
+        assert_eq!(mib.dispatch(&request).result(), Some(RESULT_PARAMETER_ERROR));
     }
 }

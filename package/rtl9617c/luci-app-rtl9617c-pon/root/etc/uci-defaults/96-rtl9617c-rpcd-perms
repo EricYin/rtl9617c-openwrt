@@ -5,5 +5,5 @@ for script in /usr/share/rpcd/ucode/luci.rtl9617c-pon \
 	      /usr/share/rpcd/ucode/luci.rtl9617c-system; do
 	[ -f "$script" ] && chmod 0755 "$script"
 done
-/etc/init.d/rpcd restart >/dev/null 2>&1
+/etc/init.d/rpcd reload >/dev/null 2>&1
 exit 0

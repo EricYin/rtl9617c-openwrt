@@ -8,12 +8,13 @@ use std::fmt;
 use crate::wire::Writer;
 
 pub const BASELINE_LEN: usize = 44;
-pub const BASELINE_WITH_MIC_LEN: usize = 48;
 pub const EXTENDED_HEADER_LEN: usize = 10;
 pub const EXTENDED_MAX_PDU_LEN: usize = 1980;
 pub const DEVICE_ID_BASELINE: u8 = 0x0a;
 pub const DEVICE_ID_EXTENDED: u8 = 0x0b;
 pub const BASELINE_VALUE_CAPACITY: usize = 29;
+pub const BASELINE_AVC_VALUE_CAPACITY: usize = 30;
+pub const BASELINE_UPLOAD_VALUE_CAPACITY: usize = 26;
 pub const EXTENDED_GET_VALUE_CAPACITY: usize = EXTENDED_MAX_PDU_LEN - EXTENDED_HEADER_LEN - 7;
 pub const EXTENDED_GET_NEXT_VALUE_CAPACITY: usize = EXTENDED_MAX_PDU_LEN - EXTENDED_HEADER_LEN - 3;
 
@@ -24,6 +25,7 @@ pub const RESULT_UNKNOWN_ME: u8 = 0x04;
 pub const RESULT_UNKNOWN_INSTANCE: u8 = 0x05;
 pub const RESULT_INSTANCE_EXISTS: u8 = 0x07;
 pub const RESULT_ATTRIBUTE_FAILED: u8 = 0x09;
+pub const RESULT_PROCESSING_ERROR: u8 = 0x01;
 
 pub const ACTION_CREATE: u8 = 0x04;
 pub const ACTION_DELETE: u8 = 0x06;
@@ -107,7 +109,7 @@ impl<'a> Request<'a> {
     }
 
     fn parse_baseline(frame: &'a [u8]) -> Result<Self, ParseError> {
-        if frame.len() != BASELINE_LEN && frame.len() != BASELINE_WITH_MIC_LEN {
+        if frame.len() < BASELINE_LEN {
             return Err(ParseError::InvalidBaselineLength(frame.len()));
         }
 
@@ -156,13 +158,6 @@ impl<'a> Request<'a> {
         }
     }
 
-    pub fn selector_name(&self) -> &'static str {
-        match self.action {
-            ACTION_GET_ALL_ALARMS_NEXT | ACTION_MIB_UPLOAD_NEXT => "sequence",
-            _ => "mask",
-        }
-    }
-
     pub fn get_value_capacity(&self) -> usize {
         match self.encoding {
             Encoding::Baseline => BASELINE_VALUE_CAPACITY,
@@ -186,7 +181,7 @@ impl Response {
         attribute_mask: u16,
         values: &[u8],
     ) -> Result<Self, &'static str> {
-        if values.len() > 30 {
+        if values.len() > BASELINE_AVC_VALUE_CAPACITY {
             return Err("AVC values exceed baseline capacity");
         }
         let mut bytes = vec![0u8; BASELINE_LEN];
@@ -468,5 +463,14 @@ mod tests {
             &bytes[10..],
             &[RESULT_SUCCESS, 0x80, 0x00, 0, 0, 0, 0, 0xaa, 0xbb]
         );
+    }
+
+    #[test]
+    fn padded_baseline_frame_is_accepted() {
+        let mut frame = vec![0u8; 60];
+        frame[2] = ACTION_GET;
+        frame[3] = DEVICE_ID_BASELINE;
+        let request = Request::parse(&frame).unwrap();
+        assert_eq!(request.action, ACTION_GET);
     }
 }

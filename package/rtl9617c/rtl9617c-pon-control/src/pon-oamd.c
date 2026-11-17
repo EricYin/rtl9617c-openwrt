@@ -93,11 +93,11 @@ static void read_mode(char *output, size_t capacity)
 	snprintf(output, capacity, "%s", mode);
 }
 
-static uint64_t monotonic_ms(void)
+static uint64_t boot_ms(void)
 {
 	struct timespec time;
 
-	clock_gettime(CLOCK_MONOTONIC, &time);
+	clock_gettime(CLOCK_BOOTTIME, &time);
 	return (uint64_t)time.tv_sec * 1000 + time.tv_nsec / 1000000;
 }
 
@@ -333,7 +333,7 @@ static int publish_status(const char *path, const struct pon_oam_session *sessio
 {
 	static const char *const auth_sources[] = {"none", "ctc-result", "ctc-set-progress"};
 	const char *discovery = discovery_name(session);
-	uint64_t duration_ms = pon_oam_auth_duration_ms(session, monotonic_ms());
+	uint64_t duration_ms = pon_oam_auth_duration_ms(session, boot_ms());
 	char temporary[PON_OAM_TEMPORARY_PATH_BYTES];
 	FILE *stream;
 	int ret;
@@ -359,7 +359,7 @@ static int publish_status(const char *path, const struct pon_oam_session *sessio
 		"\"last_type5_code\":%u,\"last_type5_ms\":%llu,\"provisioning_seen\":%s,"
 		"\"rx_frames\":%u,\"tx_frames\":%u,\"send_errors\":%u,"
 		"\"receive_errors\":%u,\"management_error\":%d}\n",
-		(long)getpid(), starttime, (unsigned long long)monotonic_ms(), mode,
+		(long)getpid(), starttime, (unsigned long long)boot_ms(), mode,
 		llid, link_error, online ? "true" : "false", session->have_peer ? "true" : "false",
 		session->generation, session->local_echoed ? "true" : "false", discovery,
 		(unsigned int)session->peer_flags, (unsigned long long)session->last_information_ms,
@@ -512,7 +512,7 @@ int main(int argc, char **argv)
 		fd_set readable;
 		bool now_online = false;
 		bool holdover = false;
-		uint64_t now = monotonic_ms();
+		uint64_t now = boot_ms();
 		uint64_t epoch = 0;
 		int link_error = registered(mpcp, llid, &now_online, &epoch, &holdover);
 
@@ -607,7 +607,7 @@ int main(int argc, char **argv)
 			}
 			if (ret == PON_OAM_IGNORED)
 				continue;
-			last_received = monotonic_ms();
+			last_received = boot_ms();
 			session_valid = true;
 			if (!peer_before && session.have_peer) {
 				snprintf(detail, sizeof(detail), "flags=0x%04x",
@@ -638,10 +638,10 @@ int main(int argc, char **argv)
 				else
 					send_errors++;
 			} else if (size >= 18 && input[17] == 0) {
-				next_information = monotonic_ms();
+				next_information = boot_ms();
 			}
 			if (session.auth_results != results_before) {
-				auth_result_ms = monotonic_ms();
+				auth_result_ms = boot_ms();
 				syslog(LOG_INFO, "LLID%u subscriber_auth result=%u failure=%u generation=%u",
 					llid, session.auth, session.auth_failure, session.generation);
 			}

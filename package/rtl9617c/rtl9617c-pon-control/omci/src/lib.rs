@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Standard OMCI engine from PonWrt; RTL9617C integration is kept at this boundary.
-#![allow(dead_code)]
 
 mod config;
 mod mib;
@@ -39,7 +38,8 @@ pub struct Agent {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rtl9617c_omci_new(identity: &Identity) -> *mut Agent {
+pub unsafe extern "C" fn rtl9617c_omci_new(identity: *const Identity) -> *mut Agent {
+    let Some(identity) = identity.as_ref() else { return std::ptr::null_mut() };
     let identity = IdentityConfig {
         omcc_version: if identity.omcc_version == 0 { 0xb0 } else { identity.omcc_version },
         disable_enhanced_security: identity.disable_enhanced_security != 0,
@@ -63,11 +63,14 @@ pub unsafe extern "C" fn rtl9617c_omci_new(identity: &Identity) -> *mut Agent {
 
 #[no_mangle]
 pub unsafe extern "C" fn rtl9617c_omci_free(agent: *mut Agent) {
-    drop(Box::from_raw(agent));
+    if !agent.is_null() {
+        drop(Box::from_raw(agent));
+    }
 }
 
 #[no_mangle]
-pub extern "C" fn rtl9617c_omci_epoch(agent: &mut Agent) {
+pub unsafe extern "C" fn rtl9617c_omci_epoch(agent: *mut Agent) {
+    let Some(agent) = agent.as_mut() else { return };
     agent.led_auth = 0;
     agent.cache.clear();
     agent.notifications.clear();
@@ -75,8 +78,8 @@ pub extern "C" fn rtl9617c_omci_epoch(agent: &mut Agent) {
 }
 
 #[no_mangle]
-pub extern "C" fn rtl9617c_omci_led_auth(agent: &Agent) -> u8 {
-    agent.led_auth
+pub unsafe extern "C" fn rtl9617c_omci_led_auth(agent: *const Agent) -> u8 {
+    agent.as_ref().map_or(0, |agent| agent.led_auth)
 }
 
 fn update_led_auth(agent: &mut Agent, request: &Request<'_>) {
@@ -87,7 +90,11 @@ fn update_led_auth(agent: &mut Agent, request: &Request<'_>) {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rtl9617c_omci_broadcast(agent: &Agent, data: *const u8, length: usize, row: *mut u8) -> i32 {
+pub unsafe extern "C" fn rtl9617c_omci_broadcast(agent: *const Agent, data: *const u8, length: usize, row: *mut u8) -> i32 {
+    let Some(agent) = agent.as_ref() else { return 0 };
+    if data.is_null() || row.is_null() {
+        return 0;
+    }
     let data = slice::from_raw_parts(data, length);
     // The daemon programs the key before dispatch; a cached reply must also skip that write.
     if agent.cache.iter().any(|(key, _)| key == data) { return 0; }
@@ -103,15 +110,17 @@ pub unsafe extern "C" fn rtl9617c_omci_broadcast(agent: &Agent, data: *const u8,
 
 #[no_mangle]
 pub unsafe extern "C" fn rtl9617c_omci_dispatch(
-    agent: &mut Agent, data: *const u8, length: usize, output: *mut u8, backend_result: i32,
+    agent: *mut Agent, data: *const u8, length: usize, output: *mut u8, backend_result: i32,
 ) -> i32 {
+    let Some(agent) = agent.as_mut() else { return -22 };
+    if data.is_null() || output.is_null() { return -22; }
     let data = slice::from_raw_parts(data, length);
     let request = match Request::parse(data) {
         Ok(request) => request,
         Err(_) => return -74,
     };
     if backend_result < 0 {
-        let response = Response::new(&request, 1);
+        let response = Response::new(&request, protocol::RESULT_PROCESSING_ERROR);
         let bytes = response.as_bytes();
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len());
         return bytes.len() as i32;
@@ -125,7 +134,7 @@ pub unsafe extern "C" fn rtl9617c_omci_dispatch(
             let response = candidate.dispatch(&request);
             if response.result() == Some(protocol::RESULT_SUCCESS) {
                 if candidate.update_queue_bindings(&request).is_err() || paths_bytes(&candidate).is_err() {
-                    let response = Response::new(&request, 1);
+                    let response = Response::new(&request, protocol::RESULT_PROCESSING_ERROR);
                     let bytes = response.as_bytes();
                     std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len());
                     return bytes.len() as i32;
@@ -141,7 +150,7 @@ pub unsafe extern "C" fn rtl9617c_omci_dispatch(
             agent.cache.clear();
             agent.notifications.clear();
         }
-        if agent.cache.len() == 32 { agent.cache.pop_front(); }
+        if agent.cache.len() >= 32 { agent.cache.pop_front(); }
         agent.cache.push_back((data.to_vec(), response.clone()));
         response
     };
@@ -152,10 +161,12 @@ pub unsafe extern "C" fn rtl9617c_omci_dispatch(
 
 #[no_mangle]
 pub unsafe extern "C" fn rtl9617c_omci_dispatch_apply(
-    agent: &mut Agent, data: *const u8, length: usize, output: *mut u8, backend_result: &mut i32,
+    agent: *mut Agent, data: *const u8, length: usize, output: *mut u8, backend_result: &mut i32,
     apply: unsafe extern "C" fn(*mut std::ffi::c_void, *const u8, usize) -> i32,
     context: *mut std::ffi::c_void,
 ) -> i32 {
+    let Some(agent) = agent.as_mut() else { return -22 };
+    if data.is_null() || output.is_null() { return -22; }
     let frame = slice::from_raw_parts(data, length);
     let request = match Request::parse(frame) {
         Ok(request) => request,
@@ -164,7 +175,7 @@ pub unsafe extern "C" fn rtl9617c_omci_dispatch_apply(
     if *backend_result < 0 || agent.cache.iter().any(|(key, _)| key == frame)
         || !matches!(request.action, protocol::ACTION_CREATE | protocol::ACTION_DELETE |
             protocol::ACTION_SET | protocol::ACTION_SET_TABLE | protocol::ACTION_MIB_RESET) {
-        return rtl9617c_omci_dispatch(agent, data, length, output, *backend_result);
+        return rtl9617c_omci_dispatch(agent as *mut Agent, data, length, output, *backend_result);
     }
     let mut candidate = agent.mib.clone();
     let response = candidate.dispatch(&request);
@@ -174,7 +185,7 @@ pub unsafe extern "C" fn rtl9617c_omci_dispatch_apply(
             Err(error) => error,
         };
         if *backend_result < 0 {
-            let response = Response::new(&request, 1);
+            let response = Response::new(&request, protocol::RESULT_PROCESSING_ERROR);
             let bytes = response.as_bytes();
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len());
             return bytes.len() as i32;
@@ -188,7 +199,7 @@ pub unsafe extern "C" fn rtl9617c_omci_dispatch_apply(
         agent.cache.clear();
         agent.notifications.clear();
     }
-    if agent.cache.len() == 32 { agent.cache.pop_front(); }
+    if agent.cache.len() >= 32 { agent.cache.pop_front(); }
     agent.cache.push_back((frame.to_vec(), response.clone()));
     let bytes = response.as_bytes();
     std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len());
@@ -196,7 +207,9 @@ pub unsafe extern "C" fn rtl9617c_omci_dispatch_apply(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rtl9617c_omci_session_key(agent: &mut Agent, output: *mut u8) -> i32 {
+pub unsafe extern "C" fn rtl9617c_omci_session_key(agent: *mut Agent, output: *mut u8) -> i32 {
+    let Some(agent) = agent.as_mut() else { return 0 };
+    if output.is_null() { return 0; }
     match agent.mib.take_pending_master_session_key() {
         Some(key) => { std::ptr::copy_nonoverlapping(key.as_ptr(), output, 16); 1 }
         None => 0,
@@ -204,12 +217,15 @@ pub unsafe extern "C" fn rtl9617c_omci_session_key(agent: &mut Agent, output: *m
 }
 
 #[no_mangle]
-pub extern "C" fn rtl9617c_omci_key_complete(agent: &mut Agent, installed: bool) {
+pub unsafe extern "C" fn rtl9617c_omci_key_complete(agent: *mut Agent, installed: bool) {
+    let Some(agent) = agent.as_mut() else { return };
     agent.mib.complete_master_session_key_install(installed);
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rtl9617c_omci_notification(agent: &mut Agent, output: *mut u8) -> i32 {
+pub unsafe extern "C" fn rtl9617c_omci_notification(agent: *mut Agent, output: *mut u8) -> i32 {
+    let Some(agent) = agent.as_mut() else { return 0 };
+    if output.is_null() { return 0; }
     for change in agent.mib.take_attribute_value_changes() {
         if let Ok(response) = Response::attribute_value_change(0, change.class_id,
             change.entity_id, change.attribute_mask, &change.value) {
@@ -226,11 +242,14 @@ pub unsafe extern "C" fn rtl9617c_omci_notification(agent: &mut Agent, output: *
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rtl9617c_omci_paths(agent: &Agent, output: *mut u8) -> i32 {
+pub unsafe extern "C" fn rtl9617c_omci_paths(agent: *const Agent, output: *mut u8, capacity: usize) -> i32 {
+    let Some(agent) = agent.as_ref() else { return -22 };
+    if output.is_null() { return -22; }
     let bytes = match paths_bytes(&agent.mib) {
         Ok(bytes) => bytes,
         Err(error) => return error,
     };
+    if bytes.len() > capacity { return -28; }
     std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len());
     bytes.len() as i32
 }
@@ -316,7 +335,7 @@ fn paths_bytes(mib: &Mib) -> Result<Vec<u8>, i32> {
         let mut encrypted = 0;
         if let Some(ctp) = ctp(path.gem_id) {
             if !path.multicast && path.pbit_mask != 0 {
-                let binding = graph.gem_queue_bindings[&ctp.entity_id];
+                let binding = *graph.gem_queue_bindings.get(&ctp.entity_id).ok_or(-2)?;
                 let owner = binding.1;
                 let slot = mapping[&binding];
                 alloc_id = word(entity(schema::CLASS_TCONT, owner).ok_or(-22)?, 1).ok_or(-22)?;

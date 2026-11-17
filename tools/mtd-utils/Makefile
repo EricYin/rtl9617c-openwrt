@@ -36,7 +36,7 @@ HOST_CONFIGURE_ARGS+= \
 	--without-tests \
 	--without-crypto \
 	--without-xattr \
-	--with-zstd \
+	--without-zstd \
 	--without-lzo \
 	--with-lzma
 

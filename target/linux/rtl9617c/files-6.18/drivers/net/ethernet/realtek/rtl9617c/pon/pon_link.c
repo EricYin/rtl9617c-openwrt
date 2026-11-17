@@ -47,6 +47,7 @@ int rtl_pon_stop_locked(struct rtl9617c_pon *pon)
 			ret = stopped;
 	} else {
 		gpiod_set_value_cansleep(pon->tx_disable, 1);
+		ret = 0;
 		if (pon->mode == RTL_PON_GPON)
 			rtl_pon_gpon_stop_locked(pon);
 		else

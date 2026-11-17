@@ -17,7 +17,7 @@ static struct net_device *rtl_oam_allocate(struct rtl9617c_pon *pon, unsigned in
 {
 	struct net_device *dev = alloc_etherdev(sizeof(struct rtl_oam_port));
 	struct rtl_oam_port *port;
-	const u8 *base = control ? pon->onu_mac : pon->data_mac;
+	const u8 *base = pon->onu_mac;
 	u8 mac[ETH_ALEN];
 
 	if (!dev)

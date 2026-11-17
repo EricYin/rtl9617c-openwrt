@@ -78,22 +78,6 @@ static bool read_text(const char *path, char *output, size_t capacity)
 	return true;
 }
 
-/* The live serdes mode is authoritative when /etc/config/pon has no value;
- * this is the same fallback the service uses before it writes the mode. */
-static void current_mode(struct pon_config *config, char *output, size_t capacity)
-{
-	const char *value = pon_config_option(config, "mode");
-	char data[512], mode[32] = "";
-
-	if (value && value[0]) {
-		snprintf(output, capacity, "%s", value);
-		return;
-	}
-	if (read_text(PON_SYSFS "serdes", data, sizeof(data)))
-		sscanf(data, "mode=%31s", mode);
-	snprintf(output, capacity, "%s", mode[0] ? mode : "unknown");
-}
-
 static void redact(const char *value, size_t length, char prefix[5], char digest[9])
 {
 	uint8_t bytes[4] = {};
@@ -161,11 +145,11 @@ int main(int argc, char **argv)
 	bool emit = false, write_ok = false;
 	const char *write_error = NULL;
 
-	if (argc != 3 && !(argc == 4 && !strcmp(argv[3], "--json"))) {
-		fprintf(stderr, "Usage: pon-identity <identity-file> <serial> [--json]\n");
+	if (argc != 4 && !(argc == 5 && !strcmp(argv[4], "--json"))) {
+		fprintf(stderr, "Usage: pon-identity <identity-file> <serial> <mode> [--json]\n");
 		return 2;
 	}
-	emit = argc == 4;
+	emit = argc == 5;
 	if (serial_decode(argv[2], identity)) {
 		fprintf(stderr, "PON serial must be VVVVXXXXXXXX or 16 hex digits\n");
 		return 2;
@@ -175,7 +159,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "PON configuration load: %s\n", strerror(-error));
 		goto out;
 	}
-	current_mode(&config, mode, sizeof(mode));
+	snprintf(mode, sizeof(mode), "%s", argv[3]);
 	if (!strcmp(mode, "xgpon") || !strcmp(mode, "xgspon")) {
 		password_size = PON_IDENTITY_XGPON_PASSWORD_BYTES;
 		password_field = "registration_id";

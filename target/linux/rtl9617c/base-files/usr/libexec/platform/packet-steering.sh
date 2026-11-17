@@ -1,3 +1,4 @@
+#!/bin/sh
 set -e
 
 /usr/libexec/network/packet-steering.uc "$@"

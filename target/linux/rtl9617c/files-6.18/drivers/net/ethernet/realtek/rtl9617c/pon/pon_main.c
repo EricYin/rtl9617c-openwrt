@@ -28,7 +28,7 @@ extern struct device_attribute dev_attr_state, dev_attr_led_state;
 extern struct device_attribute dev_attr_bosa, dev_attr_transceiver;
 extern struct device_attribute dev_attr_serdes, dev_attr_serdes_registers;
 extern struct device_attribute dev_attr_optical, dev_attr_mac, dev_attr_activation;
-extern struct device_attribute dev_attr_fec, dev_attr_onu_mac, dev_attr_data_mac;
+extern struct device_attribute dev_attr_fec, dev_attr_onu_mac;
 extern struct device_attribute dev_attr_factory_onu_mac, dev_attr_llid_count;
 extern struct device_attribute dev_attr_mpcp, dev_attr_llid_table;
 extern struct device_attribute dev_attr_pdc, dev_attr_puc, dev_attr_traffic;
@@ -129,10 +129,11 @@ int rtl_pon_puc_configure(struct rtl9617c_pon *pon)
 }
 
 
-static ssize_t fe_show(struct device *device,struct device_attribute *attribute,char *buffer)
+static ssize_t fe_show(struct device *device, struct device_attribute *attribute, char *buffer)
 {
-	struct rtl9617c_pon *pon=dev_get_drvdata(device);
-	return rtl9617c_ni_fe_state(pon->ni_dev,buffer);
+	struct rtl9617c_pon *pon = dev_get_drvdata(device);
+
+	return rtl9617c_ni_fe_state(pon->ni_dev, buffer);
 }
 DEVICE_ATTR_RO(fe);
 
@@ -213,23 +214,23 @@ __ATTRIBUTE_GROUPS(rtl9617c_pon);
 static int rtl_pon_factory_serial(struct rtl9617c_pon *pon)
 {
 	struct nvmem_cell *cell;
-	u8 *buf;
-	size_t len, i;
+	size_t length, index;
+	u8 *buffer;
 
 	cell = nvmem_cell_get(pon->dev, "pon-serial");
 	if (IS_ERR(cell))
 		return PTR_ERR(cell);
-	buf = nvmem_cell_read(cell, &len);
+	buffer = nvmem_cell_read(cell, &length);
 	nvmem_cell_put(cell);
-	if (IS_ERR(buf))
-		return PTR_ERR(buf);
-	for (i = 0; i < len && i < sizeof(pon->factory_serial_number) - 1; i++) {
-		if (buf[i] < 0x20 || buf[i] > 0x7e)
+	if (IS_ERR(buffer))
+		return PTR_ERR(buffer);
+	for (index = 0; index < length && index < sizeof(pon->factory_serial_number) - 1; index++) {
+		if (buffer[index] < 0x20 || buffer[index] > 0x7e)
 			break;
-		pon->factory_serial_number[i] = buf[i];
+		pon->factory_serial_number[index] = buffer[index];
 	}
-	pon->factory_serial_number[i] = '\0';
-	kfree(buf);
+	pon->factory_serial_number[index] = '\0';
+	kfree(buffer);
 	return 0;
 }
 
@@ -297,13 +298,9 @@ static int rtl9617c_pon_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 	ether_addr_copy(pon->factory_mac, pon->onu_mac);
-	/* Stock capture: MPCP/OAM use the PON base address while PPPoE leaves on
-	 * base+3, so business ports get their own writable base. Defaulting to the
-	 * factory identity keeps sysfs from ever reporting 00:00:00:00:00:00. */
-	ether_addr_copy(pon->data_mac, pon->onu_mac);
 	ret = rtl_pon_factory_serial(pon);
 	if (ret)
-		return ret;
+		dev_warn(dev, "factory serial unavailable: %d\n", ret);
 	pon->mode = RTL_PON_EPON_D10G;
 	mutex_init(&pon->lock);
 	mutex_init(&pon->control_lock);
@@ -348,6 +345,7 @@ static int rtl9617c_pon_probe(struct platform_device *pdev)
 	{
 		int irq = platform_get_irq(pdev, 0);
 		int ret;
+
 		if (irq < 0)
 			return irq;
 		ret = rtl_pon_mpcp_init(pon, irq);

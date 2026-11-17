@@ -6,18 +6,8 @@ respawn_threshold=3600
 respawn_timeout=5
 respawn_retry=3
 default_llid_count=1
-pt1500_board=youhua,pt1500-h10-2p5g
 
 USE_PROCD=1
-EXTRA_COMMANDS="offload"
-EXTRA_HELP="        offload          Compatibility no-op; FE lifecycle is owned by NI"
-
-# The driver starts/stops the FE engine with NI after QM readiness, so this
-# command must stay callable but must not touch hardware.  Keeping it avoids
-# breaking old callers and retained /etc/config/firewall triggers.
-offload() {
-	return 0
-}
 
 pon_event() {
 	[ -x /usr/sbin/pon-status ] || return 0
@@ -41,7 +31,7 @@ start_service() {
 }
 
 configure_link() {
-	local enabled mode onu_mac serial llids i board factory_mode
+	local enabled mode onu_mac serial llids i
 	local device=/sys/bus/platform/devices/4f5500000.pon
 
 	[ -w "$device/serdes" ] || return 0
@@ -51,17 +41,6 @@ configure_link() {
 	[ "$enabled" = 1 ] || return 0
 	pon_stage=mode
 	config_get mode pon mode
-	board=$(cat /tmp/sysinfo/board_name 2>/dev/null)
-	# The package default is xgpon for the generic reference image.  On the
-	# PT1500 board the factory volume and the live serdes mode describe the
-	# actual EPON line, so prefer them over that default.
-	if [ "$board" = "$pt1500_board" ] && [ "$mode" = xgpon ]; then
-		factory_mode=$(uci -q -c /var/run/tyfza1-factory \
-			get pon_factory.pon.mode)
-		[ -n "$factory_mode" ] && mode=$factory_mode
-	fi
-	[ -n "$mode" ] || mode=$(uci -q -c /var/run/tyfza1-factory \
-		get pon_factory.pon.mode)
 	[ -n "$mode" ] || mode=$(sed -n 's/^mode=\([^ ]*\).*/\1/p' \
 		"$device/serdes")
 	[ -n "$mode" ] || return 1
@@ -75,29 +54,19 @@ configure_link() {
 	config_get onu_mac pon onu_mac
 	[ -n "$onu_mac" ] || onu_mac=$(cat "$device/factory_onu_mac")
 	if [ -z "$onu_mac" ]; then
-		# No factory UCI partition on this unit.  Keep the PON MAC usable
-		# by deriving a stable address from the base Ethernet MAC.
-		onu_mac=$(cat /sys/class/net/eth0/address 2>/dev/null)
-		[ -n "$onu_mac" ] || onu_mac=$(cat /sys/class/net/br-lan/address 2>/dev/null)
-		logger -t pon "factory ONU MAC missing; using $onu_mac"
+		logger -t pon "ONU MAC unavailable"
+		return 1
 	fi
-	[ -n "$onu_mac" ] || return 1
 	printf '%s\n' "$onu_mac" > "$device/onu_mac" || return $?
-	# Old drivers kept a separate data-interface MAC.  The current driver
-	# derives it from onu_mac and no longer exposes the attribute, so this
-	# is a compatibility write only when the interface exists.
-	if [ -w "$device/data_mac" ]; then
-		printf '%s\n' "$onu_mac" > "$device/data_mac" || return $?
-	fi
 	if [ "$mode" = gpon ] || [ "$mode" = xgpon ] || [ "$mode" = xgspon ]; then
 		pon_stage=identity
 		config_get serial pon serial_number
 		[ -n "$serial" ] || serial=$(cat "$device/factory_serial_number")
 		[ -n "$serial" ] || return 1
 		if [ "$mode" = gpon ]; then
-			/usr/sbin/pon-identity "$device/gpon_identity" "$serial" || return $?
+			/usr/sbin/pon-identity "$device/gpon_identity" "$serial" "$mode" || return $?
 		else
-			/usr/sbin/pon-identity "$device/xgpon_identity" "$serial" || return $?
+			/usr/sbin/pon-identity "$device/xgpon_identity" "$serial" "$mode" || return $?
 		fi
 		pon_stage=mac
 		printf '1\n' > "$device/mac" || return $?

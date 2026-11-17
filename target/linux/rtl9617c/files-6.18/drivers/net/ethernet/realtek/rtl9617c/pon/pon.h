@@ -146,8 +146,6 @@ struct rtl9617c_pon {
 	int mac_error;
 	u8 onu_mac[6];
 	u8 factory_mac[6];
-	/* Business-port base address; MPCP/OAM stay on onu_mac. */
-	u8 data_mac[6];
 	unsigned int llid_count;
 	bool mpcp_configured;
 	bool mpcp_enabled;

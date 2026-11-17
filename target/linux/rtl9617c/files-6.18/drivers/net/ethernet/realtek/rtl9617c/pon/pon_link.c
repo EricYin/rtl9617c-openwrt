@@ -326,30 +326,3 @@ static ssize_t traffic_store(struct device *dev, struct device_attribute *attr,
 	return ret ? ret : count;
 }
 DEVICE_ATTR_RW(traffic);
-
-static ssize_t data_mac_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
-
-	return sysfs_emit(buf, "%pM\n", pon->data_mac);
-}
-
-static ssize_t data_mac_store(struct device *dev, struct device_attribute *attr,
-			     const char *buf, size_t count)
-{
-	struct rtl9617c_pon *pon = dev_get_drvdata(dev);
-	u8 mac[ETH_ALEN];
-
-	if (!mac_pton(buf, mac) || !is_valid_ether_addr(mac))
-		return -EINVAL;
-	mutex_lock(&pon->control_lock);
-	rtnl_lock();
-	/* Business ports keep their own MAC: the stock capture shows MPCP/OAM
-	 * on the PON base address and PPPoE on base+3. */
-	ether_addr_copy(pon->data_mac, mac);
-	rtl_pon_data_address(pon);
-	rtnl_unlock();
-	mutex_unlock(&pon->control_lock);
-	return count;
-}
-DEVICE_ATTR_RW(data_mac);

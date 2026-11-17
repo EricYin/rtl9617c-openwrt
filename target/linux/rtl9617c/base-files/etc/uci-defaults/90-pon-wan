@@ -39,35 +39,16 @@ case "$wan_device" in
 		;;
 esac
 
-# The PON base MAC is the stock MPCP/OAM identity.  Prefer an explicit UCI
-# value, then the factory volume, then the driver's factory attributes, then
-# the LAN base address.  The VLAN interface uses base + 3, matching the
-# captured stock nas0_2; this is a default, not an OLT policy.
-pon_mac=$(uci -q get pon.pon.onu_mac)
-[ -n "$pon_mac" ] || pon_mac=$(uci -q -c /var/run/tyfza1-factory \
-	get pon_factory.pon.onu_mac)
-[ -n "$pon_mac" ] || pon_mac=$(cat "$pon_device/factory_onu_mac" 2>/dev/null)
-[ -n "$pon_mac" ] || pon_mac=$(cat "$pon_device/onu_mac" 2>/dev/null)
-[ -n "$pon_mac" ] || pon_mac=$(cat /sys/class/net/br-lan/address 2>/dev/null)
-
 vlan_mac=
-mac_hex=
-case "$pon_mac" in
-	[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:\
-[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F])
-		mac_hex=$(printf '%s' "$pon_mac" | tr -d ':')
-		;;
-	[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]\
+mac_hex=$(cat "$pon_device/factory_onu_mac" 2>/dev/null | tr -d ':')
+case "$mac_hex" in
+[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]\
 [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
-		mac_hex=$pon_mac
-		;;
-esac
-if [ -n "$mac_hex" ]; then
-	# The 48-bit addition carries across byte boundaries.
 	vlan_mac=$(printf '%012x' \
 		$(((0x$mac_hex + vlan_mac_offset) & 0xffffffffffff)) |
 		sed 's/../&:/g; s/:$//')
-fi
+	;;
+esac
 
 index=0
 found=

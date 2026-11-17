@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* Semtech MCU calibration client; the vendor sequence lives below as static
- * helpers instead of a header full of code. */
-#include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/nvmem-consumer.h>
 #include <linux/of.h>
+#include <linux/string.h>
 #include <linux/unaligned.h>
-#include "pon/pon.h"
 #include "rtl9617c_bosa.h"
 
 enum rtl_bosa_model {
@@ -21,6 +18,41 @@ enum rtl_bosa_model {
 	RTL_BOSA_GN28L97,
 };
 
+enum rtl_bosa_opcode {
+	RTL_BOSA_WRITE,
+	RTL_BOSA_CAL_BYTE,
+	RTL_BOSA_CAL_RANGE,
+	RTL_BOSA_MODIFY,
+	RTL_BOSA_PULSE,
+	RTL_BOSA_READ,
+	RTL_BOSA_WAIT,
+	RTL_BOSA_KEY_REGISTER,
+};
+
+enum rtl_bosa_calibration {
+	RTL_BOSA_CAL_NONE,
+	RTL_BOSA_CAL_NVMEM,
+	RTL_BOSA_CAL_EEPROM,
+};
+
+struct rtl_bosa_op {
+	u8 opcode;
+	u8 reg;
+	u8 value;
+	u8 mask;
+	u16 offset;
+	u16 first;
+	u16 last;
+};
+
+struct rtl_bosa_profile {
+	u8 model;
+	const char *name;
+	const struct rtl_bosa_op *ops;
+	unsigned int ops_count;
+	u8 key_register;
+};
+
 struct rtl_bosa_io {
 	void *context;
 	int (*write)(void *context, unsigned int reg, unsigned char value);
@@ -28,115 +60,84 @@ struct rtl_bosa_io {
 	int (*wait)(void *context, unsigned int reg, unsigned char mask, unsigned char value);
 };
 
-static int rtl_bosa_range(const struct rtl_bosa_io *io, const unsigned char *cal,
-				unsigned int offset, unsigned int first, unsigned int last)
-{
-	unsigned int reg;
-	int ret;
+static const struct rtl_bosa_op rtl_bosa_gn28l96_ops[] = {
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x81 },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x89, .value = 0x00 },
+	{ .opcode = RTL_BOSA_WAIT, .reg = 0x89, .mask = 0x02, .value = 0x02 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x100, .first = 0x00, .last = 0x3f },
+	{ .opcode = RTL_BOSA_CAL_BYTE, .reg = 0x6f, .offset = 0x16f },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x170, .first = 0x70, .last = 0x77 },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x00 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x1f8, .first = 0xf8, .last = 0xfd },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x82 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x300, .first = 0x80, .last = 0xff },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x83 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x380, .first = 0x80, .last = 0xff },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x80 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x200, .first = 0x80, .last = 0xff },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x81 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x280, .first = 0x80, .last = 0x87 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x289, .first = 0x89, .last = 0x89 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x28b, .first = 0x8b, .last = 0x8c },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x28e, .first = 0x8e, .last = 0xff },
+	{ .opcode = RTL_BOSA_CAL_BYTE, .reg = 0x6e, .offset = 0x16e },
+	{ .opcode = RTL_BOSA_READ, .reg = 0x6e },
+	{ .opcode = RTL_BOSA_CAL_BYTE, .reg = 0x88, .offset = 0x288 },
+};
 
-	for (reg = first; reg <= last; reg++) {
-		ret = io->write(io->context, reg, cal[offset + reg - first]);
-		if (ret)
-			return ret;
-	}
-	return 0;
-}
+static const struct rtl_bosa_op rtl_bosa_gn25l_ops[] = {
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x04 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x280, .first = 0x80, .last = 0xff },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x05 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x300, .first = 0x80, .last = 0xff },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x06 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x380, .first = 0x80, .last = 0xff },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x02 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x200, .first = 0x80, .last = 0xff },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x252, .first = 0xd2, .last = 0xe7 },
+	{ .opcode = RTL_BOSA_CAL_RANGE, .offset = 0x100, .first = 0x00, .last = 0x4f },
+	{ .opcode = RTL_BOSA_CAL_BYTE, .reg = 0x6f, .offset = 0x16f },
+	{ .opcode = RTL_BOSA_CAL_BYTE, .reg = 0x72, .offset = 0x172 },
+	{ .opcode = RTL_BOSA_CAL_BYTE, .reg = 0x78, .offset = 0x178 },
+	{ .opcode = RTL_BOSA_CAL_BYTE, .reg = 0x79, .offset = 0x179 },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x01 },
+	{ .opcode = RTL_BOSA_CAL_BYTE, .reg = 0xf8, .offset = 0x1f8 },
+	{ .opcode = RTL_BOSA_MODIFY, .reg = 0xf9, .mask = 0xc0, .value = 0xc0 },
+	{ .opcode = RTL_BOSA_CAL_BYTE, .reg = 0xfc, .offset = 0x1fc },
+	{ .opcode = RTL_BOSA_MODIFY, .reg = 0xfd, .mask = 0xc0, .value = 0xc0 },
+	{ .opcode = RTL_BOSA_PULSE, .reg = 0x6e, .mask = 0x40 },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7f, .value = 0x02 },
+	{ .opcode = RTL_BOSA_KEY_REGISTER, .value = 0x6a },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7b, .value = 0xff },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7c, .value = 0xff },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7d, .value = 0xff },
+	{ .opcode = RTL_BOSA_WRITE, .reg = 0x7e, .value = 0xff },
+	{ .opcode = RTL_BOSA_MODIFY, .reg = 0xbb, .mask = 0x01, .value = 0x00 },
+	{ .opcode = RTL_BOSA_READ, .reg = 0xbb },
+	{ .opcode = RTL_BOSA_READ, .reg = 0xb1 },
+	{ .opcode = RTL_BOSA_READ, .reg = 0xb7 },
+};
 
-static int rtl_bosa_modify(const struct rtl_bosa_io *io, unsigned int reg,
-				 unsigned char mask, unsigned char value)
-{
-	unsigned char register_value;
-	int ret = io->read(io->context, reg, &register_value);
-
-	return ret ? ret : io->write(io->context, reg, (register_value & ~mask) | value);
-}
-
-static int rtl_bosa_calibrate(const struct rtl_bosa_io *io,
-				    const unsigned char *cal, enum rtl_bosa_model model)
-{
-	unsigned int i;
-	unsigned char value;
-	int ret;
-
-#define BOSA_WRITE(reg, val) do { ret = io->write(io->context, reg, val); if (ret) return ret; } while (0)
-#define BOSA_RANGE(offset, first, last) do { ret = rtl_bosa_range(io, cal, offset, first, last); if (ret) return ret; } while (0)
-#define BOSA_READ(reg) do { ret = io->read(io->context, reg, &value); if (ret) return ret; } while (0)
-#define BOSA_MODIFY(reg, mask, val) do { ret = rtl_bosa_modify(io, reg, mask, val); if (ret) return ret; } while (0)
-
-	if (model == RTL_BOSA_GN28L96 || model == RTL_BOSA_GN28L97) {
-		BOSA_WRITE(0x7f, 0x81);
-		BOSA_WRITE(0x89, 0);
-		ret = io->wait(io->context, 0x89, 2, 2);
-		if (ret)
-			return ret;
-		BOSA_RANGE(0x100, 0, 0x3f);
-		BOSA_WRITE(0x6f, cal[0x16f]);
-		BOSA_RANGE(0x170, 0x70, 0x77);
-		BOSA_WRITE(0x7f, 0);
-		BOSA_RANGE(0x1f8, 0xf8, 0xfd);
-		BOSA_WRITE(0x7f, 0x82);
-		BOSA_RANGE(0x300, 0x80, 0xff);
-		BOSA_WRITE(0x7f, 0x83);
-		BOSA_RANGE(0x380, 0x80, 0xff);
-		BOSA_WRITE(0x7f, 0x80);
-		BOSA_RANGE(0x200, 0x80, 0xff);
-		BOSA_WRITE(0x7f, 0x81);
-		for (i = 0x80; i <= 0xff; i++) {
-			if (i == 0x88 || i == 0x8d || i == 0x8a)
-				continue;
-			BOSA_WRITE(i, cal[0x280 + i - 0x80]);
-		}
-		BOSA_WRITE(0x6e, cal[0x16e]);
-		BOSA_READ(0x6e);
-		BOSA_WRITE(0x88, cal[0x288]);
-	} else if (model >= RTL_BOSA_GN25L95 && model <= RTL_BOSA_GN28L95) {
-		BOSA_WRITE(0x7f, 4);
-		BOSA_RANGE(0x280, 0x80, 0xff);
-		BOSA_WRITE(0x7f, 5);
-		BOSA_RANGE(0x300, 0x80, 0xff);
-		BOSA_WRITE(0x7f, 6);
-		BOSA_RANGE(0x380, 0x80, 0xff);
-		BOSA_WRITE(0x7f, 2);
-		BOSA_RANGE(0x200, 0x80, 0xff);
-		BOSA_WRITE(0x7f, 2);
-		BOSA_RANGE(0x252, 0xd2, 0xe7);
-		BOSA_RANGE(0x100, 0, 0x4f);
-		BOSA_WRITE(0x6f, cal[0x16f]);
-		BOSA_WRITE(0x72, cal[0x172]);
-		BOSA_WRITE(0x78, cal[0x178]);
-		BOSA_WRITE(0x79, cal[0x179]);
-		BOSA_WRITE(0x7f, 1);
-		BOSA_WRITE(0xf8, cal[0x1f8]);
-		BOSA_MODIFY(0xf9, 0xc0, 0xc0);
-		BOSA_WRITE(0xfc, cal[0x1fc]);
-		BOSA_MODIFY(0xfd, 0xc0, 0xc0);
-		BOSA_READ(0x6e);
-		BOSA_WRITE(0x6e, value | 0x40);
-		BOSA_WRITE(0x6e, value & ~0x40);
-		BOSA_WRITE(0x7f, 2);
-		BOSA_WRITE(model == RTL_BOSA_GN25L95 ? 0xa0 : model == RTL_BOSA_GN25L98 ? 0x98 : 0x88, 0x6a);
-		for (i = 0x7b; i <= 0x7e; i++)
-			BOSA_WRITE(i, 0xff);
-		BOSA_WRITE(0x7f, 2);
-		BOSA_MODIFY(0xbb, 1, 0);
-		BOSA_READ(0xbb);
-		BOSA_WRITE(0x7f, 2);
-		BOSA_READ(0xb1);
-		BOSA_READ(0xb7);
-	} else {
-		return -EINVAL;
-	}
-#undef BOSA_WRITE
-#undef BOSA_RANGE
-#undef BOSA_READ
-#undef BOSA_MODIFY
-	return 0;
-}
+static const struct rtl_bosa_profile rtl_bosa_profiles[] = {
+	{ .model = RTL_BOSA_A2H, .name = "A2H" },
+	{ .model = RTL_BOSA_GN25L95, .name = "GN25L95", .ops = rtl_bosa_gn25l_ops,
+	  .ops_count = ARRAY_SIZE(rtl_bosa_gn25l_ops), .key_register = 0xa0 },
+	{ .model = RTL_BOSA_GN25L98, .name = "GN25L98", .ops = rtl_bosa_gn25l_ops,
+	  .ops_count = ARRAY_SIZE(rtl_bosa_gn25l_ops), .key_register = 0x98 },
+	{ .model = RTL_BOSA_GN28L95, .name = "GN28L95", .ops = rtl_bosa_gn25l_ops,
+	  .ops_count = ARRAY_SIZE(rtl_bosa_gn25l_ops), .key_register = 0x88 },
+	{ .model = RTL_BOSA_GN28L96, .name = "GN28L96", .ops = rtl_bosa_gn28l96_ops,
+	  .ops_count = ARRAY_SIZE(rtl_bosa_gn28l96_ops) },
+	{ .model = RTL_BOSA_GN28L97, .name = "GN28L97", .ops = rtl_bosa_gn28l96_ops,
+	  .ops_count = ARRAY_SIZE(rtl_bosa_gn28l96_ops) },
+};
 
 struct rtl_bosa {
 	struct i2c_client *client;
 	struct mutex lock;
+	const struct rtl_bosa_profile *profile;
 	enum rtl_bosa_model model;
+	enum rtl_bosa_calibration calibration;
 	bool configured;
 	bool eeprom;
 	unsigned int writes;
@@ -144,11 +145,22 @@ struct rtl_bosa {
 	u8 identity[3];
 };
 
+static const struct rtl_bosa_profile *rtl_bosa_profile(unsigned int model)
+{
+	unsigned int index;
+
+	for (index = 0; index < ARRAY_SIZE(rtl_bosa_profiles); index++)
+		if (rtl_bosa_profiles[index].model == model)
+			return &rtl_bosa_profiles[index];
+	return NULL;
+}
+
 static int rtl_bosa_write(void *context, unsigned int reg, unsigned char value)
 {
 	struct rtl_bosa *bosa = context;
-	int ret = i2c_smbus_write_byte_data(bosa->client, reg, value);
+	int ret;
 
+	ret = i2c_smbus_write_byte_data(bosa->client, reg, value);
 	if (!ret)
 		bosa->writes++;
 	return ret;
@@ -157,8 +169,9 @@ static int rtl_bosa_write(void *context, unsigned int reg, unsigned char value)
 static int rtl_bosa_read(void *context, unsigned int reg, unsigned char *value)
 {
 	struct rtl_bosa *bosa = context;
-	int ret = i2c_smbus_read_byte_data(bosa->client, reg);
+	int ret;
 
+	ret = i2c_smbus_read_byte_data(bosa->client, reg);
 	if (ret < 0)
 		return ret;
 	*value = ret;
@@ -175,18 +188,154 @@ static int rtl_bosa_wait(void *context, unsigned int reg, unsigned char mask, un
 	return status < 0 ? status : ret;
 }
 
+static int rtl_bosa_execute(const struct rtl_bosa_io *io,
+			    const struct rtl_bosa_profile *profile,
+			    const u8 *calibration)
+{
+	unsigned int index;
+	int ret;
+
+	for (index = 0; index < profile->ops_count; index++) {
+		const struct rtl_bosa_op *op = &profile->ops[index];
+		unsigned int reg;
+		u8 value;
+
+		switch (op->opcode) {
+		case RTL_BOSA_WRITE:
+			ret = io->write(io->context, op->reg, op->value);
+			break;
+		case RTL_BOSA_CAL_BYTE:
+			ret = io->write(io->context, op->reg, calibration[op->offset]);
+			break;
+		case RTL_BOSA_CAL_RANGE:
+			ret = 0;
+			for (reg = op->first; reg <= op->last; reg++) {
+				ret = io->write(io->context, reg,
+						calibration[op->offset + reg - op->first]);
+				if (ret)
+					break;
+			}
+			break;
+		case RTL_BOSA_MODIFY:
+			ret = io->read(io->context, op->reg, &value);
+			if (!ret)
+				ret = io->write(io->context, op->reg,
+						(value & ~op->mask) | op->value);
+			break;
+		case RTL_BOSA_PULSE:
+			ret = io->read(io->context, op->reg, &value);
+			if (!ret)
+				ret = io->write(io->context, op->reg, value | op->mask);
+			if (!ret)
+				ret = io->write(io->context, op->reg, value & ~op->mask);
+			break;
+		case RTL_BOSA_READ:
+			ret = io->read(io->context, op->reg, &value);
+			break;
+		case RTL_BOSA_WAIT:
+			ret = io->wait(io->context, op->reg, op->mask, op->value);
+			break;
+		case RTL_BOSA_KEY_REGISTER:
+			ret = io->write(io->context, profile->key_register, op->value);
+			break;
+		default:
+			ret = -EINVAL;
+			break;
+		}
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+static int rtl_bosa_calibration_required(const struct rtl_bosa_profile *profile,
+					 size_t *required)
+{
+	unsigned int index;
+
+	*required = 0;
+	for (index = 0; index < profile->ops_count; index++) {
+		const struct rtl_bosa_op *op = &profile->ops[index];
+		size_t end;
+
+		switch (op->opcode) {
+		case RTL_BOSA_CAL_BYTE:
+			end = (size_t)op->offset + 1;
+			break;
+		case RTL_BOSA_CAL_RANGE:
+			end = (size_t)op->offset + op->last - op->first + 1;
+			break;
+		default:
+			continue;
+		}
+		if (end > *required)
+			*required = end;
+	}
+	return *required ? 0 : -EOPNOTSUPP;
+}
+
+static bool rtl_bosa_calibration_blank(const u8 *data, size_t length)
+{
+	size_t index;
+
+	for (index = 0; index < length; index++)
+		if (data[index] != 0xff)
+			return false;
+	return true;
+}
+
+static int rtl_bosa_calibrate(const struct rtl_bosa_io *io,
+			      const struct rtl_bosa_profile *profile,
+			      const u8 *data, size_t length)
+{
+	size_t required;
+	int ret;
+
+	if (!profile->ops)
+		return -EOPNOTSUPP;
+	ret = rtl_bosa_calibration_required(profile, &required);
+	if (ret)
+		return ret;
+	if (length < required)
+		return -EINVAL;
+	if (rtl_bosa_calibration_blank(data, required))
+		return -ENODATA;
+	return rtl_bosa_execute(io, profile, data);
+}
+
+static int rtl_bosa_apply_calibration(struct rtl_bosa *bosa, const struct rtl_bosa_io *io)
+{
+	struct nvmem_cell *cell;
+	u8 *data;
+	size_t length;
+	int ret;
+
+	cell = nvmem_cell_get(&bosa->client->dev, "calibration");
+	if (IS_ERR(cell)) {
+		ret = PTR_ERR(cell);
+		return ret == -ENOENT ? -ENODATA : ret;
+	}
+	data = nvmem_cell_read(cell, &length);
+	nvmem_cell_put(cell);
+	if (IS_ERR(data))
+		return PTR_ERR(data);
+	ret = rtl_bosa_calibrate(io, bosa->profile, data, length);
+	kfree(data);
+	return ret;
+}
+
 static int rtl_bosa_identify(struct rtl_bosa *bosa)
 {
+	static const u8 registers[] = { 0x80, 0x85, 0x86 };
+	unsigned int index;
 	u8 id, digital;
 	int ret;
-	unsigned int i;
-	static const u8 registers[] = {0x80, 0x85, 0x86};
 
 	ret = rtl_bosa_write(bosa, 0x7f, 0xff);
 	if (ret)
 		return ret;
-	for (i = 0; i < ARRAY_SIZE(registers); i++) {
-		ret = rtl_bosa_read(bosa, registers[i], &bosa->identity[i]);
+	for (index = 0; index < ARRAY_SIZE(registers); index++) {
+		ret = rtl_bosa_read(bosa, registers[index], &bosa->identity[index]);
 		if (ret)
 			return ret;
 	}
@@ -210,10 +359,6 @@ static int rtl_bosa_identify(struct rtl_bosa *bosa)
 		else if ((id & 0xf0) == 0xc0)
 			bosa->model = RTL_BOSA_GN25L98;
 		else {
-			/* A2h-only bare BOSA: A0h is all 0xff and the vendor
-			 * pages carry no GN28L/25L ID.  A plausible base-page
-			 * temperature identifies the module; its calibration
-			 * and DDMI live in A2h. */
 			ret = rtl_bosa_write(bosa, 0x7f, 0);
 			if (ret)
 				return ret;
@@ -240,47 +385,20 @@ static int rtl_bosa_identify(struct rtl_bosa *bosa)
 		bosa->model == RTL_BOSA_GN28L95 ? 0xc7 : 0xc0, &digital);
 	if (ret)
 		return ret;
-	/* The shipping GN28L96/97 EEPROM-present flag has inverse polarity. */
 	bosa->eeprom = bosa->model >= RTL_BOSA_GN28L96 ? !(digital & 1) : digital & 1;
 	return 0;
 }
 
-#define RTL_BOSA_CALIBRATION_SIZE	1024
-
-static bool rtl_bosa_calibration_present(const u8 *data, size_t length)
+static const char *rtl_bosa_calibration_name(enum rtl_bosa_calibration calibration)
 {
-	size_t i;
-
-	if (length < RTL_BOSA_CALIBRATION_SIZE)
-		return false;
-	for (i = 0; i < length; i++)
-		if (data[i] != 0xff)
-			return true;
-	return false;
-}
-
-static int rtl_bosa_apply_calibration(struct rtl_bosa *bosa,
-				      const struct rtl_bosa_io *io)
-{
-	struct nvmem_cell *cell;
-	u8 *data;
-	size_t length;
-	int ret;
-
-	cell = nvmem_cell_get(&bosa->client->dev, "calibration");
-	if (IS_ERR(cell))
-		return PTR_ERR(cell);
-	data = nvmem_cell_read(cell, &length);
-	nvmem_cell_put(cell);
-	if (IS_ERR(data))
-		return PTR_ERR(data);
-	if (!rtl_bosa_calibration_present(data, length)) {
-		kfree(data);
-		return -ENODATA;
+	switch (calibration) {
+	case RTL_BOSA_CAL_NVMEM:
+		return "nvmem";
+	case RTL_BOSA_CAL_EEPROM:
+		return "module-eeprom";
+	default:
+		return "none";
 	}
-	ret = rtl_bosa_calibrate(io, data, bosa->model);
-	kfree(data);
-	return ret;
 }
 
 static int rtl_bosa_configure(struct rtl_bosa *bosa)
@@ -296,6 +414,9 @@ static int rtl_bosa_configure(struct rtl_bosa *bosa)
 
 	mutex_lock(&bosa->lock);
 	bosa->configured = false;
+	bosa->profile = NULL;
+	bosa->eeprom = false;
+	bosa->calibration = RTL_BOSA_CAL_NONE;
 	bosa->writes = 0;
 	ret = rtl_bosa_read(bosa, 0x7f, &page);
 	if (ret)
@@ -303,23 +424,43 @@ static int rtl_bosa_configure(struct rtl_bosa *bosa)
 	ret = rtl_bosa_identify(bosa);
 	if (ret)
 		goto restore;
+	bosa->profile = rtl_bosa_profile(bosa->model);
+	if (!bosa->profile) {
+		ret = -ENODEV;
+		goto restore;
+	}
 	ret = rtl_bosa_apply_calibration(bosa, &io);
-	if (ret) {
-		if (bosa->eeprom) {
-			ret = 0;
-		} else {
-			dev_warn(&bosa->client->dev, "BOSA has no EEPROM and no calibration: %d\n",
-				 ret);
+	switch (ret) {
+	case 0:
+		bosa->calibration = RTL_BOSA_CAL_NVMEM;
+		break;
+	case -ENODATA:
+	case -EOPNOTSUPP:
+		if (!bosa->eeprom) {
+			dev_warn(&bosa->client->dev,
+				 "BOSA has no EEPROM and no calibration\n");
 			goto restore;
 		}
+		if (ret == -EOPNOTSUPP)
+			dev_warn(&bosa->client->dev,
+				 "BOSA %s has no calibration sequence, using module EEPROM\n",
+				 bosa->profile->name);
+		bosa->calibration = RTL_BOSA_CAL_EEPROM;
+		ret = 0;
+		break;
+	default:
+		dev_warn(&bosa->client->dev, "BOSA calibration failed: %d\n", ret);
+		goto restore;
 	}
 	ret = rtl_bosa_read(bosa, 0x6e, &tx);
 	if (!ret && tx & BIT(6))
 		ret = -EIO;
 	if (!ret) {
 		bosa->configured = true;
-		dev_info(&bosa->client->dev, "BOSA model=%u EEPROM=%u, %u writes, tx_control=%02x\n",
-			 bosa->model, bosa->eeprom, bosa->writes, tx);
+		dev_info(&bosa->client->dev,
+			 "BOSA model=%s EEPROM=%u calibration=%s, %u writes\n",
+			 bosa->profile->name, bosa->eeprom,
+			 rtl_bosa_calibration_name(bosa->calibration), bosa->writes);
 	}
 restore:
 	restore = rtl_bosa_write(bosa, 0x7f, page);
@@ -343,11 +484,12 @@ ssize_t rtl9617c_bosa_state(struct device *dev, char *buf)
 {
 	struct rtl_bosa *bosa = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "configured=%u model=%u eeprom=%u writes=%u error=%d identity=%02x/%02x/%02x\n",
-		bosa->configured, bosa->model, bosa->eeprom, bosa->writes, bosa->error,
-		bosa->identity[0], bosa->identity[1], bosa->identity[2]);
+	return sysfs_emit(buf, "configured=%u model=%s eeprom=%u calibration=%s writes=%u error=%d identity=%02x/%02x/%02x\n",
+		bosa->configured, bosa->profile ? bosa->profile->name : "unknown",
+		bosa->eeprom, rtl_bosa_calibration_name(bosa->calibration),
+		bosa->writes, bosa->error, bosa->identity[0], bosa->identity[1],
+		bosa->identity[2]);
 }
-
 EXPORT_SYMBOL_GPL(rtl9617c_bosa_state);
 
 static ssize_t configure_show(struct device *dev, struct device_attribute *attribute, char *buf)
@@ -361,12 +503,12 @@ ssize_t rtl9617c_bosa_diagnostics(struct device *dev, char *buf)
 {
 	struct rtl_bosa *bosa = dev_get_drvdata(dev);
 	u8 data[14];
+	unsigned int index;
 	int ret;
-	unsigned int i;
 
 	mutex_lock(&bosa->lock);
-	for (i = 0; i < ARRAY_SIZE(data); i++) {
-		ret = rtl_bosa_read(bosa, 0x60 + i, &data[i]);
+	for (index = 0; index < ARRAY_SIZE(data); index++) {
+		ret = rtl_bosa_read(bosa, 0x60 + index, &data[index]);
 		if (ret)
 			goto unlock;
 	}
@@ -395,8 +537,9 @@ ATTRIBUTE_GROUPS(rtl_bosa);
 
 static int rtl_bosa_probe(struct i2c_client *client)
 {
-	struct rtl_bosa *bosa = devm_kzalloc(&client->dev, sizeof(*bosa), GFP_KERNEL);
+	struct rtl_bosa *bosa;
 
+	bosa = devm_kzalloc(&client->dev, sizeof(*bosa), GFP_KERNEL);
 	if (!bosa)
 		return -ENOMEM;
 	bosa->client = client;
@@ -420,5 +563,6 @@ static struct i2c_driver rtl_bosa_driver = {
 	},
 };
 module_i2c_driver(rtl_bosa_driver);
+
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("RTL9617C native Semtech BOSA calibration client");

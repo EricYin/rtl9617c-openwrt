@@ -95,6 +95,6 @@ void rtl_pon_data_address(struct rtl9617c_pon *pon)
 		struct net_device *dev = rtnl_dereference(pon->data_devices[i]);
 
 		if (dev && !((struct rtl_oam_port *)netdev_priv(dev))->mac_configured)
-			rtl_port_address(dev, pon->data_mac, i);
+			rtl_port_address(dev, pon->onu_mac, i);
 	}
 }

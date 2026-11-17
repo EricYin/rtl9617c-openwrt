@@ -15,17 +15,7 @@ pon_device=/sys/bus/platform/devices/4f5500000.pon
 
 board=$(cat /tmp/sysinfo/board_name 2>/dev/null)
 mode=$(uci -q get pon.pon.mode)
-[ -n "$mode" ] || mode=$(uci -q -c /var/run/tyfza1-factory \
-	get pon_factory.pon.mode)
-# The package default is xgpon for the generic reference image.  On the
-# PT1500 board the live serdes mode is EPON until the service writes a
-# mode, so use it when UCI still carries that default.
-if [ "$board" = "$pt1500_board" ] && [ "$mode" = "xgpon" ]; then
-	live_mode=$(sed -n 's/^mode=\([^ ]*\).*/\1/p' "$pon_device/serdes")
-	case "$live_mode" in
-	epon*) mode=$live_mode ;;
-	esac
-fi
+[ -n "$mode" ] || mode=$(sed -n 's/^mode=\([^ ]*\).*/\1/p' "$pon_device/serdes")
 
 case "$board:$mode" in
 	"$pt1500_board:$epon_mode"|"$pt1500_board:$epon_d10g_mode"|\

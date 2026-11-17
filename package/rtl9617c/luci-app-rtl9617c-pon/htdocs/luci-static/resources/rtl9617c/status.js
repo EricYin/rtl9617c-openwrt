@@ -121,13 +121,36 @@ function ponCard(data) {
 	]);
 }
 
-function offloadCard(data) {
-	var fe = data.fe || {}, available = flag(fe.available), enabled = flag(fe.enabled);
-	var error = fe.error != null && +fe.error !== 0;
-	return card('硬件转发', badge(error ? '运行异常' : fe.available == null ? '状态未知' : !available ? '不可用' : fe.enabled == null ? '状态未知' : enabled ? '已启用' : '未启用',
-		error ? 'danger' : available && enabled ? 'good' : 'muted'), E('div', {}, [
-		rows([['当前硬件流', value(fe.flows)], ['累计安装 / 释放', value(fe.installs) + ' / ' + value(fe.deletes)]]),
-		error ? E('p', { class: 'tyf-note' }, '错误码：' + fe.error) : null
+function offloadState(software, hardware, fe) {
+	var available = flag(fe.available), enabled = flag(fe.enabled);
+	var bindings = fe.bindings == null ? null : Number(fe.bindings);
+
+	if (!software)
+		return ['未启用', 'muted', '防火墙未开启流量卸载'];
+	if (!hardware)
+		return ['仅软件卸载', 'muted', '硬件卸载未开启，流量不经过 FE'];
+	if (fe.error != null && Number(fe.error) !== 0)
+		return ['运行异常', 'danger', '错误码：' + fe.error];
+	if (!available)
+		return ['硬件不可用', 'danger', '已请求硬件卸载，但驱动未提供 FE'];
+	if (!enabled)
+		return ['硬件未就绪', 'danger', '已请求硬件卸载，但 FE 引擎未启用'];
+	if (!bindings)
+		return ['已启用', 'good', '已请求硬件卸载，尚无流表完成绑定'];
+	return ['已启用', 'good', null];
+}
+
+function offloadCard(data, software, hardware) {
+	var fe = data.fe || {};
+	var bindings = fe.bindings == null ? null : Number(fe.bindings);
+	var state = offloadState(software, hardware, fe);
+
+	return card('硬件转发', badge(state[0], state[1]), E('div', {}, [
+		rows([['软件 / 硬件卸载', (software ? '开' : '关') + ' / ' + (hardware ? '开' : '关')],
+			['FE 引擎', flag(fe.available) ? flag(fe.enabled) ? '已启用' : '未启用' : '不可用'],
+			['卸载绑定 / 硬件流', (bindings == null ? '—' : bindings + ' 个') + ' / ' + value(fe.flows)],
+			['累计安装 / 释放', value(fe.installs) + ' / ' + value(fe.deletes)]]),
+		state[2] ? E('p', { class: 'tyf-note' }, state[2]) : null
 	]));
 }
 

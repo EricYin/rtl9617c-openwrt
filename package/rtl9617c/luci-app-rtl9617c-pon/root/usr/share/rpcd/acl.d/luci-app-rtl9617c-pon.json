@@ -13,7 +13,7 @@
       "uci": ["pon", "firewall", "network", "wireless", "luci"]
     },
     "write": {
-      "uci": ["pon", "firewall", "network"]
+      "uci": ["pon", "network"]
     }
   }
 }

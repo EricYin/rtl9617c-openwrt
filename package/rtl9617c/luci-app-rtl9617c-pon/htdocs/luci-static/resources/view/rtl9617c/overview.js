@@ -2,9 +2,19 @@
 'require view';
 'require rtl9617c.status as status';
 'require rtl9617c.ui as ui';
+'require uci';
+
+function firewallFlag(name) {
+	var section = uci.sections('firewall', 'defaults')[0];
+
+	return !!section && section[name] === '1';
+}
 
 return view.extend({
-	load: function() { return ui.snapshot(); },
+	load: function() {
+		return Promise.all([uci.load('firewall').catch(function() { return null; }), ui.snapshot()])
+			.then(function(result) { return result[1]; });
+	},
 	render: function(initial) {
 		return ui.page('运行状态', '光链路、业务网络与无线，集中查看。接口连接不等于互联网可达。', initial, ui.snapshot, function(data) {
 			var pon = data.pon || {}, optical = pon.optical || {}, bosa = pon.bosa || {};
@@ -18,7 +28,8 @@ return view.extend({
 					ui.tile('光口发射', optical.tx_disabled == null ? '未提供' : optical.tx_disabled === '1' ? '已关闭' : '已允许', 'A2h 光模块遥测'),
 					ui.tile('光学校准', bosa.configured == null ? '未提供' : bosa.configured === '1' ? '已配置' : '未就绪', 'A2H 模块已识别，DDMI 可用')
 				]),
-				ui.grid([status.card('注册与认证', null, ui.authentication(pon)), status.offloadCard(pon)]),
+				ui.grid([status.card('注册与认证', null, ui.authentication(pon)),
+					status.offloadCard(pon, firewallFlag('flow_offloading'), firewallFlag('flow_offloading_hw'))]),
 				status.card('业务网络', null, [ui.networks(data), ui.link('管理上网', 'admin/onu/internet')]),
 				hasWifi ? status.card('无线网络', null, [data.wifiError ? ui.note('无线状态读取失败。') : ui.grid(data.wifi.map(function(wifi) {
 					return status.card(wifi.ssid || wifi.name, status.badge(wifi.up ? '运行中' : '未运行', wifi.up ? 'good' : 'muted'), status.rows([

@@ -78,7 +78,7 @@ function authentication(data) {
 	})) : note('暂无 OAM 认证会话，等待逻辑链路注册。');
 }
 function diagnostics(data) {
-	return ['service', 'state', 'serdes', 'optical', 'bosa', 'mac', 'activation', 'mpcp', 'oam_ports', 'omci', 'data_path', 'fec', 'traffic', 'fe', 'deepq', 'puc', 'pdc', 'llids'].map(function(name) {
+	return ['service', 'state', 'serdes', 'optical', 'bosa', 'mac', 'activation', 'mpcp', 'oam_ports', 'omci', 'data_path', 'fec', 'traffic', 'deepq', 'puc', 'pdc', 'llids'].map(function(name) {
 		var entry = name === 'data_path' ? data.data_path_raw : data[name];
 		return '[' + name + ']\n' + (entry == null ? '未提供' : Array.isArray(entry) ? JSON.stringify(entry, null, 2) : typeof entry === 'object'
 			? Object.keys(entry).map(function(key) { return key + ': ' + entry[key]; }).join('\n') : entry);

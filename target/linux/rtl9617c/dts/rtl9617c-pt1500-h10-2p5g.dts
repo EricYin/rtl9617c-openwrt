@@ -5,6 +5,7 @@
 #include "rtl9617c.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/linux-event-codes.h>
+#include <dt-bindings/leds/common.h>
 
 / {
 	model = "Youhua PT1500-H10 2.5G";
@@ -154,18 +155,9 @@
 
 			led@0 {
 				reg = <0>;
-				label = "LED_8221B_P6_0";
-				default-state = "on";
-			};
-			led@1 {
-				reg = <1>;
-				label = "LED_8221B_P6_1";
-				default-state = "on";
-			};
-			led@2 {
-				reg = <2>;
-				label = "LED_8221B_P6_2";
-				default-state = "on";
+				color = <LED_COLOR_ID_BLUE>;
+				function = LED_FUNCTION_LAN;
+				active-low;
 			};
 		};
 	};

@@ -35,22 +35,18 @@
 #define RTL8221B_VND2_PATCH_LOCK	0xb892
 #define RTL8221B_VND2_PATCH_LOCK_CTRL	0xb896
 #define RTL8221B_PATCH_LOCK_EN		BIT(0)
-#define RTL8221B_VND2_LED_CFG(n)	(0xd032 + (n) * 2)
-#define RTL8221B_VND2_LED_EN		0xd040
-#define RTL8221B_VND2_LED_ACT		0xd044
+#define RTL8221B_VND2_LCR6		0xd040
 
 #define RTL8221B_SRAM_PATCH_FLAG	0x801e
 #define RTL8221B_SRAM_PATCH_DONE	0x0020
 #define RTL8221B_SRAM_PATCH_KEY		0x8024
 #define RTL8221B_PATCH_KEY		0x3701
-#define RTL8221B_LED_COUNT		3
-#define RTL8221B_LED_CFG_INIT		0x00a7
-#define RTL8221B_LED_CFG_ON		0x0025
 
 struct rtl8221b_hisgmii_priv {
 	bool patch;
 	bool serdes_option;
 	u32 serdes_option_mode;
+	struct rtl822x_led led;
 };
 
 int rtl8221b_hisgmii_match_phy_device(struct phy_device *phydev,
@@ -241,6 +237,14 @@ static int rtl8221b_hisgmii_enable(struct phy_device *phydev)
 	return phy_set_bits(phydev, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
 }
 
+static int rtl8221b_hisgmii_led_init(struct phy_device *phydev)
+{
+	if (list_empty(&phydev->leds))
+		return 0;
+
+	return phy_write_mmd(phydev, MDIO_MMD_VEND2, RTL8221B_VND2_LCR6, 0);
+}
+
 int rtl8221b_hisgmii_config_init(struct phy_device *phydev)
 {
 	struct rtl8221b_hisgmii_priv *priv = phydev->priv;
@@ -275,16 +279,14 @@ int rtl8221b_hisgmii_config_init(struct phy_device *phydev)
 			       MDIO_CTRL1_LPOWER);
 	if (ret < 0)
 		return ret;
-	if (list_empty(&phydev->leds)) {
-		ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, RTL8221B_VND2_LED_CFG(0),
-				    RTL8221B_LED_CFG_INIT);
-		if (ret < 0)
-			return ret;
-	}
 
 	ret = rtl8221b_hisgmii_enable(phydev);
 	if (ret < 0)
 		phydev_warn(phydev, "HiSGMII enable failed: %d\n", ret);
+
+	ret = rtl8221b_hisgmii_led_init(phydev);
+	if (ret < 0)
+		return ret;
 
 	__set_bit(PHY_INTERFACE_MODE_SGMII, phydev->possible_interfaces);
 	__set_bit(PHY_INTERFACE_MODE_2500BASEX, phydev->possible_interfaces);
@@ -316,26 +318,26 @@ int rtl8221b_hisgmii_read_status(struct phy_device *phydev)
 	return 0;
 }
 
-int rtl8221b_hisgmii_led_brightness_set(struct phy_device *phydev, u8 index,
+int rtl8221b_led_brightness_set(struct phy_device *phydev, u8 index,
 					enum led_brightness value)
 {
-	int ret;
+	struct rtl8221b_hisgmii_priv *priv = phydev->priv;
 
-	if (index >= RTL8221B_LED_COUNT)
-		return -EINVAL;
+	return rtl822x_led_brightness_set(phydev, &priv->led, index, value);
+}
 
-	if (value == LED_OFF)
-		return phy_write_mmd(phydev, MDIO_MMD_VEND2,
-				     RTL8221B_VND2_LED_CFG(index), 0);
+int rtl8221b_led_hw_control_set(struct phy_device *phydev, u8 index,
+					unsigned long rules)
+{
+	struct rtl8221b_hisgmii_priv *priv = phydev->priv;
 
-	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, RTL8221B_VND2_LED_CFG(index),
-			    RTL8221B_LED_CFG_ON);
-	if (ret < 0)
-		return ret;
-	ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, RTL8221B_VND2_LED_EN,
-			       BIT(index));
-	if (ret < 0)
-		return ret;
-	return phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, RTL8221B_VND2_LED_ACT,
-				BIT(index));
+	return rtl822x_led_hw_control_set(phydev, &priv->led, index, rules);
+}
+
+int rtl8221b_led_polarity_set(struct phy_device *phydev, int index,
+				      unsigned long modes)
+{
+	struct rtl8221b_hisgmii_priv *priv = phydev->priv;
+
+	return rtl822x_led_polarity_set(phydev, &priv->led, index, modes);
 }

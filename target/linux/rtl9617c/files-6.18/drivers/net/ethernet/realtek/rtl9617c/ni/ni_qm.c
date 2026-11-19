@@ -4,23 +4,44 @@
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
 #include <linux/io.h>
+#include <linux/ioport.h>
 #include <linux/ip.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/rcupdate.h>
 #include <linux/unaligned.h>
 
 #include "ni.h"
 
-#define QM_EQ_PROFILE_CPU0		RTL_NI_QM_EQ_PROFILE(RTL_NI_QM_EQ)
+#define QM_EQ_PROFILE_CPU0		RTL_QM_EQ_PROFILE(RTL_NI_QM_EQ)
 #define QM_DQ_EQ_PRIVATE		1
 #define QM_DQ_EQ_SHARED			2
 #define QM_DQ_BID_BASE			512
+#define QM_LAN_DQ_PORT			(8 + RTL_NI_PORT_P6)
+#define QM_LAN_DQ_EQ_PROFILE		0
+#define QM_LAN_DQ_CREDIT_PROFILE	2
+#define QM_LAN_DQ_VOQ_PROFILE		5
+#define QM_LAN_DQ_EQ_PRIVATE		0
+#define QM_LAN_DQ_EQ_SHARED		8
+#define QM_LAN_DQ_SRAM_BASE		0x80000000U
+#define QM_LAN_DQ_SRAM_BUFS		244U
+#define QM_LAN_DQ_SRAM_BID_BASE		4352U
+#define QM_LAN_DQ_DDR_BUFS		10588U
+#define QM_LAN_DQ_DDR_BID_BASE		5796U
+#define QM_EQ_CFG2_HEAD_DEFAULT		FIELD_PREP(RTL_QM_EQ_CFG2_REFILL_THS, 0xff)
+#define QM_EQ_CFG2_BUFSZ_512		3U
+#define QM_EQ_CFG2_BUFSZ_2048		5U
+#define QM_EQ_CFG3_NONCPU		FIELD_PREP(RTL_QM_EQ_CFG3_CACHE, 1)
+#define QM_VOQ_WEIGHT_LAN_DQ		(FIELD_PREP(RTL_TE_CB_VOQ_D1_PRVT, 25) | \
+					 FIELD_PREP(RTL_TE_CB_VOQ_D1_GRPHTH, 0x3fff) | \
+					 FIELD_PREP(RTL_TE_CB_VOQ_D1_GRPLTH, 0x3ff))
+#define QM_VOQ_THRSH_FLAGS_LAN_DQ	FIELD_PREP(RTL_TE_CB_VOQ_D0_GRPLTH, 0xf)
+#define QM_CPU_BURST_UNLIMITED		(FIELD_PREP(RTL_TE_CB_PORT_GRPHTH, 0x3fff) | \
+					 FIELD_PREP(RTL_TE_CB_PORT_GRPLTH, 0x3fff))
 #define QM_WAN_PORT_FIRST		16
 #define QM_WAN_PORT_LAST		32
 #define QM_CPU_PORT			16
 #define QM_RESET_BIT			BIT(5)
-#define QM_RESET_DONE			BIT(30)
-#define QM_PUSH_READY			BIT(31)
-#define QM_EQ_FREE_COUNT		GENMASK(13, 0)
 #define QM_EPP_WRITE_MASK		GENMASK(23, 0)
 #define QM_CMD_EQ			GENMASK(3, 0)
 #define QM_CMD_VALID			(BIT(4) | BIT(6))
@@ -32,13 +53,25 @@
 #define QM_HDR_SOURCE			GENMASK(14, 9)
 #define QM_SOURCE_PON			7
 #define QM_SOURCE_PON_LLID		32
-#define QM_EQ_CFG_DESC			0x61008060
-#define QM_ATTRIBUTE_CPU		0x0a008060
+#define QM_EQ_CFG_DESC			(FIELD_PREP(RTL_QM_EQ_CFG3_CACHE_EOS, 6) | \
+					 RTL_QM_EQ_CFG3_ACD_CMD | \
+					 FIELD_PREP(RTL_QM_EQ_CFG3_DOMAIN, 2) | \
+					 FIELD_PREP(RTL_QM_EQ_CFG3_CACHE, 6))
+#define QM_ATTRIBUTE_CPU		(FIELD_PREP(RTL_QM_AXI_ATTRIB_TOP_BIT, 2) | \
+					 RTL_QM_AXI_ATTRIB_ACE_CMD | \
+					 FIELD_PREP(RTL_QM_AXI_ATTRIB_DOMAIN, 2) | \
+					 FIELD_PREP(RTL_QM_AXI_ATTRIB_CACHE, 6))
 #define QM_ATTRIBUTE_CPU_ENTRY		48
-#define QM_INGRESS_FLUSH_CFG		0x05102013
-#define QM_ES_CTRL_RUN			0x8462ff01
-#define QM_TCAM_DEFAULT			0x8e308000
-#define QM_TCAM_ENTRIES			16
+#define QM_ES_CTRL_RUN			(RTL_QM_ES_TX_EN | \
+					 FIELD_PREP(RTL_QM_ES_CPUEPP_TIMER_MAX, 1) | \
+					 FIELD_PREP(RTL_QM_ES_INCCFG_ERR, 6) | \
+					 FIELD_PREP(RTL_QM_ES_INCCFG_PKT, 2) | \
+					 FIELD_PREP(RTL_QM_ES_NI_EN, 0xff) | \
+					 FIELD_PREP(RTL_QM_ES_CPU_EN, 1))
+#define L2TE_CB_FREECNT_INIT		(RTL_L2TE_CB_FREECNT_CNT1_MSB | \
+					 FIELD_PREP(RTL_L2TE_CB_FREECNT_CNT1, 0xe30) | \
+					 RTL_L2TE_CB_FREECNT_CNT0_MSB)
+#define L2TE_CB_FREECNT_ENTRIES		16
 #define QM_RING_ADDR_MASK		(RTL_NI_QM_RING_SIZE - 1)
 
 static int rtl_ni_qm_table_write(struct rtl9617c_ni *ni, unsigned int reg,
@@ -49,15 +82,17 @@ static int rtl_ni_qm_table_write(struct rtl9617c_ni *ni, unsigned int reg,
 
 static int rtl_ni_qm_port_map(struct rtl9617c_ni *ni, u32 index, u32 val)
 {
-	rtl_ni_write(ni, RTL_NI_QM_PORT_MAP_DATA, val);
-	return rtl_ni_qm_table_write(ni, RTL_NI_QM_PORT_MAP_CMD, index);
+	rtl_ni_write(ni, RTL_L2FE_ARB_PDPID_MAP_TBL_DATA,
+		     FIELD_PREP(RTL_L2FE_ARB_PDPID_MAP_PDPID, val));
+	return rtl_ni_qm_table_write(ni, RTL_L2FE_ARB_PDPID_MAP_TBL_ACCESS,
+				     index);
 }
 
 static int rtl_ni_qm_attribute(struct rtl9617c_ni *ni, unsigned int entry,
 			       u32 val)
 {
-	rtl_ni_write(ni, RTL_NI_QM_ATTRIBUTE_DATA, val);
-	return rtl_ni_qm_table_write(ni, RTL_NI_QM_ATTRIBUTE_CMD, entry);
+	rtl_ni_write(ni, RTL_QM_AXI_ATTRIB_DATA0, val);
+	return rtl_ni_qm_table_write(ni, RTL_QM_AXI_ATTRIB_ACCESS, entry);
 }
 
 static int rtl_ni_qm_pon_map(struct rtl9617c_ni *ni)
@@ -79,26 +114,32 @@ static int rtl_ni_qm_push(struct rtl9617c_ni *ni, u32 addr, unsigned int eq)
 	u32 status;
 	int ret;
 
-	ret = regmap_read_poll_timeout_atomic(ni->regs, RTL_NI_QM_EQ_FREE(eq),
-					      status, status & QM_EQ_FREE_COUNT,
+	ret = regmap_read_poll_timeout_atomic(ni->regs, RTL_QM_EQM_PA_REQ(eq),
+					      status,
+					      status & RTL_QM_EQM_PA_REQ_CNT,
 					      1, 10000);
 	if (ret)
 		return ret;
-	ret = regmap_read_poll_timeout_atomic(ni->regs, RTL_NI_QM_CPU_READY,
-					      status, status & QM_PUSH_READY,
+	ret = regmap_read_poll_timeout_atomic(ni->regs, RTL_QM_CPU_PUSH_RDY0,
+					      status,
+					      status & RTL_QM_CPU_PUSH_RDY,
 					      1, 10000);
 	if (ret)
 		return ret;
-	rtl_ni_write(ni, RTL_NI_QM_CPU_PUSH, addr | eq);
+	rtl_ni_write(ni, RTL_QM_CPU_PUSH_PADDR0,
+		     (addr & RTL_QM_CPU_PUSH_ADDR) |
+		     FIELD_PREP(RTL_QM_CPU_PUSH_EQID, eq));
 	return 0;
 }
 
 static int rtl_ni_qm_try_push(struct rtl9617c_ni *ni, u32 addr, unsigned int eq)
 {
-	if (!(rtl_ni_read(ni, RTL_NI_QM_EQ_FREE(eq)) & QM_EQ_FREE_COUNT) ||
-	    !(rtl_ni_read(ni, RTL_NI_QM_CPU_READY) & QM_PUSH_READY))
+	if (!(rtl_ni_read(ni, RTL_QM_EQM_PA_REQ(eq)) & RTL_QM_EQM_PA_REQ_CNT) ||
+	    !(rtl_ni_read(ni, RTL_QM_CPU_PUSH_RDY0) & RTL_QM_CPU_PUSH_RDY))
 		return -EAGAIN;
-	rtl_ni_write(ni, RTL_NI_QM_CPU_PUSH, addr | eq);
+	rtl_ni_write(ni, RTL_QM_CPU_PUSH_PADDR0,
+		     (addr & RTL_QM_CPU_PUSH_ADDR) |
+		     FIELD_PREP(RTL_QM_CPU_PUSH_EQID, eq));
 	return 0;
 }
 
@@ -134,11 +175,52 @@ static void rtl_ni_qm_refill_drain(struct rtl9617c_ni *ni, unsigned int budget)
 
 static int rtl_ni_qm_ingress(struct rtl9617c_ni *ni, unsigned int port)
 {
-	static const u32 ilpb[] = { 0xc1000b80, 0xc1800deb, 0x1800a363, 0x00108003, 1 };
+	static const u32 ilpb[] = {
+		RTL_L2FE_ILPB_D0_8021P_MARK |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D0_INNER_1P_SEL, 2) |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D0_DSCP_SEL, 2) |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D0_COS_SEL, 2) |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D0_COS_CTRL, 7),
+		RTL_L2FE_ILPB_D1_STA_MOVE_EN |
+		RTL_L2FE_ILPB_D1_SA_MOVE_DIS_FWD |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D1_SPCL_PKT_IDX, 1) |
+		RTL_L2FE_ILPB_D1_CLS_EN |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D1_CLS_LEN, 6) |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D1_FLOWID_SEL, 7) |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D1_TOP_1P_SEL, 2) |
+		RTL_L2FE_ILPB_D1_CHG_1P_POP |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D1_1P_MARK_CTRL, 3),
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D2_INR_VID_SEL, 3) |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D2_S_TPID_MATCH, 2) |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D2_C_TPID_MATCH, 8) |
+		RTL_L2FE_ILPB_D2_TOP_S_TPID_EN |
+		RTL_L2FE_ILPB_D2_TOP_C_TPID_EN |
+		RTL_L2FE_ILPB_D2_INR_C_TPID_EN |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D2_OT_TPID_MATCH, 8) |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D2_STP_MODE, 3),
+		RTL_L2FE_ILPB_D3_SA_MISS_FWD |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D3_UNKWN_POL_IDX, 1) |
+		FIELD_PREP_CONST(RTL_L2FE_ILPB_D3_VLAN_CMD_SEL, 3),
+		RTL_L2FE_ILPB_D4_UNKWN_POL_MODE,
+	};
 	static const u32 key[] = { 0x00007ef0, 0, 0, 0, 0, 0x02800000, 0x0001fbc0,
 				   0, 0, 0, 0, 0x0a000000, 0x00000a40 };
-	static const u32 fib[] = { 0, 0, 0x0003c000, 0x42, 0 };
-	static const u32 cpu_map[] = { 0x90, 0x50, 0xd0 };
+	static const u32 fib[] = {
+		0,
+		0,
+		RTL_L2FE_CLE_FIB2_PERMIT_0 |
+		RTL_L2FE_CLE_FIB2_PERMIT_VLD_0 |
+		FIELD_PREP_CONST(RTL_L2FE_CLE_FIB2_STP_MODE_0, 3),
+		FIELD_PREP_CONST(RTL_L2FE_CLE_FIB3_LDPID_0, QM_CPU_PORT) |
+		RTL_L2FE_CLE_FIB3_DP_VLD_0,
+		0,
+	};
+	static const u32 cpu_map[] = {
+		QM_CPU_PORT | RTL_L2FE_ARB_PDPID_MAP_MY_MAC,
+		QM_CPU_PORT | RTL_L2FE_ARB_PDPID_MAP_POL,
+		QM_CPU_PORT | RTL_L2FE_ARB_PDPID_MAP_POL |
+		RTL_L2FE_ARB_PDPID_MAP_MY_MAC,
+	};
 	unsigned int i;
 	int ret;
 
@@ -151,24 +233,25 @@ static int rtl_ni_qm_ingress(struct rtl9617c_ni *ni, unsigned int port)
 			return ret;
 	}
 
-	rtl_ni_write(ni, RTL_NI_QM_ILPB_DATA, port);
-	ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_ILPB_CMD, port);
+	rtl_ni_write(ni, RTL_L2FE_PP_IPPB_DATA,
+		     FIELD_PREP(RTL_L2FE_PP_IPPB_LSPID, port));
+	ret = rtl_ni_qm_table_write(ni, RTL_L2FE_PP_IPPB_ACCESS, port);
 	if (ret)
 		return ret;
 	for (i = 0; i < ARRAY_SIZE(ilpb); i++)
-		rtl_ni_write(ni, RTL_NI_QM_ILPB_WORDS - 4 * i, ilpb[i]);
-	ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_ILPB_APPLY_CMD, port);
+		rtl_ni_write(ni, RTL_L2FE_PP_ILPB_DATA(i), ilpb[i]);
+	ret = rtl_ni_qm_table_write(ni, RTL_L2FE_PP_ILPB_ACCESS, port);
 	if (ret)
 		return ret;
 
 	for (i = 0; i < ARRAY_SIZE(key); i++)
-		rtl_ni_write(ni, RTL_NI_QM_KEY_WORDS - 4 * i, key[i]);
-	ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_KEY_CMD, 0);
+		rtl_ni_write(ni, RTL_L2FE_CLE_IGR_KEY_DATA(i), key[i]);
+	ret = rtl_ni_qm_table_write(ni, RTL_L2FE_CLE_IGR_KEY_ACCESS, 0);
 	if (ret)
 		return ret;
 	for (i = 0; i < ARRAY_SIZE(fib); i++)
-		rtl_ni_write(ni, RTL_NI_QM_FIB_WORDS - 4 * i, fib[i]);
-	ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_FIB_CMD, 0);
+		rtl_ni_write(ni, RTL_L2FE_CLE_IGR_FIB_DATA(i), fib[i]);
+	ret = rtl_ni_qm_table_write(ni, RTL_L2FE_CLE_IGR_FIB_ACCESS, 0);
 	if (ret)
 		return ret;
 
@@ -176,38 +259,160 @@ static int rtl_ni_qm_ingress(struct rtl9617c_ni *ni, unsigned int port)
 	if (ret)
 		return ret;
 	for (i = 0; i < ARRAY_SIZE(cpu_map); i++) {
-		ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_PORT_MAP_CMD, cpu_map[i]);
+		ret = rtl_ni_qm_table_write(ni,
+					    RTL_L2FE_ARB_PDPID_MAP_TBL_ACCESS,
+					    cpu_map[i]);
 		if (ret)
 			return ret;
 	}
 
-	rtl_ni_write(ni, RTL_NI_QM_PORT_ATTR_A_DATA3, ~(port << 6));
-	rtl_ni_write(ni, RTL_NI_QM_PORT_ATTR_A_DATA2, ~0U);
-	rtl_ni_write(ni, RTL_NI_QM_PORT_ATTR_A_DATA, ~0U);
-	ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_PORT_ATTR_A_CMD, port);
+	rtl_ni_write(ni, RTL_L2FE_PONCLE_KEY_DATA0,
+		     ~FIELD_PREP(RTL_L2FE_PONCLE_KEY0_LSPID, port));
+	rtl_ni_write(ni, RTL_L2FE_PONCLE_KEY_DATA1, ~0U);
+	rtl_ni_write(ni, RTL_L2FE_PONCLE_KEY_DATA2, ~0U);
+	ret = rtl_ni_qm_table_write(ni, RTL_L2FE_PONCLE_KEY_ACCESS, port);
 	if (ret)
 		return ret;
-	rtl_ni_write(ni, RTL_NI_QM_PORT_ATTR_A_DATA3, ~0xfc0U | (port << 6));
-	rtl_ni_write(ni, RTL_NI_QM_PORT_ATTR_A_DATA2, ~0U);
-	rtl_ni_write(ni, RTL_NI_QM_PORT_ATTR_A_DATA, ~0U);
-	ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_PORT_ATTR_A_CMD, 512 + port);
+	rtl_ni_write(ni, RTL_L2FE_PONCLE_KEY_DATA0,
+		     (u32)~RTL_L2FE_PONCLE_KEY0_LSPID |
+		     FIELD_PREP(RTL_L2FE_PONCLE_KEY0_LSPID, port));
+	rtl_ni_write(ni, RTL_L2FE_PONCLE_KEY_DATA1, ~0U);
+	rtl_ni_write(ni, RTL_L2FE_PONCLE_KEY_DATA2, ~0U);
+	ret = rtl_ni_qm_table_write(ni, RTL_L2FE_PONCLE_KEY_ACCESS,
+				    RTL_L2FE_PONCLE_KEY_TCAM_MASK | port);
 	if (ret)
 		return ret;
-	rtl_ni_write(ni, RTL_NI_QM_PORT_ATTR_B_DATA3, 0);
-	rtl_ni_write(ni, RTL_NI_QM_PORT_ATTR_B_DATA2, (3 << 5) | (16 << 8));
-	rtl_ni_write(ni, RTL_NI_QM_PORT_ATTR_B_DATA, BIT(6));
-	ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_PORT_ATTR_B_CMD, port);
+	rtl_ni_write(ni, RTL_L2FE_PONCLE_FIB_DATA0, 0);
+	rtl_ni_write(ni, RTL_L2FE_PONCLE_FIB_DATA1,
+		     FIELD_PREP(RTL_L2FE_PONCLE_FIB1_FWD_ACT, 3) |
+		     FIELD_PREP(RTL_L2FE_PONCLE_FIB1_FWD_ID, QM_CPU_PORT));
+	rtl_ni_write(ni, RTL_L2FE_PONCLE_FIB_DATA2,
+		     RTL_L2FE_PONCLE_FIB2_COS_ACT);
+	ret = rtl_ni_qm_table_write(ni, RTL_L2FE_PONCLE_FIB_ACCESS, port);
 	if (ret)
 		return ret;
-	rtl_ni_write(ni, RTL_NI_QM_CPU_PORT_EN, BIT(1));
-	rtl_ni_write(ni, RTL_NI_QM_CPU_PORT_CFG, 0);
-	ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_CPU_PORT_CMD, QM_CPU_PORT);
+	rtl_ni_write(ni, RTL_L2FE_PLC_ELPB_DATA0, RTL_L2FE_PLC_ELPB_STP_STATUS);
+	rtl_ni_write(ni, RTL_L2FE_PLC_ELPB_DATA1, 0);
+	ret = rtl_ni_qm_table_write(ni, RTL_L2FE_PLC_ELPB_ACCESS, QM_CPU_PORT);
 	if (ret)
 		return ret;
 
-	rtl_ni_rmw(ni, RTL_NI_NITX_THROTTLE, GENMASK(15, 0), 0);
-	rtl_ni_rmw(ni, RTL_NI_NITX_THROTTLE_2, GENMASK(15, 0), 0);
-	rtl_ni_rmw(ni, RTL_NI_QM_RX_ENABLE, 0, BIT(0) | BIT(1));
+	rtl_ni_rmw(ni, RTL_NI_GLB_NIRX_L3FE_DEMUX_CFG1, GENMASK(15, 0), 0);
+	rtl_ni_rmw(ni, RTL_NI_GLB_NIRX_L3FE_DPQ_DEMUX_CFG1, GENMASK(15, 0), 0);
+	rtl_ni_rmw(ni, RTL_L2FE_PLC_DPID_FWD_CTRL, 0,
+		   RTL_L2FE_PLC_VID_FFF_FWD | RTL_L2FE_PLC_UNKVLAN_FWD);
+	return 0;
+}
+
+/**
+ * rtl_ni_qm_eq_cfg - Program an empty queue pool with descriptors latched first.
+ * @ni: Network interface state.
+ * @eq: Empty queue index (0..15).
+ * @cfg0: Word 0 (base address and enable bit), written after cfg1..cfg4.
+ * @cfg1: Word 1 ((buf_count << 16) | bid_base).
+ * @cfg2: Word 2 (head flags and buffer size code).
+ * @cfg3: Word 3 (AXI/descriptor attributes).
+ * @cfg4: Word 4 (pool extension flags).
+ */
+static void rtl_ni_qm_eq_cfg(struct rtl9617c_ni *ni, unsigned int eq,
+			     u32 cfg0, u32 cfg1, u32 cfg2, u32 cfg3, u32 cfg4)
+{
+	unsigned int base = RTL_QM_EQ_CFG0(eq);
+
+	rtl_ni_write(ni, base + 4, cfg1);
+	rtl_ni_write(ni, base + 8, cfg2);
+	rtl_ni_write(ni, base + 12, cfg3);
+	rtl_ni_write(ni, base + 16, cfg4);
+	wmb();
+	rtl_ni_write(ni, base, cfg0);
+}
+
+/**
+ * rtl_ni_qm_lan_deepq - Initialize dedicated EQ0/EQ8 deep queue for 2.5G LAN1.
+ * @ni: Network interface state.
+ *
+ * High-rate 10G PON -> 2.5G XGE6 microbursts overflow L2TM's shared SRAM
+ * buffer pool (~3651 cells). Offloading that flow onto L3QM port 14 backed
+ * by private SRAM (EQ0) + reserved DDR (EQ8) absorbs bursts without tail drop.
+ */
+static int rtl_ni_qm_lan_deepq(struct rtl9617c_ni *ni)
+{
+	struct rtl_ni_qm *qm = &ni->qm;
+	unsigned int count = qm->lan_dq_bufs;
+	unsigned int low = count / 3;
+	unsigned int high = (count * 2) / 3;
+	unsigned int mid = count / 2;
+	unsigned int voq_start = QM_LAN_DQ_PORT * RTL_NI_QM_VOQS;
+	unsigned int shift = QM_LAN_DQ_PORT * 2;
+	unsigned int voq;
+	int ret;
+
+	if (!count)
+		return 0;
+
+	rtl_ni_qm_eq_cfg(ni, QM_LAN_DQ_EQ_PRIVATE,
+			 QM_LAN_DQ_SRAM_BASE | RTL_QM_EQ_CFG0_EN,
+			 FIELD_PREP(RTL_QM_EQ_CFG1_TOTAL_BUFS, QM_LAN_DQ_SRAM_BUFS) |
+			 FIELD_PREP(RTL_QM_EQ_CFG1_BID_START, QM_LAN_DQ_SRAM_BID_BASE),
+			 QM_EQ_CFG2_HEAD_DEFAULT |
+			 FIELD_PREP(RTL_QM_EQ_CFG2_BUFSZ, QM_EQ_CFG2_BUFSZ_512),
+			 QM_EQ_CFG3_NONCPU, 0);
+	rtl_ni_qm_eq_cfg(ni, QM_LAN_DQ_EQ_SHARED,
+			 lower_32_bits(qm->lan_dq_dma) | RTL_QM_EQ_CFG0_EN,
+			 FIELD_PREP(RTL_QM_EQ_CFG1_TOTAL_BUFS, count) |
+			 FIELD_PREP(RTL_QM_EQ_CFG1_BID_START, QM_LAN_DQ_DDR_BID_BASE),
+			 QM_EQ_CFG2_HEAD_DEFAULT |
+			 FIELD_PREP(RTL_QM_EQ_CFG2_BUFSZ, QM_EQ_CFG2_BUFSZ_2048),
+			 QM_EQ_CFG3_NONCPU, 0);
+
+	rtl_ni_write(ni, RTL_QM_EQ_PROFILE(QM_LAN_DQ_EQ_PROFILE),
+		     FIELD_PREP(RTL_QM_EQ_PROF_EQP0, QM_LAN_DQ_EQ_PRIVATE) |
+		     FIELD_PREP(RTL_QM_EQ_PROF_EQP1, QM_LAN_DQ_EQ_SHARED));
+	rtl_ni_write(ni, RTL_QM_DEST_PORT_EQ_CFG(QM_LAN_DQ_PORT),
+		     QM_LAN_DQ_EQ_PROFILE);
+	rtl_ni_write(ni, RTL_QM_SCH_CFG(QM_LAN_DQ_PORT), RTL_QM_SCH_VOQ_EN);
+	rtl_ni_write(ni, RTL_QM_VOQ3_0_WEIGHT_RATIO_CFG(QM_LAN_DQ_PORT), 0);
+	rtl_ni_write(ni, RTL_QM_VOQ3_0_WEIGHT_RATIO_CFG(QM_LAN_DQ_PORT) + 4, 0);
+
+	rtl_ni_write(ni, RTL_TE_CB_PORT_THRSH_PROFILE(QM_LAN_DQ_CREDIT_PROFILE),
+		     FIELD_PREP(RTL_TE_CB_PORT_LTH, low) |
+		     FIELD_PREP(RTL_TE_CB_PORT_HTH, high));
+	rtl_ni_write(ni, RTL_TE_CB_PORT_GRPTHRSH_PROFILE(QM_LAN_DQ_CREDIT_PROFILE),
+		     QM_CPU_BURST_UNLIMITED);
+	rtl_ni_rmw(ni, RTL_TE_CB_PORT_THRSH_SELECT0, GENMASK(1, 0) << shift,
+		   QM_LAN_DQ_CREDIT_PROFILE << shift);
+
+	rtl_ni_write(ni, RTL_TE_CB_PORT_FREECNT_DATA,
+		     FIELD_PREP(RTL_TE_CB_FREECNT_CNT0, QM_LAN_DQ_SRAM_BUFS) |
+		     RTL_TE_CB_FREECNT_CNT0_MSB |
+		     FIELD_PREP(RTL_TE_CB_FREECNT_CNT1, count) |
+		     RTL_TE_CB_FREECNT_CNT1_MSB);
+	ret = rtl_ni_qm_table_write(ni, RTL_TE_CB_PORT_FREECNT_ACCESS,
+				    QM_LAN_DQ_PORT);
+	if (ret)
+		return ret;
+
+	rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_DATA2, 0);
+	rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_DATA1,
+		     QM_VOQ_WEIGHT_LAN_DQ);
+	rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_DATA0,
+		     FIELD_PREP(RTL_TE_CB_VOQ_D0_LTH, low) |
+		     FIELD_PREP(RTL_TE_CB_VOQ_D0_HTH, mid) |
+		     QM_VOQ_THRSH_FLAGS_LAN_DQ);
+	ret = rtl_ni_qm_table_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_ACCESS,
+				    QM_LAN_DQ_VOQ_PROFILE);
+	if (ret)
+		return ret;
+
+	for (voq = voq_start; voq < voq_start + RTL_NI_QM_VOQS; voq++) {
+		rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_SELECT_DATA,
+			     QM_LAN_DQ_VOQ_PROFILE);
+		ret = rtl_ni_qm_table_write(ni,
+					    RTL_TE_CB_VOQ_THRSH_SELECT_ACCESS,
+					    voq);
+		if (ret)
+			return ret;
+	}
 	return 0;
 }
 
@@ -220,48 +425,74 @@ static int rtl_ni_qm_deepq(struct rtl9617c_ni *ni)
 	u32 base = lower_32_bits(ni->qm.dq_dma);
 	int ret;
 
-	rtl_ni_rmw(ni, RTL_NI_PUC_DEQUEUE, GENMASK(15, 0), 0);
+	rtl_ni_rmw(ni, RTL_QM_ES_CTRL1, RTL_QM_ES_CTRL1_PUC_EN, 0);
 	for (pool = 0; pool < 2; pool++) {
-		unsigned int cfg = RTL_NI_QM_EQ_CFG(QM_DQ_EQ_PRIVATE + pool);
+		unsigned int cfg = RTL_QM_EQ_CFG0(QM_DQ_EQ_PRIVATE + pool);
 
-		rtl_ni_write(ni, cfg, (base + pool * count * RTL_NI_DQ_BUF_SIZE) | 1);
-		rtl_ni_write(ni, cfg + 4, (count << 16) | (QM_DQ_BID_BASE + pool * count));
-		rtl_ni_write(ni, cfg + 8, 5);
+		rtl_ni_write(ni, cfg,
+			     (base + pool * count * RTL_NI_DQ_BUF_SIZE) |
+			     RTL_QM_EQ_CFG0_EN);
+		rtl_ni_write(ni, cfg + 4,
+			     FIELD_PREP(RTL_QM_EQ_CFG1_TOTAL_BUFS, count) |
+			     FIELD_PREP(RTL_QM_EQ_CFG1_BID_START,
+					QM_DQ_BID_BASE + pool * count));
+		rtl_ni_write(ni, cfg + 8,
+			     FIELD_PREP(RTL_QM_EQ_CFG2_BUFSZ,
+					QM_EQ_CFG2_BUFSZ_2048));
 		rtl_ni_write(ni, cfg + 12, QM_EQ_CFG_DESC);
 		rtl_ni_write(ni, cfg + 16, 2);
 	}
-	rtl_ni_write(ni, RTL_NI_QM_EQ_PROFILE(1),
-		     QM_DQ_EQ_PRIVATE | (QM_DQ_EQ_SHARED << 4));
-	rtl_ni_rmw(ni, RTL_NI_QM_DQ_CFG, GENMASK(3, 0), 10);
-	rtl_ni_rmw(ni, RTL_NI_QM_BUF_CFG, 0xc8000000, 0);
-	rtl_ni_write(ni, RTL_NI_QM_DQ_THRESHOLD, low | (high << 16));
-	rtl_ni_write(ni, RTL_NI_QM_GROUP_THRESHOLD, 0x3fff3fff);
-	rtl_ni_write(ni, RTL_NI_QM_PORT_PROFILE, ~0U);
-	rtl_ni_write(ni, RTL_NI_QM_VOQ_CFG, 0);
-	rtl_ni_write(ni, RTL_NI_QM_VOQ_WEIGHT, (25U << 24) | (0x3fffU << 10) | 0x3ff);
-	rtl_ni_write(ni, RTL_NI_QM_VOQ_THRESHOLD, low | (count << 14) | 0xf0000000);
-	ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_VOQ_CMD, 3);
+	rtl_ni_write(ni, RTL_QM_EQ_PROFILE(1),
+		     FIELD_PREP(RTL_QM_EQ_PROF_EQP0, QM_DQ_EQ_PRIVATE) |
+		     FIELD_PREP(RTL_QM_EQ_PROF_EQP1, QM_DQ_EQ_SHARED));
+	rtl_ni_rmw(ni, RTL_QM_UPPER_LDPID_MAP, RTL_QM_UPPER_LDPID_MAP_MASK,
+		   RTL_QM_UPPER_LDPID_PON_EN |
+		   FIELD_PREP(RTL_QM_UPPER_LDPID_PON_OFFSET, 2));
+	rtl_ni_rmw(ni, RTL_QM_BUFFER_CNTL,
+		   RTL_QM_BUF_CNTL_JUMBO_EN | RTL_QM_BUF_CNTL_ALT_EQ_EN, 0);
+	rtl_ni_write(ni, RTL_TE_CB_PORT_THRSH_PROFILE(3),
+		     FIELD_PREP(RTL_TE_CB_PORT_LTH, low) |
+		     FIELD_PREP(RTL_TE_CB_PORT_HTH, high));
+	rtl_ni_write(ni, RTL_TE_CB_PORT_GRPTHRSH_PROFILE(3),
+		     QM_CPU_BURST_UNLIMITED);
+	rtl_ni_write(ni, RTL_TE_CB_PORT_THRSH_SELECT1, ~0U);
+	rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_DATA2, 0);
+	rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_DATA1,
+		     QM_VOQ_WEIGHT_LAN_DQ);
+	rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_DATA0,
+		     FIELD_PREP(RTL_TE_CB_VOQ_D0_LTH, low) |
+		     FIELD_PREP(RTL_TE_CB_VOQ_D0_HTH, count) |
+		     QM_VOQ_THRSH_FLAGS_LAN_DQ);
+	ret = rtl_ni_qm_table_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_ACCESS, 3);
 	if (ret)
 		return ret;
 
 	for (port = QM_WAN_PORT_FIRST; port < QM_WAN_PORT_LAST; port++) {
-		rtl_ni_write(ni, RTL_NI_QM_CPU_EQ(port), 1);
-		rtl_ni_write(ni, RTL_NI_QM_QUEUE_ENABLE(port), 255);
-		rtl_ni_write(ni, RTL_NI_QM_PORT_WEIGHT(port), 0x01010101);
-		rtl_ni_write(ni, RTL_NI_QM_PORT_WEIGHT(port) + 4, 0x01010101);
-		rtl_ni_write(ni, RTL_NI_QM_CPU_CFG,
-			     count | BIT(14) | (count << 16) | BIT(30));
-		ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_CPU_CFG_CMD, port);
+		rtl_ni_write(ni, RTL_QM_DEST_PORT_EQ_CFG(port), 1);
+		rtl_ni_write(ni, RTL_QM_SCH_CFG(port), RTL_QM_SCH_VOQ_EN);
+		rtl_ni_write(ni, RTL_QM_VOQ3_0_WEIGHT_RATIO_CFG(port),
+			     0x01010101);
+		rtl_ni_write(ni, RTL_QM_VOQ3_0_WEIGHT_RATIO_CFG(port) + 4,
+			     0x01010101);
+		rtl_ni_write(ni, RTL_TE_CB_PORT_FREECNT_DATA,
+			     FIELD_PREP(RTL_TE_CB_FREECNT_CNT0, count) |
+			     RTL_TE_CB_FREECNT_CNT0_MSB |
+			     FIELD_PREP(RTL_TE_CB_FREECNT_CNT1, count) |
+			     RTL_TE_CB_FREECNT_CNT1_MSB);
+		ret = rtl_ni_qm_table_write(ni, RTL_TE_CB_PORT_FREECNT_ACCESS,
+					    port);
 		if (ret)
 			return ret;
 		for (voq = port * 8; voq < port * 8 + 8; voq++) {
-			rtl_ni_write(ni, RTL_NI_QM_VOQ_PROFILE, 3);
-			ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_VOQ_PROFILE_CMD, voq);
+			rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_SELECT_DATA, 3);
+			ret = rtl_ni_qm_table_write(ni,
+						    RTL_TE_CB_VOQ_THRSH_SELECT_ACCESS,
+						    voq);
 			if (ret)
 				return ret;
 		}
 	}
-	return 0;
+	return rtl_ni_qm_lan_deepq(ni);
 }
 
 static void rtl_ni_qm_axi_reorder(struct rtl9617c_ni *ni)
@@ -292,16 +523,18 @@ static void rtl_ni_qm_axi_reorder(struct rtl9617c_ni *ni)
 
 static int rtl_ni_qm_cpu_credits(struct rtl9617c_ni *ni)
 {
-	u32 select = rtl_ni_read(ni, RTL_NI_QM_CPU_SELECT);
+	u32 select = rtl_ni_read(ni, RTL_TE_CB_PORT_THRSH_SELECT0);
 	unsigned int profile, cpu, voq;
 	int ret;
 
 	for (profile = 0; profile < 2; profile++) {
 		unsigned int count = profile ? RTL_NI_QM_PE_BUFS - 4 : RTL_NI_QM_EQ_BUFS;
 
-		rtl_ni_write(ni, RTL_NI_QM_CPU_BUDGET(profile),
-			     (count / 8) << 16 | (count / 64));
-		rtl_ni_write(ni, RTL_NI_QM_CPU_BURST(profile), 0x3fff3fff);
+		rtl_ni_write(ni, RTL_TE_CB_PORT_THRSH_PROFILE(profile),
+			     FIELD_PREP(RTL_TE_CB_PORT_HTH, count / 8) |
+			     FIELD_PREP(RTL_TE_CB_PORT_LTH, count / 64));
+		rtl_ni_write(ni, RTL_TE_CB_PORT_GRPTHRSH_PROFILE(profile),
+			     QM_CPU_BURST_UNLIMITED);
 	}
 
 	for (cpu = 0; cpu < 4; cpu++) {
@@ -317,22 +550,35 @@ static int rtl_ni_qm_cpu_credits(struct rtl9617c_ni *ni)
 		if (cpu) {
 			unsigned int eq = RTL_NI_QM_PE_EQ + (3 - cpu);
 
-			rtl_ni_write(ni, RTL_NI_QM_EQ_PROFILE(eq_profile), eq | (15 << 4));
-			rtl_ni_write(ni, RTL_NI_QM_CPU_EQ(cpu), eq_profile);
+			rtl_ni_write(ni, RTL_QM_EQ_PROFILE(eq_profile),
+				     FIELD_PREP(RTL_QM_EQ_PROF_EQP0, eq) |
+				     FIELD_PREP(RTL_QM_EQ_PROF_EQP1, 15));
+			rtl_ni_write(ni, RTL_QM_DEST_PORT_EQ_CFG(cpu),
+				     eq_profile);
 		}
-		rtl_ni_write(ni, RTL_NI_QM_CPU_CFG,
-			     count0 | BIT(14) | (count1 << 16) | BIT(30));
-		ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_CPU_CFG_CMD, cpu);
+		rtl_ni_write(ni, RTL_TE_CB_PORT_FREECNT_DATA,
+			     FIELD_PREP(RTL_TE_CB_FREECNT_CNT0, count0) |
+			     RTL_TE_CB_FREECNT_CNT0_MSB |
+			     FIELD_PREP(RTL_TE_CB_FREECNT_CNT1, count1) |
+			     RTL_TE_CB_FREECNT_CNT1_MSB);
+		ret = rtl_ni_qm_table_write(ni, RTL_TE_CB_PORT_FREECNT_ACCESS,
+					    cpu);
 		if (ret)
 			return ret;
 		select = (select & ~(3U << (cpu * 2))) | (profile << (cpu * 2));
 
-		rtl_ni_write(ni, RTL_NI_QM_EQ_WEIGHT(eq_profile), 12 | (12 << 16));
+		rtl_ni_write(ni, RTL_TE_CB_EQ_PROFILE_THRSH(eq_profile),
+			     FIELD_PREP(RTL_TE_CB_EQ_TH0, 12) |
+			     FIELD_PREP(RTL_TE_CB_EQ_TH1, 12));
 		for (voq = cpu * 8; voq < cpu * 8 + 8; voq++) {
 			if (cpu)
-				rtl_ni_write(ni, RTL_NI_QM_VOQ_EQ(voq), eq_profile);
-			rtl_ni_write(ni, RTL_NI_QM_VOQ_PROFILE, cpu == 3 ? 4 : profile);
-			ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_VOQ_PROFILE_CMD, voq);
+				rtl_ni_write(ni, RTL_QM_CPU_EPP_FIFO0_CFG(voq),
+					     eq_profile);
+			rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_SELECT_DATA,
+				     cpu == 3 ? 4 : profile);
+			ret = rtl_ni_qm_table_write(ni,
+						    RTL_TE_CB_VOQ_THRSH_SELECT_ACCESS,
+						    voq);
 			if (ret)
 				return ret;
 		}
@@ -341,22 +587,114 @@ static int rtl_ni_qm_cpu_credits(struct rtl9617c_ni *ni)
 	for (profile = 0; profile < 3; profile++) {
 		unsigned int count = profile ? RTL_NI_QM_PE_BUFS - 4 : RTL_NI_QM_EQ_BUFS;
 
-		rtl_ni_write(ni, RTL_NI_QM_VOQ_CFG, 0);
-		rtl_ni_write(ni, RTL_NI_QM_VOQ_WEIGHT, (profile == 1 ? 12 : 3) << 24);
-		rtl_ni_write(ni, RTL_NI_QM_VOQ_THRESHOLD,
-			     ((count * 7 / 8) << 14) | (count * 6 / 8));
-		ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_VOQ_CMD,
+		rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_DATA2, 0);
+		rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_DATA1,
+			     FIELD_PREP(RTL_TE_CB_VOQ_D1_PRVT,
+					profile == 1 ? 12 : 3));
+		rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_DATA0,
+			     FIELD_PREP(RTL_TE_CB_VOQ_D0_HTH, count * 7 / 8) |
+			     FIELD_PREP(RTL_TE_CB_VOQ_D0_LTH, count * 6 / 8));
+		ret = rtl_ni_qm_table_write(ni,
+					    RTL_TE_CB_VOQ_THRSH_PROFILE_ACCESS,
 					    profile == 2 ? 4 : profile);
 		if (ret)
 			return ret;
 	}
-	rtl_ni_write(ni, RTL_NI_QM_CPU_SELECT, select);
+	rtl_ni_write(ni, RTL_TE_CB_PORT_THRSH_SELECT0, select);
 	return 0;
+}
+
+/**
+ * rtl_ni_qm_lan_dq_alloc - Claim reserved DDR pool for XGE6 (LAN1) deep queue.
+ * @ni: Network interface state.
+ *
+ * Looks up optional "memory-region" on the NI device-tree node. When absent,
+ * LAN deep queue remains disabled cleanly.
+ */
+static int rtl_ni_qm_lan_dq_alloc(struct rtl9617c_ni *ni)
+{
+	struct rtl_ni_qm *qm = &ni->qm;
+	size_t size = (size_t)QM_LAN_DQ_DDR_BUFS * RTL_NI_DQ_BUF_SIZE;
+	struct device_node *np;
+	struct resource region;
+	int ret;
+
+	np = of_parse_phandle(ni->dev->of_node, "memory-region", 0);
+	if (!np)
+		return 0;
+
+	if (of_property_read_bool(np, "no-map")) {
+		of_node_put(np);
+		return -EINVAL;
+	}
+	ret = of_address_to_resource(np, 0, &region);
+	of_node_put(np);
+	if (ret)
+		return ret;
+	if (resource_size(&region) < size ||
+	    upper_32_bits(region.start + size - 1))
+		return -ENOSPC;
+
+	qm->lan_dq_res = (struct resource) {
+		.name = "rtl9617c-lan-deepq",
+		.start = region.start,
+		.end = region.start + size - 1,
+		.flags = IORESOURCE_MEM,
+	};
+	ret = insert_resource(&iomem_resource, &qm->lan_dq_res);
+	if (ret) {
+		memset(&qm->lan_dq_res, 0, sizeof(qm->lan_dq_res));
+		return ret;
+	}
+
+	qm->lan_dq = memremap(region.start, size, MEMREMAP_WB);
+	if (!qm->lan_dq) {
+		remove_resource(&qm->lan_dq_res);
+		memset(&qm->lan_dq_res, 0, sizeof(qm->lan_dq_res));
+		return -ENOMEM;
+	}
+
+	qm->lan_dq_dma = dma_map_single(ni->dev, qm->lan_dq, size,
+					DMA_BIDIRECTIONAL);
+	if (dma_mapping_error(ni->dev, qm->lan_dq_dma) ||
+	    upper_32_bits(qm->lan_dq_dma)) {
+		if (!dma_mapping_error(ni->dev, qm->lan_dq_dma))
+			dma_unmap_single(ni->dev, qm->lan_dq_dma, size,
+					 DMA_BIDIRECTIONAL);
+		memunmap(qm->lan_dq);
+		qm->lan_dq = NULL;
+		remove_resource(&qm->lan_dq_res);
+		memset(&qm->lan_dq_res, 0, sizeof(qm->lan_dq_res));
+		return -EFAULT;
+	}
+
+	qm->lan_dq_size = size;
+	qm->lan_dq_bufs = QM_LAN_DQ_DDR_BUFS;
+	return 0;
+}
+
+static void rtl_ni_qm_lan_dq_free(struct rtl9617c_ni *ni)
+{
+	struct rtl_ni_qm *qm = &ni->qm;
+
+	if (!qm->lan_dq)
+		return;
+	dma_unmap_single(ni->dev, qm->lan_dq_dma, qm->lan_dq_size,
+			 DMA_BIDIRECTIONAL);
+	memunmap(qm->lan_dq);
+	if (qm->lan_dq_res.parent)
+		remove_resource(&qm->lan_dq_res);
+	qm->lan_dq = NULL;
+	qm->lan_dq_dma = 0;
+	qm->lan_dq_size = 0;
+	qm->lan_dq_bufs = 0;
+	memset(&qm->lan_dq_res, 0, sizeof(qm->lan_dq_res));
 }
 
 int rtl_ni_qm_alloc(struct rtl9617c_ni *ni)
 {
 	struct rtl_ni_qm *qm = &ni->qm;
+	int ret;
 
 	qm->buf = dma_alloc_noncoherent(ni->dev, RTL_NI_QM_BUFS * RTL_NI_QM_BUF_SIZE,
 					&qm->buf_dma, DMA_FROM_DEVICE, GFP_KERNEL);
@@ -370,6 +708,11 @@ int rtl_ni_qm_alloc(struct rtl9617c_ni *ni)
 		rtl_ni_qm_free(ni);
 		return -ENOMEM;
 	}
+	ret = rtl_ni_qm_lan_dq_alloc(ni);
+	if (ret) {
+		rtl_ni_qm_free(ni);
+		return ret;
+	}
 	return 0;
 }
 
@@ -377,11 +720,55 @@ void rtl_ni_qm_free(struct rtl9617c_ni *ni)
 {
 	struct rtl_ni_qm *qm = &ni->qm;
 
+	rtl_ni_qm_lan_dq_free(ni);
 	if (!qm->buf)
 		return;
 	dma_free_noncoherent(ni->dev, RTL_NI_QM_BUFS * RTL_NI_QM_BUF_SIZE, qm->buf,
 			     qm->buf_dma, DMA_FROM_DEVICE);
 	qm->buf = NULL;
+}
+
+static int rtl_ni_qm_lan_dq_wait_pool(struct rtl9617c_ni *ni, unsigned int eq,
+				      unsigned int expected)
+{
+	u32 mon, free;
+	int ret;
+
+	ret = regmap_read_poll_timeout(ni->regs, RTL_QM_MONITOR1_EQ(eq),
+				       mon,
+				       (mon & RTL_QM_EQM_PA_REQ_CNT) == expected,
+				       10, 100000);
+	if (ret)
+		return ret;
+	return regmap_read_poll_timeout(ni->regs, RTL_QM_EQM_PA_REQ(eq), free,
+					!(free & RTL_QM_EQM_PA_REQ_CNT),
+					10, 100000);
+}
+
+static int rtl_ni_qm_lan_dq_wait_flush(struct rtl9617c_ni *ni)
+{
+	int ret;
+
+	if (!ni->qm.lan_dq_bufs)
+		return 0;
+
+	ret = rtl_ni_qm_lan_dq_wait_pool(ni, QM_LAN_DQ_EQ_PRIVATE,
+					 QM_LAN_DQ_SRAM_BUFS);
+	if (ret)
+		return ret;
+	return rtl_ni_qm_lan_dq_wait_pool(ni, QM_LAN_DQ_EQ_SHARED,
+					  ni->qm.lan_dq_bufs);
+}
+
+static void rtl_ni_qm_lan_dq_enable(struct rtl9617c_ni *ni, bool enable)
+{
+	rtl_ni_rmw(ni, RTL_NI_GLB_INTERNAL_PORT_ID_CFG,
+		   RTL_NI_GLB_L3QMRX_TO_LAN,
+		   enable ? RTL_NI_GLB_L3QMRX_TO_LAN : 0);
+	rtl_ni_rmw(ni, RTL_NI_L3QMRX_DEMUX_CFG0, RTL_NI_L3QMRX_DEMUX_P6,
+		   enable ? RTL_NI_L3QMRX_DEMUX_P6 : 0);
+	rtl_ni_rmw(ni, RTL_QM_ES_CTRL2, RTL_QM_ES_CTRL2_LAN_EN,
+		   enable ? RTL_QM_ES_CTRL2_LAN_EN : 0);
 }
 
 int rtl_ni_qm_start(struct rtl9617c_ni *ni)
@@ -392,46 +779,55 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 	int ret;
 
 	qm->ready = false;
-	rtl_ni_rmw(ni, RTL_NI_QM_CB_CTRL, BIT(31), 0);
-	rtl_ni_rmw(ni, RTL_NI_QM_RMU_CTRL, BIT(31), 0);
-	rtl_ni_rmw(ni, RTL_NI_QM_ES_CTRL, BIT(31), 0);
+	rtl_ni_rmw(ni, RTL_TE_CB_CTRL, RTL_TE_CB_SCAN_EN, 0);
+	rtl_ni_rmw(ni, RTL_QM_RMU0_CTRL, RTL_QM_RMU0_RX_EN, 0);
+	rtl_ni_rmw(ni, RTL_QM_ES_CTRL, RTL_QM_ES_TX_EN, 0);
 
 	writel(readl(ni->reset) | QM_RESET_BIT, ni->reset);
 	usleep_range(1000, 2000);
 	writel(readl(ni->reset) & ~QM_RESET_BIT, ni->reset);
-	ret = regmap_read_poll_timeout(ni->regs, RTL_NI_QM_RESET_STATUS, val,
-				       val & QM_RESET_DONE, 1, 100000);
+	ret = regmap_read_poll_timeout(ni->regs, RTL_QM_PHY_PORT_STS, val,
+				       val & RTL_QM_PHY_PORT_INIT_DONE,
+				       1, 100000);
 	if (ret)
 		return ret;
 
 	memset(&qm->refill, 0, sizeof(qm->refill));
-	rtl_ni_rmw(ni, RTL_NI_QM_RMU_CTRL, BIT(31), 0);
-	rtl_ni_rmw(ni, RTL_NI_QM_ES_CTRL, BIT(31), 0);
-	rtl_ni_write(ni, RTL_NI_QM_EQ_IRQ_ENABLE_LO, 0);
-	rtl_ni_write(ni, RTL_NI_QM_EQ_IRQ_ENABLE_HI, 0);
+	rtl_ni_rmw(ni, RTL_QM_RMU0_CTRL, RTL_QM_RMU0_RX_EN, 0);
+	rtl_ni_rmw(ni, RTL_QM_ES_CTRL, RTL_QM_ES_TX_EN, 0);
+	rtl_ni_write(ni, RTL_QM_EPP64_P3_0_INT_EN, 0);
+	rtl_ni_write(ni, RTL_QM_EPP64_P7_4_INT_EN, 0);
 
 	for (i = 0; i < RTL_NI_QM_VOQS; i++) {
-		qm->read[i] = rtl_ni_read(ni, RTL_NI_QM_EPP_WRITE(i)) & QM_RING_ADDR_MASK;
-		rtl_ni_write(ni, RTL_NI_QM_EPP_READ(i), qm->read[i]);
+		qm->read[i] = rtl_ni_read(ni, RTL_QM_CPUEPP_FIFO_WRPTR(i)) &
+			      QM_RING_ADDR_MASK;
+		rtl_ni_write(ni, RTL_QM_CPUEPP_FIFO_RDPTR(i), qm->read[i]);
 	}
-	rtl_ni_read(ni, RTL_NI_QM_EPP_READ(0));
+	rtl_ni_read(ni, RTL_QM_CPUEPP_FIFO_RDPTR(0));
 	rtl_ni_qm_axi_reorder(ni);
 	memset(qm->ring, 0, RTL_NI_QM_RING_SIZE * RTL_NI_QM_VOQS);
 	dma_sync_single_for_device(ni->dev, qm->buf_dma,
 				   RTL_NI_QM_BUFS * RTL_NI_QM_BUF_SIZE,
 				   DMA_FROM_DEVICE);
+	if (qm->lan_dq_bufs)
+		dma_sync_single_for_device(ni->dev, qm->lan_dq_dma,
+					   qm->lan_dq_size, DMA_BIDIRECTIONAL);
 
 	for (i = 0; i < 16; i++) {
-		rtl_ni_write(ni, RTL_NI_QM_EQ_CFG(i), 0);
-		rtl_ni_write(ni, RTL_NI_QM_EQ_CFG(i) + 4, 0);
+		rtl_ni_write(ni, RTL_QM_EQ_CFG0(i), 0);
+		rtl_ni_write(ni, RTL_QM_EQ_CFG0(i) + 4, 0);
 	}
 	for (i = 0; i < RTL_NI_QM_EQS; i++) {
-		unsigned int cfg = RTL_NI_QM_EQ_CFG(RTL_NI_QM_EQ + i);
+		unsigned int cfg = RTL_QM_EQ_CFG0(RTL_NI_QM_EQ + i);
 
-		rtl_ni_write(ni, cfg, 1);
-		rtl_ni_write(ni, cfg + 4, (RTL_NI_QM_EQ_BUFS << 16) |
-			     (i * RTL_NI_QM_EQ_BUFS));
-		rtl_ni_write(ni, cfg + 8, 5 | BIT(3) | (24 << 8));
+		rtl_ni_write(ni, cfg, RTL_QM_EQ_CFG0_EN);
+		rtl_ni_write(ni, cfg + 4,
+			     FIELD_PREP(RTL_QM_EQ_CFG1_TOTAL_BUFS, RTL_NI_QM_EQ_BUFS) |
+			     FIELD_PREP(RTL_QM_EQ_CFG1_BID_START, i * RTL_NI_QM_EQ_BUFS));
+		rtl_ni_write(ni, cfg + 8,
+			     FIELD_PREP(RTL_QM_EQ_CFG2_BUFSZ, QM_EQ_CFG2_BUFSZ_2048) |
+			     RTL_QM_EQ_CFG2_CPU_EQ |
+			     FIELD_PREP(RTL_QM_EQ_CFG2_REFILL_THS, 24));
 		rtl_ni_write(ni, cfg + 12, QM_EQ_CFG_DESC);
 		rtl_ni_write(ni, cfg + 16, 2);
 	}
@@ -440,13 +836,26 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 	if (ret)
 		return ret;
 
-	rtl_ni_write(ni, QM_EQ_PROFILE_CPU0, RTL_NI_QM_EQ | ((RTL_NI_QM_EQ + 1) << 4));
-	rtl_ni_write(ni, RTL_NI_QM_CPU_EQ(0), RTL_NI_QM_EQ);
-	rtl_ni_write(ni, RTL_NI_QM_PACKET_LAYOUT, 0x18041804);
-	rtl_ni_write(ni, RTL_NI_QM_INGRESS_CFG, QM_INGRESS_FLUSH_CFG);
-	rtl_ni_write(ni, RTL_NI_QM_FLUSH, 0xffff);
-	rtl_ni_write(ni, RTL_NI_QM_FLUSH, 0);
-	rtl_ni_write(ni, RTL_NI_QM_INGRESS_CFG, 0);
+	rtl_ni_write(ni, QM_EQ_PROFILE_CPU0,
+		     FIELD_PREP(RTL_QM_EQ_PROF_EQP0, RTL_NI_QM_EQ) |
+		     FIELD_PREP(RTL_QM_EQ_PROF_EQP1, RTL_NI_QM_EQ + 1));
+	rtl_ni_write(ni, RTL_QM_DEST_PORT_EQ_CFG(0), RTL_NI_QM_EQ);
+	rtl_ni_write(ni, RTL_QM_DEST_PORT_PKT_BUF_CFG(0),
+		     FIELD_PREP(RTL_QM_PKT_BUF_HEAD_FIRST, RTL_NI_QM_HEADROOM / 16) |
+		     FIELD_PREP(RTL_QM_PKT_BUF_TAIL_FIRST, RTL_NI_QM_TAILROOM / 16) |
+		     FIELD_PREP(RTL_QM_PKT_BUF_HEAD_REST, RTL_NI_QM_HEADROOM / 16) |
+		     FIELD_PREP(RTL_QM_PKT_BUF_TAIL_REST, RTL_NI_QM_TAILROOM / 16));
+	rtl_ni_write(ni, RTL_QM_HDM_WRITE_PROTECT,
+		     RTL_QM_HDM_WRITE_PROTECT_UNLOCK);
+	wmb();
+	rtl_ni_write(ni, RTL_QM_EQ_CFG_LOAD, RTL_QM_EQ_CFG_LOAD_ALL);
+	wmb();
+	udelay(50);
+	rtl_ni_write(ni, RTL_QM_EQ_CFG_LOAD, 0);
+	rtl_ni_write(ni, RTL_QM_HDM_WRITE_PROTECT, 0);
+	ret = rtl_ni_qm_lan_dq_wait_flush(ni);
+	if (ret)
+		return ret;
 
 	for (i = 0; i < 16; i++) {
 		ret = rtl_ni_qm_attribute(ni, i, 0);
@@ -457,15 +866,21 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 	if (ret)
 		return ret;
 
-	rtl_ni_rmw(ni, RTL_NI_QM_CONTROL, BIT(11) | BIT(13), 0xff);
-	rtl_ni_rmw(ni, RTL_NI_QM_STATUS, 0, BIT(2));
-	rtl_ni_write(ni, RTL_NI_QM_DROP_CFG, 0);
+	rtl_ni_rmw(ni, RTL_QM_AXIM2_CONFIG,
+		   RTL_QM_AXIM2_WR_CACHELINE | RTL_QM_AXIM2_RD_CACHELINE,
+		   FIELD_PREP(RTL_QM_AXIM2_RD_OUTTRANS, 15) |
+		   FIELD_PREP(RTL_QM_AXIM2_WR_OUTTRANS, 15));
+	rtl_ni_rmw(ni, RTL_QM_EPP, 0, RTL_QM_EPP_CMD_MODE);
+	rtl_ni_write(ni, RTL_QM_CPU_EPP0_CFG, 0);
 
-	rtl_ni_rmw(ni, RTL_NI_QM_EQ_QUEUE(RTL_NI_QM_EQ), GENMASK(28, 0),
-		   ((RTL_NI_QM_RING_SIZE / 16) << 8) | 0xf2);
+	rtl_ni_rmw(ni, RTL_QM_CPU_EPP_FIFO_CFG_PROFILE(RTL_NI_QM_EQ),
+		   RTL_QM_EPP_FIFO_CFG_MASK,
+		   FIELD_PREP(RTL_QM_EPP_FIFO_SIZE, RTL_NI_QM_RING_SIZE / 16) |
+		   FIELD_PREP(RTL_QM_EPP_FIFO_TIMER_THS, 15) |
+		   FIELD_PREP(RTL_QM_EPP_FIFO_HIGH_THS, 2));
 	for (i = 0; i < RTL_NI_QM_VOQS; i++) {
-		rtl_ni_write(ni, RTL_NI_QM_VOQ_EQ(i), RTL_NI_QM_EQ);
-		rtl_ni_write(ni, RTL_NI_QM_EPP_BASE(i),
+		rtl_ni_write(ni, RTL_QM_CPU_EPP_FIFO0_CFG(i), RTL_NI_QM_EQ);
+		rtl_ni_write(ni, RTL_QM_CPUEPP_FIFO_PADDR_START(i),
 			     qm->ring_dma + i * RTL_NI_QM_RING_SIZE);
 	}
 	for (i = 0; i < RTL_NI_QM_BUFS; i++) {
@@ -478,8 +893,10 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 	ret = rtl_ni_qm_cpu_credits(ni);
 	if (ret)
 		return ret;
-	rtl_ni_write(ni, RTL_NI_QM_QUEUE_ENABLE(0), 0xff);
-	rtl_ni_rmw(ni, RTL_NI_NITX_BACKPRESSURE, GENMASK(7, 0), 0);
+	rtl_ni_write(ni, RTL_QM_SCH_CFG(0), RTL_QM_SCH_VOQ_EN);
+	rtl_ni_rmw(ni, RTL_NI_GLB_INTERNAL_PORT_ID_CFG,
+		   RTL_NI_GLB_L3QMRX_DEMUX_SEL, 0);
+	rtl_ni_qm_lan_dq_enable(ni, qm->lan_dq_bufs > 0);
 
 	for (i = 0; i < RTL_NI_PORTS; i++) {
 		if (!ni->ports[i])
@@ -492,21 +909,27 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 	if (ret)
 		return ret;
 
-	for (i = 0; i < QM_TCAM_ENTRIES; i++) {
-		rtl_ni_write(ni, RTL_NI_QM_TCAM_DATA, QM_TCAM_DEFAULT);
-		ret = rtl_ni_qm_table_write(ni, RTL_NI_QM_TCAM_CMD, i);
+	for (i = 0; i < L2TE_CB_FREECNT_ENTRIES; i++) {
+		rtl_ni_write(ni, RTL_L2TE_CB_PORT_FREECNT_DATA,
+			     L2TE_CB_FREECNT_INIT);
+		ret = rtl_ni_qm_table_write(ni,
+					    RTL_L2TE_CB_PORT_FREECNT_ACCESS, i);
 		if (ret)
 			return ret;
 	}
 
-	rtl_ni_rmw(ni, RTL_NI_L2TM_ES_CTRL, 0, BIT(8) | BIT(9));
-	rtl_ni_write(ni, RTL_NI_PORT_TABLE_ENTRY(8), 0xff | (6 << 16));
-	rtl_ni_write(ni, RTL_NI_PORT_TABLE_ENTRY(9), 0xff | (6 << 16));
-	rtl_ni_rmw(ni, RTL_NI_QM_CB_CTRL, 0, BIT(31));
-	rtl_ni_rmw(ni, RTL_NI_QM_CLOCK_CTRL, 0, BIT(2));
-	rtl_ni_write(ni, RTL_NI_QM_ES_CTRL, QM_ES_CTRL_RUN);
-	rtl_ni_rmw(ni, RTL_NI_PUC_DEQUEUE, 0, GENMASK(15, 0));
-	rtl_ni_rmw(ni, RTL_NI_QM_RMU_CTRL, 0, BIT(31));
+	rtl_ni_rmw(ni, RTL_L2TM_ES_CTRL, 0, BIT(8) | BIT(9));
+	rtl_ni_write(ni, RTL_L2TM_ES_SCH_CFG0(8),
+		     FIELD_PREP(RTL_L2TM_ES_SCH_VOQ_EN, 0xff) |
+		     FIELD_PREP(RTL_L2TM_ES_SCH_SPEED, 6));
+	rtl_ni_write(ni, RTL_L2TM_ES_SCH_CFG0(9),
+		     FIELD_PREP(RTL_L2TM_ES_SCH_VOQ_EN, 0xff) |
+		     FIELD_PREP(RTL_L2TM_ES_SCH_SPEED, 6));
+	rtl_ni_rmw(ni, RTL_TE_CB_CTRL, 0, RTL_TE_CB_SCAN_EN);
+	rtl_ni_rmw(ni, RTL_TE_GLB_CTRL, 0, RTL_TE_GLB_TAILDROP_EN);
+	rtl_ni_write(ni, RTL_QM_ES_CTRL, QM_ES_CTRL_RUN);
+	rtl_ni_rmw(ni, RTL_QM_ES_CTRL1, 0, RTL_QM_ES_CTRL1_PUC_EN);
+	rtl_ni_rmw(ni, RTL_QM_RMU0_CTRL, 0, RTL_QM_RMU0_RX_EN);
 	qm->ready = true;
 	return 0;
 }
@@ -514,10 +937,12 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 void rtl_ni_qm_stop(struct rtl9617c_ni *ni)
 {
 	ni->qm.ready = false;
-	rtl_ni_rmw(ni, RTL_NI_QM_CB_CTRL, BIT(31), 0);
-	rtl_ni_rmw(ni, RTL_NI_PUC_DEQUEUE, GENMASK(15, 0), 0);
-	rtl_ni_rmw(ni, RTL_NI_QM_RMU_CTRL, BIT(31), 0);
-	rtl_ni_rmw(ni, RTL_NI_QM_ES_CTRL, BIT(31), 0);
+	if (ni->qm.lan_dq_bufs)
+		rtl_ni_qm_lan_dq_enable(ni, false);
+	rtl_ni_rmw(ni, RTL_TE_CB_CTRL, RTL_TE_CB_SCAN_EN, 0);
+	rtl_ni_rmw(ni, RTL_QM_ES_CTRL1, RTL_QM_ES_CTRL1_PUC_EN, 0);
+	rtl_ni_rmw(ni, RTL_QM_RMU0_CTRL, RTL_QM_RMU0_RX_EN, 0);
+	rtl_ni_rmw(ni, RTL_QM_ES_CTRL, RTL_QM_ES_TX_EN, 0);
 }
 
 static bool rtl_ni_rx_csum_valid(u32 cmd, const u8 *frame, unsigned int len)
@@ -559,7 +984,7 @@ static void rtl_ni_qm_retire(struct rtl9617c_ni *ni, unsigned int voq, u32 cmd,
 
 	qm->read[voq] = (qm->read[voq] + RTL_NI_QM_CMD_SIZE) & QM_RING_ADDR_MASK;
 	mb();
-	rtl_ni_write(ni, RTL_NI_QM_EPP_READ(voq), qm->read[voq]);
+	rtl_ni_write(ni, RTL_QM_CPUEPP_FIFO_RDPTR(voq), qm->read[voq]);
 	if (refill) {
 		u32 offset = (cmd & QM_CMD_ADDR) - lower_32_bits(qm->buf_dma);
 
@@ -620,8 +1045,9 @@ int rtl_ni_qm_poll(struct rtl9617c_ni *ni, struct napi_struct *napi, int budget)
 	rtl_ni_qm_refill_drain(ni, NAPI_POLL_WEIGHT);
 
 	for (voq = RTL_NI_QM_VOQS - 1; voq >= 0 && count < budget; voq--) {
-		bool nonempty = rtl_ni_read(ni, RTL_NI_QM_VOQ_STATUS) & BIT(voq);
-		unsigned int wr = rtl_ni_read(ni, RTL_NI_QM_EPP_WRITE(voq)) &
+		bool nonempty = rtl_ni_read(ni, RTL_QM_CPU_EPP_STATUS0) &
+				BIT(voq);
+		unsigned int wr = rtl_ni_read(ni, RTL_QM_CPUEPP_FIFO_WRPTR(voq)) &
 				  QM_EPP_WRITE_MASK;
 		bool full = qm->read[voq] == wr && nonempty;
 

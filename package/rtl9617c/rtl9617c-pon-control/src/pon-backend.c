@@ -403,6 +403,10 @@ static uint8_t parameter_set(void *context, const struct pon_oam_request *reques
 		return 0x80; /* Multicast VLAN/switch rules are accepted by the HGU. */
 	if (branch == 0xc7 && (leaf == 0x12 || leaf == 0x13 || leaf == 0x16) && size == 1)
 		return 0x80; /* Ethernet pause / policer / downstream rate limit. */
+	if (branch == 0xc7 && (leaf == 0x17 || leaf == 0x18) && size == 4)
+		return 0x80; /* PortLoopDetect / PortDisableLooped. */
+	if (branch == 0xc7 && leaf == 0x19 && size >= 4)
+		return 0x80; /* PortLoopParameterConfig. */
 	if (branch == 0xc7 && leaf == 0xa4 && size == 4)
 		return 0x80; /* MAC aging time. */
 	if (branch == 0x09 && (leaf == 0x05 || leaf == 0x0c) && size == 4)

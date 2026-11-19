@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
@@ -13,19 +14,28 @@
 #include "ni.h"
 #include "fe/fe.h"
 
-#define NITX_PORT_CFG_INIT		(BIT(31) | (4U << 16) | (29U << 20))
-#define NITX_CPU_PORT_MASK		GENMASK(14, 0)
-#define NITX_CPU_PORT_DMA		29
-#define NITX_CPU_EN_INIT		0x08008021
-#define NITX_CPU_TABLE			14
-#define PORT_TABLE_ENABLE		GENMASK(7, 0)
-#define L2TM_ES_ENABLE			BIT(31)
-#define L2TM_ES_CPU			BIT(15)
-#define L2TM_ES_PORTS			GENMASK(13, 0)
-#define LAN_RX_CTRL_MASK		(BIT(31) | BIT(28) | GENMASK(21, 16))
-#define LAN_RX_CTRL_CPU			(BIT(28) | (16U << 16))
+#define L2TM_QM_EQ_INIT			(RTL_L2TM_QM_EQ1_EN | \
+					 FIELD_PREP(RTL_L2TM_QM_EQ1_PRVT, 29) | \
+					 FIELD_PREP(RTL_L2TM_QM_EQ1_BUFNUM, 4))
+#define L2TM_QM_PRVT_DEFAULT		29
+#define L2TM_QM_GLOB_BUF_INIT		(FIELD_PREP(RTL_L2TM_QM_GLOB_NONCONG, 2048) | \
+					 RTL_L2TM_QM_GLOB_DROP_EN | \
+					 FIELD_PREP(RTL_L2TM_QM_GLOB_NODROP, 33))
+#define L2TM_ES_CPU_PORT		14
+#define PORT_RX_CTRL_MASK		(RTL_NI_PORT_RX_CTRL_BYP_NDRP | \
+					 RTL_NI_PORT_RX_CTRL_BYP_EN | \
+					 RTL_NI_PORT_RX_CTRL_BYP_DPID)
+#define PORT_RX_CTRL_CPU		(RTL_NI_PORT_RX_CTRL_BYP_EN | \
+					 FIELD_PREP(RTL_NI_PORT_RX_CTRL_BYP_DPID, 16))
 #define GLB_PORT_TO_CPU_DMA		0xf
-#define QM_EQ_IRQ_MASK			GENMASK(7, 0)
+#define QM_EPP64_IRQ_MASK		RTL_QM_EPP64_P0_INT_EN
+/*
+ * Assert global L2TE XOFF well above L2TM_QM_GLOB_BUF_INIT's 33-buffer
+ * no-drop floor (0x21) so ingress PAUSE throttles bursts before L2TM drops
+ * frames.
+ */
+#define L2TE_CB_GLB_LTH_BUFS		1024
+#define L2TE_CB_GLB_HTH_BUFS		2048
 
 static const struct regmap_config rtl_ni_regmap_config = {
 	.reg_bits = 32,
@@ -37,8 +47,8 @@ static const struct regmap_config rtl_ni_regmap_config = {
 
 static void rtl_ni_irq_enable(struct rtl9617c_ni *ni, bool enable)
 {
-	rtl_ni_rmw(ni, RTL_NI_QM_EQ_IRQ_ENABLE_LO, QM_EQ_IRQ_MASK,
-		   enable ? QM_EQ_IRQ_MASK : 0);
+	rtl_ni_rmw(ni, RTL_QM_EPP64_P3_0_INT_EN, QM_EPP64_IRQ_MASK,
+		   enable ? QM_EPP64_IRQ_MASK : 0);
 }
 
 static void rtl_ni_wake_queues(struct rtl9617c_ni *ni)
@@ -176,8 +186,25 @@ static irqreturn_t rtl_ni_irq(int irq, void *data)
 
 void rtl_ni_set_mac(struct rtl9617c_ni *ni)
 {
-	rtl_ni_write(ni, RTL_NI_MAC_ADDR0, get_unaligned_be32(ni->mac));
-	rtl_ni_rmw(ni, RTL_NI_MAC_ADDR1, GENMASK(7, 0), ni->mac[4]);
+	rtl_ni_write(ni, RTL_NI_GLB_MAC_ADDR_CFG0, get_unaligned_be32(ni->mac));
+	rtl_ni_rmw(ni, RTL_NI_GLB_MAC_ADDR_CFG1, RTL_NI_GLB_MAC_ADDR1_MASK,
+		   ni->mac[4]);
+}
+
+static void rtl_ni_l2te_fc_enable(struct rtl9617c_ni *ni, bool enable)
+{
+	if (enable) {
+		rtl_ni_write(ni, RTL_L2TE_CB_GLB_THRSH,
+			     FIELD_PREP(RTL_L2TE_CB_GLB_THRSH_HTH,
+					L2TE_CB_GLB_HTH_BUFS) |
+			     FIELD_PREP(RTL_L2TE_CB_GLB_THRSH_LTH,
+					L2TE_CB_GLB_LTH_BUFS));
+		rtl_ni_rmw(ni, RTL_L2TE_FC_GLB_TIMER, 0,
+			   RTL_L2TE_FC_GLB_TIMER_EN);
+		return;
+	}
+
+	rtl_ni_rmw(ni, RTL_L2TE_FC_GLB_TIMER, RTL_L2TE_FC_GLB_TIMER_EN, 0);
 }
 
 static int rtl_ni_engine_start(struct rtl9617c_ni *ni)
@@ -189,21 +216,25 @@ static int rtl_ni_engine_start(struct rtl9617c_ni *ni)
 
 	rtl_ni_p6_bringup(ni);
 
-	rtl_ni_write(ni, RTL_NI_NITX_PORT_CFG, NITX_PORT_CFG_INIT);
-	rtl_ni_rmw(ni, RTL_NI_NITX_CPU_PORT, NITX_CPU_PORT_MASK, NITX_CPU_PORT_DMA);
-	rtl_ni_write(ni, RTL_NI_NITX_CPU_EN, NITX_CPU_EN_INIT);
-	rtl_ni_rmw(ni, RTL_NI_PORT_TABLE_ENTRY(NITX_CPU_TABLE), PORT_TABLE_ENABLE,
-		   PORT_TABLE_ENABLE);
-	rtl_ni_rmw(ni, RTL_NI_L2TM_ES_CTRL, L2TM_ES_ENABLE | L2TM_ES_CPU,
-		   L2TM_ES_ENABLE | L2TM_ES_CPU);
+	rtl_ni_write(ni, RTL_L2TM_QM_EQ_CFG, L2TM_QM_EQ_INIT);
+	rtl_ni_rmw(ni, RTL_L2TM_QM_PORT_PRVT_PROFILE(0),
+		   RTL_L2TM_QM_PRVT_CNT_EVEN,
+		   FIELD_PREP(RTL_L2TM_QM_PRVT_CNT_EVEN, L2TM_QM_PRVT_DEFAULT));
+	rtl_ni_write(ni, RTL_L2TM_QM_GLOB_BUF_CFG, L2TM_QM_GLOB_BUF_INIT);
+	rtl_ni_rmw(ni, RTL_L2TM_ES_SCH_CFG0(L2TM_ES_CPU_PORT),
+		   RTL_L2TM_ES_SCH_VOQ_EN, RTL_L2TM_ES_SCH_VOQ_EN);
+	rtl_ni_rmw(ni, RTL_L2TM_ES_CTRL,
+		   RTL_L2TM_ES_CTRL_TX_EN | RTL_L2TM_ES_CTRL_CPU,
+		   RTL_L2TM_ES_CTRL_TX_EN | RTL_L2TM_ES_CTRL_CPU);
 	for (id = 0; id < RTL_NI_PORTS; id++) {
 		if (!ni->ports[id])
 			continue;
 		if (rtl_ni_is_ge(id))
-			rtl_ni_rmw(ni, RTL_NI_L2TM_ES_CTRL, L2TM_ES_ENABLE | BIT(id),
-				   L2TM_ES_ENABLE | BIT(id));
-		rtl_ni_rmw(ni, RTL_NI_PORT_TABLE_ENTRY(id), PORT_TABLE_ENABLE,
-			   PORT_TABLE_ENABLE);
+			rtl_ni_rmw(ni, RTL_L2TM_ES_CTRL,
+				   RTL_L2TM_ES_CTRL_TX_EN | BIT(id),
+				   RTL_L2TM_ES_CTRL_TX_EN | BIT(id));
+		rtl_ni_rmw(ni, RTL_L2TM_ES_SCH_CFG0(id),
+			   RTL_L2TM_ES_SCH_VOQ_EN, RTL_L2TM_ES_SCH_VOQ_EN);
 	}
 
 	ret = rtl_ni_dma_start(&ni->dma);
@@ -217,8 +248,8 @@ static int rtl_ni_engine_start(struct rtl9617c_ni *ni)
 
 	for (id = 0; id < RTL_NI_GE_PORTS; id++)
 		if (ni->ports[id])
-			rtl_ni_rmw(ni, RTL_NI_LAN_RX_CTRL(id), LAN_RX_CTRL_MASK,
-				   LAN_RX_CTRL_CPU);
+			rtl_ni_rmw(ni, RTL_NI_PORT_RX_CTRL(id),
+				   PORT_RX_CTRL_MASK, PORT_RX_CTRL_CPU);
 	if (ni->ports[RTL_NI_PORT_P6]) {
 		ni->xge_bypass = rtl_ni_read(ni, RTL_NI_XGE_BYPASS_CFG);
 		ni->xge_bypass_saved = true;
@@ -227,8 +258,10 @@ static int rtl_ni_engine_start(struct rtl9617c_ni *ni)
 	}
 
 	rtl_ni_rmw(ni, RTL_NI_GLB_STATIC, RTL_NI_GLB_PORT_TO_CPU, GLB_PORT_TO_CPU_DMA);
-	rtl_ni_rmw(ni, RTL_NI_L2TM_ES_CTRL, L2TM_ES_PORTS | L2TM_ES_ENABLE,
-		   L2TM_ES_PORTS | L2TM_ES_ENABLE);
+	rtl_ni_rmw(ni, RTL_L2TM_ES_CTRL,
+		   RTL_L2TM_ES_CTRL_PORTS | RTL_L2TM_ES_CTRL_TX_EN,
+		   RTL_L2TM_ES_CTRL_PORTS | RTL_L2TM_ES_CTRL_TX_EN);
+	rtl_ni_l2te_fc_enable(ni, true);
 
 	rtl_ni_set_mac(ni);
 	rtl_ni_write(ni, RTL_NI_RX_ADDR, (RTL_NI_XRAM_RX_END - 1) << 16);
@@ -254,6 +287,7 @@ static void rtl_ni_engine_stop(struct rtl9617c_ni *ni)
 	unsigned long flags;
 
 	rtl_fe_stop(ni->fe);
+	rtl_ni_l2te_fc_enable(ni, false);
 	hrtimer_cancel(&ni->timer);
 	if (ni->xge_bypass_saved) {
 		rtl_ni_rmw(ni, RTL_NI_XGE_BYPASS_CFG, RTL_NI_XGE_BYPASS_FIELDS,
@@ -405,7 +439,8 @@ static int rtl_ni_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ni->fe = rtl_fe_create(dev, ni->regs, ni->fe_axi);
+	ni->fe = rtl_fe_create(dev, ni->regs, ni->fe_axi,
+			       ni->qm.lan_dq_bufs > 0);
 	if (IS_ERR(ni->fe))
 		return PTR_ERR(ni->fe);
 

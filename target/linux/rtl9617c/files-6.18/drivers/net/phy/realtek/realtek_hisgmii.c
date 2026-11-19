@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <linux/bitfield.h>
 #include <linux/delay.h>
+#include <linux/leds.h>
 #include <linux/mdio.h>
 #include <linux/mii.h>
 #include <linux/of.h>
@@ -36,17 +37,31 @@
 #define RTL8221B_VND2_PATCH_LOCK_CTRL	0xb896
 #define RTL8221B_PATCH_LOCK_EN		BIT(0)
 #define RTL8221B_VND2_LCR6		0xd040
+#define RTL8221B_LCR6_ACT_ALL		GENMASK(2, 0)
 
 #define RTL8221B_SRAM_PATCH_FLAG	0x801e
 #define RTL8221B_SRAM_PATCH_DONE	0x0020
 #define RTL8221B_SRAM_PATCH_KEY		0x8024
 #define RTL8221B_PATCH_KEY		0x3701
+#define RTL8221B_LED_COUNT		3
+#define RTL8221B_LED_DEFAULT_RULES	(BIT(TRIGGER_NETDEV_LINK) | \
+					 BIT(TRIGGER_NETDEV_RX) | \
+					 BIT(TRIGGER_NETDEV_TX))
+
+enum rtl8221b_led_mode {
+	RTL8221B_LED_MODE_DEFAULT = 0,
+	RTL8221B_LED_MODE_HW_CTRL,
+	RTL8221B_LED_MODE_BRIGHTNESS,
+};
 
 struct rtl8221b_hisgmii_priv {
 	bool patch;
 	bool serdes_option;
 	u32 serdes_option_mode;
 	struct rtl822x_led led;
+	enum rtl8221b_led_mode led_mode[RTL8221B_LED_COUNT];
+	unsigned long led_rules[RTL8221B_LED_COUNT];
+	enum led_brightness led_brightness[RTL8221B_LED_COUNT];
 };
 
 int rtl8221b_hisgmii_match_phy_device(struct phy_device *phydev,
@@ -237,12 +252,52 @@ static int rtl8221b_hisgmii_enable(struct phy_device *phydev)
 	return phy_set_bits(phydev, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
 }
 
+static int rtl8221b_hisgmii_led_apply_state(struct phy_device *phydev, u8 index)
+{
+	struct rtl8221b_hisgmii_priv *priv = phydev->priv;
+
+	if (index >= RTL8221B_LED_COUNT)
+		return -EINVAL;
+
+	switch (priv->led_mode[index]) {
+	case RTL8221B_LED_MODE_HW_CTRL:
+		return rtl822x_led_hw_control_set(phydev, &priv->led, index,
+						  priv->led_rules[index]);
+	case RTL8221B_LED_MODE_BRIGHTNESS:
+		return rtl822x_led_brightness_set(phydev, &priv->led, index,
+						  priv->led_brightness[index]);
+	case RTL8221B_LED_MODE_DEFAULT:
+	default:
+		return rtl822x_led_hw_control_set(phydev, &priv->led, index,
+						  RTL8221B_LED_DEFAULT_RULES);
+	}
+}
+
 static int rtl8221b_hisgmii_led_init(struct phy_device *phydev)
 {
+	struct phy_led *phyled;
+	int ret;
+
 	if (list_empty(&phydev->leds))
 		return 0;
 
-	return phy_write_mmd(phydev, MDIO_MMD_VEND2, RTL8221B_VND2_LCR6, 0);
+	/*
+	 * Clear only the per-LED activity enables. The blink frequency, duty
+	 * and LPI fields in the same register must keep their reset values:
+	 * zeroing them makes the lamp look dark when linked and dim on traffic.
+	 */
+	ret = phy_clear_bits_mmd(phydev, MDIO_MMD_VEND2, RTL8221B_VND2_LCR6,
+				 RTL8221B_LCR6_ACT_ALL);
+	if (ret < 0)
+		return ret;
+
+	list_for_each_entry(phyled, &phydev->leds, list) {
+		ret = rtl8221b_hisgmii_led_apply_state(phydev, phyled->index);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
 }
 
 int rtl8221b_hisgmii_config_init(struct phy_device *phydev)
@@ -323,6 +378,12 @@ int rtl8221b_led_brightness_set(struct phy_device *phydev, u8 index,
 {
 	struct rtl8221b_hisgmii_priv *priv = phydev->priv;
 
+	if (index >= RTL8221B_LED_COUNT)
+		return -EINVAL;
+
+	priv->led_mode[index] = RTL8221B_LED_MODE_BRIGHTNESS;
+	priv->led_brightness[index] = value;
+
 	return rtl822x_led_brightness_set(phydev, &priv->led, index, value);
 }
 
@@ -331,6 +392,12 @@ int rtl8221b_led_hw_control_set(struct phy_device *phydev, u8 index,
 {
 	struct rtl8221b_hisgmii_priv *priv = phydev->priv;
 
+	if (index >= RTL8221B_LED_COUNT)
+		return -EINVAL;
+
+	priv->led_mode[index] = RTL8221B_LED_MODE_HW_CTRL;
+	priv->led_rules[index] = rules;
+
 	return rtl822x_led_hw_control_set(phydev, &priv->led, index, rules);
 }
 
@@ -338,6 +405,14 @@ int rtl8221b_led_polarity_set(struct phy_device *phydev, int index,
 				      unsigned long modes)
 {
 	struct rtl8221b_hisgmii_priv *priv = phydev->priv;
+	int ret;
 
-	return rtl822x_led_polarity_set(phydev, &priv->led, index, modes);
+	if (index < 0 || index >= RTL8221B_LED_COUNT)
+		return -EINVAL;
+
+	ret = rtl822x_led_polarity_set(phydev, &priv->led, index, modes);
+	if (ret < 0)
+		return ret;
+
+	return rtl8221b_hisgmii_led_apply_state(phydev, index);
 }

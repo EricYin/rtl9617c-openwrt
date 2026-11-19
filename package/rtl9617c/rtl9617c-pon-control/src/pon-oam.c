@@ -103,6 +103,11 @@ void pon_oam_reset(struct pon_oam_session *session)
 	session->generation++;
 }
 
+bool pon_oam_discovery_complete(const struct pon_oam_session *session)
+{
+	return session->have_peer && session->local_echoed && (session->peer_flags & LOCAL_STABLE);
+}
+
 uint16_t pon_oam_flags(const struct pon_oam_session *session)
 {
 	/* IEEE 802.3 clause 57 discovery flags only. Bit 1 is Dying Gasp;

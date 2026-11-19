@@ -47,7 +47,7 @@
 			reg = <0 0x02300000 0 0x00100000>;
 			no-map;
 		};
-		ddr-noncache@9000000 {
+		ddr_noncache: ddr-noncache@9000000 {
 			reg = <0 0x09000000 0 0x01a50000>;
 		};
 		ddr-cache@bc48000 {
@@ -164,6 +164,7 @@
 };
 
 &ni {
+	memory-region = <&ddr_noncache>;
 	nvmem-cells = <&base_mac 0>;
 	nvmem-cell-names = "mac-address";
 	status = "okay";

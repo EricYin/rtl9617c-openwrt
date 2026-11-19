@@ -24,6 +24,9 @@ int main(void)
             assert(!(flags & 7));
             assert(!memcmp(frame + 6, identity.mac, 6));
             assert(!memcmp(frame + 27, identity.mac, 6));
+            assert(!pon_oam_discovery_complete(&session));
+            session.local_echoed = true;
+            assert(pon_oam_discovery_complete(&session) == (present && (peers[i] & 0x10)));
         }
     }
     puts("12 normal Information states: no fault/Dying Gasp flags; MAC preserved");

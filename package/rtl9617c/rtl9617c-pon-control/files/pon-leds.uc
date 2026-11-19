@@ -105,9 +105,8 @@ while (true) {
 		if (registered) {
 			let text = readfile('/var/run/pon-oam/llid-0.json');
 			let oam = text == null ? null : json(text);
-			if (live(oam, now) && oam.registered) {
-				current = oam.auth_state == 'accepted' ? 1 :
-					oam.auth_state == 'rejected' ? 250 : oam.discovery_stable ? 1 : 250;
+			if (live(oam, now) && oam.registered && oam.discovery_stable && oam.auth_state == 'accepted') {
+				current = 1;
 			} else {
 				current = 250;
 			}

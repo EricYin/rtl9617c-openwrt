@@ -58,11 +58,12 @@ function authentication(data) {
 			['OMCI 错误码', status.value(omci.error)], ['业务错误码', status.value(path.error)]
 		]), note('O5 表示光链路已激活；业务是否可用仍取决于 OLT 下发和 WAN 配置。')]);
 	}
-	var labels = { waiting: '等待认证', challenge: '正在认证', accepted: '认证通过', rejected: '认证拒绝' };
-	return (data.oam_ports || []).length ? E('div', { class: 'tyf-sessions' }, data.oam_ports.map(function(port) {
+	var labels = { waiting: '等待认证', challenge: '正在认证', accepted: 'OLT 认证通过', rejected: '认证拒绝' };
+	return (data.oam_ports || []).length ? E('div', {}, [E('div', { class: 'tyf-sessions' }, data.oam_ports.map(function(port) {
 		var accepted = port.live && port.registered && port.discovery_stable && port.auth_state === 'accepted';
+		var acceptedText = port.auth_source === 'ctc-result' ? 'OLT 认证通过' : 'OLT 配置已下发';
 		var text = !port.live ? '会话已失效' : !port.registered ? '等待注册' :
-			port.auth_state === 'accepted' && !accepted ? '等待 OAM 发现' : labels[port.auth_state] || '等待状态';
+			port.auth_state === 'accepted' ? (accepted ? acceptedText : '等待 OAM 发现') : labels[port.auth_state] || '等待状态';
 		return E('section', { class: 'tyf-session' }, [
 			E('div', { class: 'tyf-card-head' }, [E('strong', {}, ['LLID ' + status.value(port.llid)]), status.badge(text,
 				accepted ? 'good' : port.live && port.registered && port.auth_state === 'rejected' ? 'danger' : 'muted')]),
@@ -75,7 +76,7 @@ function authentication(data) {
 					Math.floor(port.auth_duration_ms / 1000) + ' ' + _('秒') : '—'],
 				['接收 / 发送帧', status.value(port.rx_frames) + ' / ' + status.value(port.tx_frames)]])
 		]);
-	})) : note('暂无 OAM 认证会话，等待逻辑链路注册。');
+	})), note('说明：EPON OLT 通常对任意 ONU MAC 完成 LLID 分配与 CTC OAM 配置下发（原厂固件据此显示 OLT 已注册/已认证）；运营商对备案 MAC 或宽带账号的绑定校验可能在业务 VLAN / BRAS 层生效，请结合 WAN 接口连通状态判断。')]) : note('暂无 OAM 认证会话，等待逻辑链路注册。');
 }
 function diagnostics(data) {
 	return ['service', 'state', 'serdes', 'optical', 'bosa', 'mac', 'activation', 'mpcp', 'oam_ports', 'omci', 'data_path', 'fec', 'traffic', 'deepq', 'puc', 'pdc', 'llids'].map(function(name) {

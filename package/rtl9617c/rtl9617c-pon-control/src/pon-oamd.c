@@ -72,7 +72,7 @@ static const char *discovery_name(const struct pon_oam_session *session)
 {
 	if (!session->have_peer)
 		return "idle";
-	if (session->local_echoed)
+	if (pon_oam_discovery_complete(session))
 		return "stable";
 	return "evaluating";
 }
@@ -361,7 +361,7 @@ static int publish_status(const char *path, const struct pon_oam_session *sessio
 		"\"receive_errors\":%u,\"management_error\":%d}\n",
 		(long)getpid(), starttime, (unsigned long long)boot_ms(), mode,
 		llid, link_error, online ? "true" : "false", session->have_peer ? "true" : "false",
-		session->generation, session->local_echoed ? "true" : "false", discovery,
+		session->generation, pon_oam_discovery_complete(session) ? "true" : "false", discovery,
 		(unsigned int)session->peer_flags, (unsigned long long)session->last_information_ms,
 		session->extension_oui[0], session->extension_oui[1], session->extension_oui[2],
 		(unsigned int)session->extension_version, session->extension_selected ? "true" : "false",

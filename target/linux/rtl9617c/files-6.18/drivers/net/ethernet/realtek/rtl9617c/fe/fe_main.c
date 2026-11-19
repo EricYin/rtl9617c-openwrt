@@ -59,8 +59,8 @@ static const unsigned int rtl_fe_saved_regs[] = {
 	RTL_FE_KEY_PROFILE(7), RTL_FE_PARSER_CFG,
 	RTL_FE_ACTION_GROUP(0), RTL_FE_ACTION_GROUP(1), RTL_FE_ACTION_GROUP(2),
 	RTL_FE_ACTION_GROUP(3), RTL_FE_ACTION_GROUP(4),
-	RTL_NI_L2TM_ES_CTRL, RTL_NI_L2TM_TABLE_0, RTL_NI_L2TM_TABLE_1,
-	RTL_NI_NITX_CONTROL,
+	RTL_L2TM_ES_CTRL, RTL_L2TM_ES_SCH_CFG0(13), RTL_L2TM_ES_VOQ3_0_W(13),
+	RTL_NI_GLB_NIRX_L3FE_DEMUX_CFG0,
 	RTL_FE_TPID0, RTL_FE_TPID1, RTL_FE_TPID2,
 	RTL_FE_PPP_PROTOCOL0, RTL_FE_PPP_PROTOCOL1, RTL_FE_CONTROL,
 	RTL_FE_MISS_TEMPLATE, RTL_FE_AXI_PATCH, RTL_FE_AXI_ID1_LIMIT,
@@ -121,17 +121,18 @@ static int rtl_fe_map_read(struct rtl_fe *fe, unsigned int index, u32 *val)
 {
 	int ret;
 
-	ret = rtl_fe_indirect(fe, RTL_NI_QM_PORT_MAP_CMD,
+	ret = rtl_fe_indirect(fe, RTL_L2FE_ARB_PDPID_MAP_TBL_ACCESS,
 			      RTL_NI_INDIRECT_ACCESS | index);
 	if (!ret)
-		*val = rtl_fe_read(fe, RTL_NI_QM_PORT_MAP_DATA);
+		*val = rtl_fe_read(fe, RTL_L2FE_ARB_PDPID_MAP_TBL_DATA);
 	return ret;
 }
 
 static int rtl_fe_map_write(struct rtl_fe *fe, unsigned int index, u32 val)
 {
-	rtl_fe_write(fe, RTL_NI_QM_PORT_MAP_DATA, val);
-	return rtl_fe_indirect(fe, RTL_NI_QM_PORT_MAP_CMD, RTL_NI_INDIRECT_ACCESS |
+	rtl_fe_write(fe, RTL_L2FE_ARB_PDPID_MAP_TBL_DATA, val);
+	return rtl_fe_indirect(fe, RTL_L2FE_ARB_PDPID_MAP_TBL_ACCESS,
+			       RTL_NI_INDIRECT_ACCESS |
 			       RTL_NI_INDIRECT_WRITE | index);
 }
 
@@ -143,7 +144,7 @@ static int rtl_fe_save(struct rtl_fe *fe)
 	for (i = 0; i < ARRAY_SIZE(rtl_fe_saved_regs); i++)
 		fe->saved[i] = rtl_fe_read(fe, rtl_fe_saved_regs[i]);
 	for (i = 0; i < FE_LAN_PORTS; i++)
-		fe->lan_saved[i] = rtl_fe_read(fe, RTL_NI_LAN_RX_CTRL(i));
+		fe->lan_saved[i] = rtl_fe_read(fe, RTL_NI_PORT_RX_CTRL(i));
 	fe->xge_saved = rtl_fe_read(fe, RTL_NI_XGE_BYPASS_CFG);
 
 	ret = rtl_fe_mask_read(fe, RTL_FE_MASK_L3, fe->mask_saved);
@@ -275,9 +276,13 @@ static int rtl_fe_prepare(struct rtl_fe *fe)
 	if (ret)
 		return ret;
 
-	rtl_fe_rmw(fe, RTL_NI_L2TM_ES_CTRL, 0, BIT(12) | BIT(13));
-	rtl_fe_write(fe, RTL_NI_PORT_TABLE_ENTRY(12), 0xff | (6 << 16));
-	rtl_fe_write(fe, RTL_NI_PORT_TABLE_ENTRY(13), 0xff | (6 << 16));
+	rtl_fe_rmw(fe, RTL_L2TM_ES_CTRL, 0, BIT(12) | BIT(13));
+	rtl_fe_write(fe, RTL_L2TM_ES_SCH_CFG0(12),
+		     FIELD_PREP(RTL_L2TM_ES_SCH_VOQ_EN, 0xff) |
+		     FIELD_PREP(RTL_L2TM_ES_SCH_SPEED, 6));
+	rtl_fe_write(fe, RTL_L2TM_ES_SCH_CFG0(13),
+		     FIELD_PREP(RTL_L2TM_ES_SCH_VOQ_EN, 0xff) |
+		     FIELD_PREP(RTL_L2TM_ES_SCH_SPEED, 6));
 	for (i = 0; i < 5; i++)
 		rtl_fe_write(fe, RTL_FE_ACTION_GROUP(i), 0);
 	rtl_fe_write(fe, RTL_FE_ACTION_GROUP_CFG, RTL_FE_ACTION_GROUPS | (3U << 25));
@@ -300,7 +305,7 @@ static int rtl_fe_prepare(struct rtl_fe *fe)
 			fe->ppp_protocol_ids[i - 1] = ret;
 	}
 
-	rtl_fe_rmw(fe, RTL_NI_NITX_CONTROL, 0, GENMASK(13, 0));
+	rtl_fe_rmw(fe, RTL_NI_GLB_NIRX_L3FE_DEMUX_CFG0, 0, GENMASK(13, 0));
 	rtl_fe_cache_start(fe);
 	rtl_fe_rmw(fe, RTL_FE_CONTROL, 0, FE_CONTROL_ENABLE);
 	return 0;
@@ -352,7 +357,7 @@ static int rtl_fe_restore(struct rtl_fe *fe)
 	for (i = 0; i < ARRAY_SIZE(rtl_fe_saved_regs); i++)
 		rtl_fe_write(fe, rtl_fe_saved_regs[i], fe->saved[i]);
 	for (i = 0; i < FE_LAN_PORTS; i++)
-		rtl_fe_write(fe, RTL_NI_LAN_RX_CTRL(i), fe->lan_saved[i]);
+		rtl_fe_write(fe, RTL_NI_PORT_RX_CTRL(i), fe->lan_saved[i]);
 	rtl_fe_write(fe, RTL_NI_XGE_BYPASS_CFG, fe->xge_saved);
 	rtl_fe_read(fe, RTL_FE_HASH_BASE_LOW);
 	fe->prepared = false;
@@ -896,7 +901,8 @@ static int rtl_fe_parse_l3(struct rtl_fe_port *port, struct flow_rule *rule,
 	data->action = (struct rtl_fe_action){
 		.destination = data->output->destination,
 		.check_mask = RTL_FE_MASK_L3,
-		.deep_queue = data->output->destination >= FE_DEEPQ_DEST,
+		.deep_queue = rtl_fe_use_deep_queue(port->fe, data->input,
+						    data->output),
 		.translate = source_changed || destination_changed,
 		.translate_destination = destination_changed,
 		.address = ntohl(destination_changed ? new_destination : new_source),
@@ -1446,7 +1452,7 @@ static int rtl_fe_disable_locked(struct rtl_fe *fe)
 	fe->enabled = false;
 	if (fe->prepared) {
 		for (i = 0; i < FE_LAN_PORTS; i++)
-			rtl_fe_write(fe, RTL_NI_LAN_RX_CTRL(i), fe->lan_saved[i]);
+			rtl_fe_write(fe, RTL_NI_PORT_RX_CTRL(i), fe->lan_saved[i]);
 		usleep_range(1000, 2000);
 		list_for_each_entry_safe(flow, next, &fe->flows, list) {
 			ret = rtl_fe_delete(fe, flow);
@@ -1477,12 +1483,15 @@ static int rtl_fe_enable_locked(struct rtl_fe *fe)
 	}
 
 	for (i = 0; i < FE_LAN_PORTS; i++)
-		rtl_fe_rmw(fe, RTL_NI_LAN_RX_CTRL(i), GENMASK(21, 16), 25U << 16);
+		rtl_fe_rmw(fe, RTL_NI_PORT_RX_CTRL(i),
+			   RTL_NI_PORT_RX_CTRL_BYP_DPID,
+			   FIELD_PREP(RTL_NI_PORT_RX_CTRL_BYP_DPID, 25));
 	list_for_each_entry(port, &fe->ports, list) {
 		if (port->source != FE_SOURCE_P6)
 			continue;
 		rtl_fe_rmw(fe, RTL_NI_XGE_BYPASS_CFG, RTL_NI_XGE_BYPASS_FIELDS,
-			   (fe->xge_saved & BIT(12)) | (25U << 4));
+			   (fe->xge_saved & RTL_NI_XGE_BYPASS_EN) |
+			   FIELD_PREP(RTL_NI_XGE_BYPASS_DPID, 25));
 		break;
 	}
 	WRITE_ONCE(fe->enabled, true);
@@ -1676,7 +1685,7 @@ static void rtl_fe_axi_reorder(struct rtl_fe *fe)
 }
 
 struct rtl_fe *rtl_fe_create(struct device *dev, struct regmap *regs,
-			     void __iomem *axi)
+			     void __iomem *axi, bool lan_deepq)
 {
 	struct rtl_fe *fe;
 	u32 *defaults;
@@ -1689,6 +1698,7 @@ struct rtl_fe *rtl_fe_create(struct device *dev, struct regmap *regs,
 	fe->dev = dev;
 	fe->regs = regs;
 	fe->axi = axi;
+	fe->lan_deepq = lan_deepq;
 	mutex_init(&fe->lock);
 	INIT_DELAYED_WORK(&fe->cleanup_work, rtl_fe_cleanup_work);
 	INIT_LIST_HEAD(&fe->ports);

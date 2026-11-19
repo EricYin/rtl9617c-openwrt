@@ -145,6 +145,7 @@ struct pon_oam_session {
 };
 
 void pon_oam_reset(struct pon_oam_session *session);
+bool pon_oam_discovery_complete(const struct pon_oam_session *session);
 uint16_t pon_oam_flags(const struct pon_oam_session *session);
 uint64_t pon_oam_auth_duration_ms(const struct pon_oam_session *session, uint64_t now_ms);
 size_t pon_oam_information(struct pon_oam_session *session, const struct pon_oam_identity *identity,

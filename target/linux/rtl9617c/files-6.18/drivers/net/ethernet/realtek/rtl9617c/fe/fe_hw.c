@@ -620,21 +620,22 @@ int rtl_fe_counter_read(struct rtl_fe *fe, unsigned int index,
 int rtl_fe_fdb_command(struct rtl_fe *fe, unsigned int command,
 		       u32 words[RTL_FE_FDB_WORDS], u32 *result)
 {
-	u32 control = rtl_fe_read(fe, RTL_NI_FDB_CONTROL);
+	u32 control = rtl_fe_read(fe, RTL_L2FE_L2E_CTRL);
 	unsigned int i;
 	int ret;
 
-	rtl_fe_write(fe, RTL_NI_FDB_CONTROL, control | BIT(31));
+	rtl_fe_write(fe, RTL_L2FE_L2E_CTRL, control | BIT(31));
 	for (i = 0; i < RTL_FE_FDB_WORDS; i++)
-		rtl_fe_write(fe, RTL_NI_FDB_DATA - i * 4, words[i]);
-	rtl_fe_write(fe, RTL_NI_FDB_RESULT, 0);
-	ret = rtl_fe_indirect(fe, RTL_NI_FDB_CMD, RTL_NI_INDIRECT_ACCESS | command);
-	rtl_fe_write(fe, RTL_NI_FDB_CONTROL, control);
+		rtl_fe_write(fe, RTL_L2FE_L2E_FDB_DATA0 - i * 4, words[i]);
+	rtl_fe_write(fe, RTL_L2FE_L2E_FDB_CMD_RET, 0);
+	ret = rtl_fe_indirect(fe, RTL_L2FE_L2E_FDB_ACCESS,
+			      RTL_NI_INDIRECT_ACCESS | command);
+	rtl_fe_write(fe, RTL_L2FE_L2E_CTRL, control);
 	if (ret)
 		return ret;
 
-	*result = rtl_fe_read(fe, RTL_NI_FDB_RESULT);
+	*result = rtl_fe_read(fe, RTL_L2FE_L2E_FDB_CMD_RET);
 	for (i = 0; i < RTL_FE_FDB_WORDS; i++)
-		words[i] = rtl_fe_read(fe, RTL_NI_FDB_DATA - i * 4);
+		words[i] = rtl_fe_read(fe, RTL_L2FE_L2E_FDB_DATA0 - i * 4);
 	return 0;
 }

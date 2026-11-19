@@ -6,10 +6,9 @@
 #include "ni.h"
 #include "fe/fe.h"
 
-#define NI_REPORT_HIGH_SHIFT		14
-#define NI_PUC_DEQUEUE_MASK		GENMASK(15, 0)
 #define NI_OAM_PORT			12
 #define NI_OAM_MAP_DEST			12
+#define NI_OAM_ES_SPEED_10G		6
 
 static struct rtl9617c_ni *rtl_ni_from_dev(struct device *dev)
 {
@@ -61,12 +60,13 @@ u32 rtl9617c_ni_pon_gate(struct device *dev, u32 enabled)
 	u32 saved;
 
 	spin_lock_irqsave(&ni->tx_lock, flags);
-	saved = rtl_ni_read(ni, RTL_NI_PUC_DEQUEUE);
-	rtl_ni_write(ni, RTL_NI_PUC_DEQUEUE, (saved & ~NI_PUC_DEQUEUE_MASK) |
-		     (enabled & NI_PUC_DEQUEUE_MASK));
-	rtl_ni_read(ni, RTL_NI_PUC_DEQUEUE);
+	saved = rtl_ni_read(ni, RTL_QM_ES_CTRL1);
+	rtl_ni_write(ni, RTL_QM_ES_CTRL1,
+		     (saved & ~RTL_QM_ES_CTRL1_PUC_EN) |
+		     FIELD_PREP(RTL_QM_ES_CTRL1_PUC_EN, enabled));
+	rtl_ni_read(ni, RTL_QM_ES_CTRL1);
 	spin_unlock_irqrestore(&ni->tx_lock, flags);
-	return saved & NI_PUC_DEQUEUE_MASK;
+	return FIELD_GET(RTL_QM_ES_CTRL1_PUC_EN, saved);
 }
 EXPORT_SYMBOL_GPL(rtl9617c_ni_pon_gate);
 
@@ -77,32 +77,45 @@ int rtl9617c_ni_report_configure(struct device *dev, unsigned int low,
 
 	if (!ni)
 		return -EPROBE_DEFER;
-	rtl_ni_write(ni, RTL_NI_REPORT, (high << NI_REPORT_HIGH_SHIFT) | low);
+	rtl_ni_write(ni, RTL_TE_CB_VOQ_REPORT_THRSH,
+		     FIELD_PREP(RTL_TE_CB_VOQ_REPORT_LV2, high) |
+		     FIELD_PREP(RTL_TE_CB_VOQ_REPORT_LV1, low));
 	return 0;
 }
 EXPORT_SYMBOL_GPL(rtl9617c_ni_report_configure);
 
 u32 rtl9617c_ni_report_state(struct device *dev)
 {
-	return rtl_ni_read(rtl_ni_from_dev(dev), RTL_NI_REPORT);
+	return rtl_ni_read(rtl_ni_from_dev(dev), RTL_TE_CB_VOQ_REPORT_THRSH);
 }
 EXPORT_SYMBOL_GPL(rtl9617c_ni_report_state);
 
 int rtl9617c_ni_oam_configure(struct device *dev)
 {
-	static const unsigned int index[] = { 15, 0x8f, 0x4f, 0xcf };
+	static const unsigned int index[] = {
+		15,
+		15 | RTL_L2FE_ARB_PDPID_MAP_MY_MAC,
+		15 | RTL_L2FE_ARB_PDPID_MAP_POL,
+		15 | RTL_L2FE_ARB_PDPID_MAP_POL | RTL_L2FE_ARB_PDPID_MAP_MY_MAC,
+	};
 	struct rtl9617c_ni *ni = rtl_ni_from_dev(dev);
 	unsigned int i;
 	int ret;
 
 	for (i = 0; i < ARRAY_SIZE(index); i++) {
-		rtl_ni_write(ni, RTL_NI_QM_PORT_MAP_DATA, NI_OAM_MAP_DEST);
-		ret = rtl_ne_table_write(ni->regs, RTL_NI_QM_PORT_MAP_CMD, index[i]);
+		rtl_ni_write(ni, RTL_L2FE_ARB_PDPID_MAP_TBL_DATA,
+			     FIELD_PREP(RTL_L2FE_ARB_PDPID_MAP_PDPID,
+					NI_OAM_MAP_DEST));
+		ret = rtl_ne_table_write(ni->regs,
+					 RTL_L2FE_ARB_PDPID_MAP_TBL_ACCESS,
+					 index[i]);
 		if (ret)
 			return ret;
 	}
-	rtl_ni_write(ni, RTL_NI_PORT_TABLE_ENTRY(NI_OAM_PORT), 0xff | (6 << 16));
-	rtl_ni_rmw(ni, RTL_NI_L2TM_ES_CTRL, BIT(NI_OAM_PORT), BIT(NI_OAM_PORT));
+	rtl_ni_write(ni, RTL_L2TM_ES_SCH_CFG0(NI_OAM_PORT),
+		     FIELD_PREP(RTL_L2TM_ES_SCH_VOQ_EN, 0xff) |
+		     FIELD_PREP(RTL_L2TM_ES_SCH_SPEED, NI_OAM_ES_SPEED_10G));
+	rtl_ni_rmw(ni, RTL_L2TM_ES_CTRL, BIT(NI_OAM_PORT), BIT(NI_OAM_PORT));
 	return 0;
 }
 EXPORT_SYMBOL_GPL(rtl9617c_ni_oam_configure);

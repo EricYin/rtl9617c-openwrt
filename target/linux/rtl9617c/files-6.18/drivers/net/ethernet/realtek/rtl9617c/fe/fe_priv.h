@@ -159,6 +159,7 @@ struct rtl_fe {
 	bool pon_attached;
 	bool enabled;
 	bool prepared;
+	bool lan_deepq;
 	int error;
 	u64 installs;
 	u64 deletes;
@@ -207,6 +208,16 @@ static inline bool rtl_fe_is_enabled(struct rtl_fe *fe)
 static inline bool rtl_fe_has_bindings(struct rtl_fe *fe)
 {
 	return READ_ONCE(fe->bindings);
+}
+
+static inline bool rtl_fe_use_deep_queue(const struct rtl_fe *fe,
+					 const struct rtl_fe_port *in,
+					 const struct rtl_fe_port *out)
+{
+	if (out->destination >= FE_DEEPQ_DEST)
+		return true;
+	return fe->lan_deepq && in->source == FE_SOURCE_PON &&
+	       out->destination == FE_SOURCE_P6;
 }
 
 struct rtl_fe_port *rtl_fe_port_find(struct rtl_fe *fe, struct net_device *netdev);

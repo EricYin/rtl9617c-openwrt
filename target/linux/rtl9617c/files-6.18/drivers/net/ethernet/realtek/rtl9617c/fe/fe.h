@@ -12,7 +12,7 @@ struct rtl_itu_paths;
 
 #if IS_ENABLED(CONFIG_RTL9617C_FE)
 struct rtl_fe *rtl_fe_create(struct device *dev, struct regmap *regs,
-			     void __iomem *axi);
+			     void __iomem *axi, bool lan_deepq);
 void rtl_fe_destroy(struct rtl_fe *fe);
 int rtl_fe_add_port(struct rtl_fe *fe, struct net_device *netdev,
 		    unsigned int source, unsigned int destination,
@@ -30,7 +30,8 @@ int rtl_fe_set_itu_paths(struct rtl_fe *fe, struct net_device *netdev,
 #else
 static inline struct rtl_fe *rtl_fe_create(struct device *dev,
 					   struct regmap *regs,
-					   void __iomem *axi)
+					   void __iomem *axi,
+					   bool lan_deepq)
 {
 	return NULL;
 }

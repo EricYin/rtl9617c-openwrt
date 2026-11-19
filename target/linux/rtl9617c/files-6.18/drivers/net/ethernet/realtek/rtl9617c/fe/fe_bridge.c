@@ -388,7 +388,8 @@ static int rtl_fe_bridge_learn(struct rtl_fe_bridge *bridge,
 	data.action = (struct rtl_fe_action){
 		.bridge = 1,
 		.destination = data.output->destination,
-		.deep_queue = data.output->destination >= FE_DEEPQ_DEST,
+		.deep_queue = rtl_fe_use_deep_queue(fe, data.input,
+						    data.output),
 	};
 	data.ethernet_protocol = in->protocol;
 	data.pppoe_input = in->protocol == ETH_P_PPP_SES;

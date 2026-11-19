@@ -17,6 +17,14 @@
 #define PORT_GLB_10M			BIT(0)
 #define PORT_GLB_HALF			BIT(1)
 #define PORT_ENABLE			BIT(0)
+#define PORT_RX_FLOW_DISABLE		BIT(8)
+#define PORT_TX_FLOW_DISABLE		BIT(12)
+#define L2TE_FC_RX_EN			BIT(0)
+#define L2TE_FC_TX_EN			BIT(1)
+#define XGE6_FC_PAU_TX_EN		BIT(2)
+#define XGE6_FC_PAU_RX_EN		BIT(3)
+#define XGE_MAC_PQUANTA_MASK		GENMASK(15, 0)
+#define XGE_MAC_PQUANTA_DEFAULT		0xffff
 #define TX_HDR_HIGH			BIT(13)
 #define TX_HDR_LOW(port)		((16 << 9) | ((port) << 3) | BIT(29))
 
@@ -40,6 +48,40 @@ static void rtl_ni_mac_config(struct phylink_config *config, unsigned int mode,
 		rtl_ni_p6_set_interface(port->ni, state->interface);
 }
 
+#include "ni_ext.h"
+
+static void rtl_ni_port_set_pause(struct rtl9617c_ni_port *port,
+				  bool tx_pause, bool rx_pause)
+{
+	struct rtl9617c_ni *ni = port->ni;
+	u32 l2te_fc = (rx_pause ? L2TE_FC_RX_EN : 0) |
+		      (tx_pause ? L2TE_FC_TX_EN : 0);
+
+	rtl_ni_rmw(ni, RTL_L2TE_FC_CTRL(port->id),
+		   L2TE_FC_RX_EN | L2TE_FC_TX_EN, l2te_fc);
+	rtl_ni_port_fc_ext_set(port, tx_pause, rx_pause);
+	rtl_ni_eee_sync_link(port);
+
+	if (rtl_ni_is_ge(port->id)) {
+		rtl_ni_rmw(ni, RTL_NI_PORT_RX(port->id), PORT_RX_FLOW_DISABLE,
+			   rx_pause ? 0 : PORT_RX_FLOW_DISABLE);
+		rtl_ni_rmw(ni, RTL_NI_PORT_TX(port->id), PORT_TX_FLOW_DISABLE,
+			   tx_pause ? 0 : PORT_TX_FLOW_DISABLE);
+		return;
+	}
+
+	if (port->id == RTL_NI_PORT_P6) {
+		u32 xge_fc = (tx_pause ? XGE6_FC_PAU_TX_EN : 0) |
+			     (rx_pause ? XGE6_FC_PAU_RX_EN : 0);
+
+		rtl_ni_rmw(ni, RTL_NI_XGE6_FC_CFG,
+			   XGE6_FC_PAU_TX_EN | XGE6_FC_PAU_RX_EN, xge_fc);
+		rtl_ni_rmw(ni, RTL_NI_XGE_MAC_PQUANTA, XGE_MAC_PQUANTA_MASK,
+			   FIELD_PREP(XGE_MAC_PQUANTA_MASK,
+				      tx_pause ? XGE_MAC_PQUANTA_DEFAULT : 0));
+	}
+}
+
 static void rtl_ni_mac_link_up(struct phylink_config *config,
 			       struct phy_device *phy, unsigned int mode,
 			       phy_interface_t interface, int speed, int duplex,
@@ -48,28 +90,34 @@ static void rtl_ni_mac_link_up(struct phylink_config *config,
 	struct rtl9617c_ni_port *port = rtl_ni_config_to_port(config);
 	struct rtl9617c_ni *ni = port->ni;
 
-	if (!rtl_ni_is_ge(port->id)) {
-		if (port->serdes)
-			phy_set_speed(port->serdes, speed);
-		return;
+	if (rtl_ni_is_ge(port->id)) {
+		rtl_ni_rmw(ni, RTL_NI_PORT_STATIC(port->id), PORT_STATIC_SPEED,
+			   speed >= SPEED_1000 ? 0 : 1);
+		rtl_ni_rmw(ni, RTL_NI_PORT_GLB(port->id),
+			   PORT_GLB_10M | PORT_GLB_HALF,
+			   (speed == SPEED_10 ? PORT_GLB_10M : 0) |
+			   (duplex == DUPLEX_HALF ? PORT_GLB_HALF : 0));
+	} else if (port->serdes) {
+		phy_set_speed(port->serdes, speed);
 	}
 
-	rtl_ni_rmw(ni, RTL_NI_PORT_STATIC(port->id), PORT_STATIC_SPEED,
-		   speed >= SPEED_1000 ? 0 : 1);
-	rtl_ni_rmw(ni, RTL_NI_PORT_GLB(port->id), PORT_GLB_10M | PORT_GLB_HALF,
-		   (speed == SPEED_10 ? PORT_GLB_10M : 0) |
-		   (duplex == DUPLEX_HALF ? PORT_GLB_HALF : 0));
+	rtl_ni_port_set_pause(port, tx_pause, rx_pause);
 }
 
 static void rtl_ni_mac_link_down(struct phylink_config *config, unsigned int mode,
 				 phy_interface_t interface)
 {
+	struct rtl9617c_ni_port *port = rtl_ni_config_to_port(config);
+
+	rtl_ni_port_set_pause(port, false, false);
 }
 
 static const struct phylink_mac_ops rtl_ni_phylink_ops = {
 	.mac_config = rtl_ni_mac_config,
 	.mac_link_up = rtl_ni_mac_link_up,
 	.mac_link_down = rtl_ni_mac_link_down,
+	.mac_enable_tx_lpi = rtl_ni_mac_enable_tx_lpi,
+	.mac_disable_tx_lpi = rtl_ni_mac_disable_tx_lpi,
 };
 
 static int rtl_ni_open(struct net_device *dev)
@@ -185,6 +233,14 @@ static int rtl_ni_setup_tc(struct net_device *dev, enum tc_setup_type type,
 			   void *data)
 {
 	struct rtl9617c_ni_port *port = netdev_priv(dev);
+	int err;
+
+	if (type == TC_SETUP_FT)
+		return rtl_fe_setup_tc(port->ni->fe, dev, type, data);
+
+	err = rtl_ni_qos_setup_tc(port, type, data);
+	if (err != -EOPNOTSUPP)
+		return err;
 
 	return rtl_fe_setup_tc(port->ni->fe, dev, type, data);
 }
@@ -196,13 +252,47 @@ static int rtl_ni_eth_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	return phylink_mii_ioctl(port->phylink, ifr, cmd);
 }
 
+static int rtl_ni_port_open(struct net_device *dev)
+{
+	struct rtl9617c_ni_port *port = netdev_priv(dev);
+	int ret;
+
+	if (rtl_ni_is_ge(port->id) || port->id == RTL_NI_PORT_P6) {
+		dev->hw_features |= NETIF_F_HW_TC | NETIF_F_HW_VLAN_CTAG_FILTER;
+		dev->features |= NETIF_F_HW_TC | NETIF_F_HW_VLAN_CTAG_FILTER;
+	}
+
+	ret = rtl_ni_open(dev);
+	if (!ret) {
+		rtl_ni_fc_ext_init(port->ni);
+		rtl_ni_ptp_init_dev(port->ni, dev->dev.parent);
+		rtl_ni_l2fe_register_ni(port->ni);
+	}
+
+	return ret;
+}
+
+static netdev_tx_t rtl_ni_port_xmit(struct sk_buff *skb,
+				    struct net_device *dev)
+{
+	struct rtl9617c_ni_port *port = netdev_priv(dev);
+
+	rtl_ni_ptp_tx_submit(port, skb);
+	return rtl_ni_start_xmit(skb, dev);
+}
+
 static const struct net_device_ops rtl_ni_netdev_ops = {
-	.ndo_open = rtl_ni_open,
+	.ndo_open = rtl_ni_port_open,
 	.ndo_stop = rtl_ni_stop,
-	.ndo_start_xmit = rtl_ni_start_xmit,
+	.ndo_start_xmit = rtl_ni_port_xmit,
 	.ndo_set_mac_address = rtl_ni_set_mac_address,
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_tx_timeout = rtl_ni_tx_timeout,
+	.ndo_get_stats64 = rtl_ni_get_stats64,
+	.ndo_hwtstamp_get = rtl_ni_ptp_hwtstamp_get,
+	.ndo_hwtstamp_set = rtl_ni_ptp_hwtstamp_set,
+	.ndo_vlan_rx_add_vid = rtl_ni_l2fe_vlan_rx_add,
+	.ndo_vlan_rx_kill_vid = rtl_ni_l2fe_vlan_rx_kill,
 	.ndo_setup_tc = rtl_ni_setup_tc,
 	.ndo_eth_ioctl = rtl_ni_eth_ioctl,
 };
@@ -256,6 +346,9 @@ static const struct ethtool_ops rtl_ni_ethtool_ops = {
 	.get_sset_count = rtl_ni_get_sset_count,
 	.get_strings = rtl_ni_get_strings,
 	.get_ethtool_stats = rtl_ni_get_ethtool_stats,
+	.get_ts_info = rtl_ni_ptp_get_ts_info,
+	.get_eee = rtl_ni_eee_get,
+	.set_eee = rtl_ni_eee_set,
 };
 
 static int rtl_ni_port_phy_connect(struct rtl9617c_ni_port *port)

@@ -97,10 +97,14 @@ function ponState(data) {
 	if (!flag(mpcp.enabled) || !/^[0-9a-f]+$/i.test(mpcp.registered || '') || !parseInt(mpcp.registered, 16))
 		return { text: '等待注册', tone: 'warn' };
 	var ports = (data.oam_ports || []).filter(function(p) { return p.live && p.registered; });
-	if (ports.some(function(p) { return p.auth_state === 'rejected'; }))
-		return { text: '认证未通过', tone: 'danger', help: '请核对 LOID 和密码。' };
-	if (ports.some(function(p) { return p.auth_state === 'accepted' && p.discovery_stable; }))
-		return { text: '已注册 · 认证通过', tone: 'good' };
+	var rejected = ports.find(function(p) { return p.auth_state === 'rejected'; });
+	if (rejected)
+		return { text: '认证未通过', tone: 'danger', help: rejected.auth_mode === 'loid' ? 'OLT 拒绝 LOID 认证，请核对 LOID 和密码。' : 'OLT 拒绝认证，请核对 ONU MAC 地址或运营商认证参数。' };
+	var accepted = ports.find(function(p) { return p.auth_state === 'accepted' && p.discovery_stable; });
+	if (accepted)
+		return accepted.auth_source === 'ctc-result'
+			? { text: '已注册 · OLT 认证通过', tone: 'good', help: 'OLT 已返回 CTC 认证通过结果；若运营商在业务层校验 MAC/账号，请同时确认 WAN 拨号或业务通道状态。' }
+			: { text: '已注册 · OLT 配置已下发', tone: 'good', help: 'OLT 已完成 OAM 发现与 CTC 业务配置下发（原厂判据视为 OLT 注册成功）；部分运营商不在 OLT OAM 层拦截未备案 MAC，而在上层 VLAN/BRAS 放行数据，请以 WAN 拨号连通为准。' };
 	return { text: '已注册 · 等待认证', tone: 'warn' };
 }
 

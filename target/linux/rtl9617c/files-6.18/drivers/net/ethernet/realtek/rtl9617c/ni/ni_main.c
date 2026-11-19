@@ -151,9 +151,9 @@ static int rtl_ni_poll(struct napi_struct *napi, int budget)
 	int done;
 
 	done = rtl_ni_qm_poll(ni, napi, budget);
-	if (done < budget) {
+	if (done < budget && napi_complete_done(napi, done)) {
 		spin_lock_irqsave(&ni->rx_lock, flags);
-		if (napi_complete_done(napi, done) && ni->rx_active)
+		if (ni->rx_active)
 			rtl_ni_irq_enable(ni, true);
 		spin_unlock_irqrestore(&ni->rx_lock, flags);
 	}

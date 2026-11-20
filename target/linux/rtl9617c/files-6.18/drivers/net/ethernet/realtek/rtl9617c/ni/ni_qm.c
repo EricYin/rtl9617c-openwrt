@@ -4,7 +4,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
 #include <linux/io.h>
-#include <linux/ioport.h>
 #include <linux/ip.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -617,42 +616,23 @@ static int rtl_ni_qm_lan_dq_alloc(struct rtl9617c_ni *ni)
 	size_t size = (size_t)QM_LAN_DQ_DDR_BUFS * RTL_NI_DQ_BUF_SIZE;
 	struct device_node *np;
 	struct resource region;
-	int ret;
 
 	np = of_parse_phandle(ni->dev->of_node, "memory-region", 0);
 	if (!np)
 		return 0;
 
-	if (of_property_read_bool(np, "no-map")) {
+	if (of_address_to_resource(np, 0, &region)) {
 		of_node_put(np);
 		return -EINVAL;
 	}
-	ret = of_address_to_resource(np, 0, &region);
 	of_node_put(np);
-	if (ret)
-		return ret;
 	if (resource_size(&region) < size ||
 	    upper_32_bits(region.start + size - 1))
 		return -ENOSPC;
 
-	qm->lan_dq_res = (struct resource) {
-		.name = "rtl9617c-lan-deepq",
-		.start = region.start,
-		.end = region.start + size - 1,
-		.flags = IORESOURCE_MEM,
-	};
-	ret = insert_resource(&iomem_resource, &qm->lan_dq_res);
-	if (ret) {
-		memset(&qm->lan_dq_res, 0, sizeof(qm->lan_dq_res));
-		return ret;
-	}
-
 	qm->lan_dq = memremap(region.start, size, MEMREMAP_WB);
-	if (!qm->lan_dq) {
-		remove_resource(&qm->lan_dq_res);
-		memset(&qm->lan_dq_res, 0, sizeof(qm->lan_dq_res));
+	if (!qm->lan_dq)
 		return -ENOMEM;
-	}
 
 	qm->lan_dq_dma = dma_map_single(ni->dev, qm->lan_dq, size,
 					DMA_BIDIRECTIONAL);
@@ -663,8 +643,6 @@ static int rtl_ni_qm_lan_dq_alloc(struct rtl9617c_ni *ni)
 					 DMA_BIDIRECTIONAL);
 		memunmap(qm->lan_dq);
 		qm->lan_dq = NULL;
-		remove_resource(&qm->lan_dq_res);
-		memset(&qm->lan_dq_res, 0, sizeof(qm->lan_dq_res));
 		return -EFAULT;
 	}
 
@@ -682,13 +660,10 @@ static void rtl_ni_qm_lan_dq_free(struct rtl9617c_ni *ni)
 	dma_unmap_single(ni->dev, qm->lan_dq_dma, qm->lan_dq_size,
 			 DMA_BIDIRECTIONAL);
 	memunmap(qm->lan_dq);
-	if (qm->lan_dq_res.parent)
-		remove_resource(&qm->lan_dq_res);
 	qm->lan_dq = NULL;
 	qm->lan_dq_dma = 0;
 	qm->lan_dq_size = 0;
 	qm->lan_dq_bufs = 0;
-	memset(&qm->lan_dq_res, 0, sizeof(qm->lan_dq_res));
 }
 
 int rtl_ni_qm_alloc(struct rtl9617c_ni *ni)

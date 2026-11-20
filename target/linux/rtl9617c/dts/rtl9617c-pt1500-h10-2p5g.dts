@@ -35,23 +35,8 @@
 		#size-cells = <2>;
 		ranges;
 
-		voip-vector@0 {
-			reg = <0 0 0 0x1000>;
-			no-map;
-		};
-		voip@2000000 {
-			reg = <0 0x02000000 0 0x00300000>;
-			no-map;
-		};
-		voip-ipc@2300000 {
-			reg = <0 0x02300000 0 0x00100000>;
-			no-map;
-		};
-		ddr_noncache: ddr-noncache@9000000 {
-			reg = <0 0x09000000 0 0x01a50000>;
-		};
-		ddr-cache@bc48000 {
-			reg = <0 0x0bc48000 0 0x10000>;
+		lan_deepq: lan-deepq@c000000 {
+			reg = <0 0x0c000000 0 0x01500000>;
 		};
 		tz-smc@eeff000 {
 			reg = <0 0x0eeff000 0 0x1000>;
@@ -164,7 +149,7 @@
 };
 
 &ni {
-	memory-region = <&ddr_noncache>;
+	memory-region = <&lan_deepq>;
 	nvmem-cells = <&base_mac 0>;
 	nvmem-cell-names = "mac-address";
 	status = "okay";

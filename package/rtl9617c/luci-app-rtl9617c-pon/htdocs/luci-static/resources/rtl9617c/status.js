@@ -125,14 +125,381 @@ function ponCard(data) {
 	]);
 }
 
+var SVG_NS = 'http://www.w3.org/2000/svg';
+var offloadSample = null;
+var shortModes = {
+	epon: 'EPON', 'epon-d10g': '10G EPON', 'epon-bi10g': '10G 对称',
+	gpon: 'GPON', xgpon: 'XG-PON', xgspon: 'XGS-PON'
+};
+
+function svgEl(tag, attrs, children) {
+	var el = document.createElementNS(SVG_NS, tag);
+	if (attrs) {
+		Object.keys(attrs).forEach(function(k) {
+			if (attrs[k] != null)
+				el.setAttribute(k, String(attrs[k]));
+		});
+	}
+	if (children != null) {
+		(Array.isArray(children) ? children : [children]).forEach(function(child) {
+			if (child == null)
+				return;
+			el.appendChild(typeof child === 'string' || typeof child === 'number'
+				? document.createTextNode(String(child))
+				: child);
+		});
+	}
+	return el;
+}
+
+function formatRate(bps) {
+	if (bps == null || !isFinite(bps) || bps < 0)
+		return null;
+	var units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s'];
+	var v = bps, i = 0;
+	while (v >= 1024 && i < units.length - 1) {
+		v /= 1024;
+		i++;
+	}
+	return v.toFixed(i ? 1 : 0) + ' ' + units[i];
+}
+
+function formatBytes(bytes) {
+	if (bytes == null || !isFinite(bytes))
+		return '—';
+	var units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+	var v = Number(bytes), i = 0;
+	while (v >= 1024 && i < units.length - 1) {
+		v /= 1024;
+		i++;
+	}
+	return v.toFixed(i ? 1 : 0) + ' ' + units[i];
+}
+
+function flowSpeedCls(bps, hasFlows, active) {
+	if (!active)
+		return 'is-off';
+	if (bps != null && bps >= 5 * 1024 * 1024)
+		return 'is-fast';
+	if (bps != null && bps >= 256 * 1024)
+		return 'is-med';
+	return (hasFlows || (bps != null && bps > 128)) ? 'is-slow' : 'is-idle';
+}
+
+function durationForSpeed(cls) {
+	return cls === 'is-fast' ? 850 : cls === 'is-med' ? 1300 : cls === 'is-slow' ? 2000 : 0;
+}
+
+function phaseStyle(ms) {
+	if (!ms)
+		return null;
+	var delay = -(Date.now() % ms);
+	return 'animation-duration:' + ms + 'ms;animation-delay:' + delay + 'ms';
+}
+
+function sampleRates(data) {
+	var ponPort = (data.ports || []).find(function(p) { return p.device === 'pon0'; });
+	var pStats = (ponPort && ponPort.statistics) || {};
+	var nowMs = data.uptime_ms != null ? Number(data.uptime_ms) : Date.now();
+	var fp = data.fe_paths || {};
+	var up = fp.upstream || {}, down = fp.downstream || {};
+	var curr = {
+		ts: nowMs,
+		ponTx: pStats.tx_bytes == null ? null : Number(pStats.tx_bytes),
+		ponRx: pStats.rx_bytes == null ? null : Number(pStats.rx_bytes),
+		feUp: up.bytes == null ? null : Number(up.bytes),
+		feDown: down.bytes == null ? null : Number(down.bytes),
+		rates: offloadSample ? offloadSample.rates : { ponTxBps: null, ponRxBps: null, feUpBps: null, feDownBps: null }
+	};
+	if (offloadSample && nowMs !== offloadSample.ts) {
+		var dt = (nowMs - offloadSample.ts) / 1000;
+		if (dt >= 0.4 && dt <= 120) {
+			function diffRate(a, b) {
+				return (a != null && b != null && a >= b) ? (a - b) / dt : null;
+			}
+			curr.rates = {
+				ponTxBps: diffRate(curr.ponTx, offloadSample.ponTx),
+				ponRxBps: diffRate(curr.ponRx, offloadSample.ponRx),
+				feUpBps: diffRate(curr.feUp, offloadSample.feUp),
+				feDownBps: diffRate(curr.feDown, offloadSample.feDown)
+			};
+		}
+		offloadSample = curr;
+	} else if (!offloadSample) {
+		offloadSample = curr;
+	}
+	return curr.rates;
+}
+
+function lanSummary(data, fePaths) {
+	var ports = (data.ports || []).filter(function(p) { return /^lan/.test(p.device || ''); });
+	var upPorts = ports.filter(function(p) { return p.present && p.carrier === '1'; });
+	var portMap = (fePaths && fePaths.ports) || {};
+	var topLine = '未连接', subLine = '无物理连接';
+
+	if (upPorts.length === 1) {
+		var p = upPorts[0];
+		var spd = Number(p.speed) > 0 ? (Number(p.speed) >= 1000 ? (Number(p.speed) / 1000).toFixed(Number(p.speed) % 1000 ? 1 : 0) + 'G' : p.speed + 'M') : '已连';
+		topLine = p.device + ' · ' + spd;
+	} else if (upPorts.length > 1) {
+		topLine = '已连 ' + upPorts.length + ' 口';
+	}
+
+	var activeLan = Object.keys(portMap);
+	if (activeLan.length) {
+		var first = activeLan[0], stat = portMap[first];
+		subLine = first + ' ↑' + stat.up + ' ↓' + stat.down;
+		if (activeLan.length > 1)
+			subLine += ' (+' + (activeLan.length - 1) + ')';
+	} else if (upPorts.length) {
+		subLine = upPorts.map(function(p) { return p.device; }).slice(0, 2).join(' · ');
+	}
+	return { top: topLine, sub: subLine, upCount: upPorts.length };
+}
+
+function conduitTrack(dirCls, speedCls, label) {
+	var ms = durationForSpeed(speedCls);
+	var style = phaseStyle(ms);
+	return E('div', { class: 'tyf-fe-track ' + dirCls + ' ' + speedCls }, [
+		label ? E('span', { class: 'tyf-fe-track-lbl' }, [label]) : null,
+		E('div', { class: 'tyf-fe-rail-line' }, [
+			E('span', { class: 'tyf-fe-rail-track' }, [
+				ms ? E('span', { class: 'tyf-fe-comet', style: style }) : null
+			]),
+			E('span', { class: 'tyf-fe-arrow-tip' })
+		])
+	]);
+}
+
+function verticalConduit(dirCls, colorCls, speedCls) {
+	var ms = durationForSpeed(speedCls);
+	var style = phaseStyle(ms);
+	return E('div', { class: 'tyf-fe-vtrack ' + dirCls + ' ' + colorCls + ' ' + speedCls }, [
+		E('span', { class: 'tyf-fe-vrail' }, [
+			ms ? E('span', { class: 'tyf-fe-vcomet', style: style }) : null
+		]),
+		E('span', { class: 'tyf-fe-varrow' })
+	]);
+}
+
+function cpuBridgeSvg(cpuCls, ms) {
+	var svg = svgEl('svg', {
+		class: 'tyf-fe-cpu-svg ' + cpuCls,
+		viewBox: '0 0 600 44',
+		preserveAspectRatio: 'none',
+		'aria-hidden': 'true'
+	});
+	var style = phaseStyle(ms);
+	['M 160 44 C 160 16, 188 12, 228 12', 'M 372 12 C 412 12, 440 16, 440 44'].forEach(function(d) {
+		svg.appendChild(svgEl('path', { d: d, class: 'tyf-fe-cpu-rail' }));
+		if (ms)
+			svg.appendChild(svgEl('path', { d: d, class: 'tyf-fe-cpu-flow', style: style }));
+	});
+	return svg;
+}
+
+function offloadDiagram(data, software, hardware, fe, rates) {
+	var available = flag(fe.available), enabled = flag(fe.enabled);
+	var hwError = fe.error != null && Number(fe.error) !== 0;
+	var hwReady = software && hardware && available && enabled && !hwError;
+	var flows = Number(fe.flows || 0);
+	var hashEntries = Number(fe.hash_entries || 65536);
+	var fp = data.fe_paths || null;
+	var upFlows = fp && fp.upstream ? Number(fp.upstream.flows || 0) : null;
+	var downFlows = fp && fp.downstream ? Number(fp.downstream.flows || 0) : null;
+	var hasUp = upFlows != null ? upFlows > 0 : flows > 0;
+	var hasDown = downFlows != null ? downFlows > 0 : flows > 0;
+
+	var upSpeed = flowSpeedCls(rates.ponTxBps, hasUp, hwReady);
+	var downSpeed = flowSpeedCls(rates.ponRxBps, hasDown, hwReady);
+	var cpuCls = hwReady ? 'is-subtle' : 'is-active';
+	var cpuMs = hwReady ? 3200 : 1650;
+
+	var lanInfo = lanSummary(data, fp);
+	var serdes = data.serdes || {};
+	var ponPort = (data.ports || []).find(function(p) { return p.device === 'pon0'; }) || {};
+	var ponProto = shortModes[serdes.mode] || value(serdes.mode);
+	var ponAttach = flag(fe.pon_attached) ? '已挂载 FE' : '未挂载 FE';
+	var ponUp = ponPort.present && ponPort.carrier === '1';
+
+	var cpuSub = hwReady ? '首包建流写入 FE · 代理/未卸载慢路径' : software ? '仅软件 Flowtable（经 CPU 转发）' : '普通内核转发（经 CPU 转发）';
+	var feStateCls = !software || !hardware ? 'is-muted' : (!available || !enabled || hwError) ? 'is-danger' : 'is-good';
+	var feStatLine = !software ? '未开启' : !hardware ? '硬件旁路' :
+		hwError ? ('异常 ' + fe.error) :
+		!available ? '不可用' :
+		!enabled ? '未启用' :
+		(flows + ' / ' + hashEntries.toLocaleString() + ' 流');
+	var pct = hashEntries > 0 ? Math.min(100, Math.max(flows > 0 ? 4 : 0, (flows / hashEntries) * 100)) : 0;
+
+	var upLabel = upFlows != null ? ('↑ ' + upFlows + '流') : '↑ 上行';
+	var downLabel = downFlows != null ? ('↓ ' + downFlows + '流') : '↓ 下行';
+	var bindStyle = phaseStyle(hwReady ? 2100 : 0);
+	var cSlots = Number(fe.counter_slots || 32);
+	var cUsed = Number(fe.counted_flows || 0);
+	var slotPct = cSlots > 0 ? Math.min(100, Math.max(cUsed > 0 ? 4 : 0, (cUsed / cSlots) * 100)) : 0;
+	var qmPct = hwReady ? (flag(fe.pon_attached) ? 100 : 50) : 0;
+	var slotInfo = fe.counted_flows != null && fe.counter_slots != null ? ('计数槽 ' + fe.counted_flows + '/' + fe.counter_slots) : 'NAT·PPPoE';
+
+	return E('div', { class: 'tyf-fe-visual' }, [
+		E('div', { class: 'tyf-fe-scroll' }, [
+			E('div', { class: 'tyf-fe-board' }, [
+				E('div', { class: 'tyf-fe-top-row' }, [
+					cpuBridgeSvg(cpuCls, cpuMs),
+					E('div', { class: 'tyf-fe-cpu-pill ' + cpuCls }, [
+						E('span', { class: 'tyf-fe-cpu-name' }, 'CPU · Linux Netfilter'),
+						E('span', { class: 'tyf-fe-cpu-desc' }, cpuSub)
+					]),
+					E('div', { class: 'tyf-fe-top-links' }, [
+						E('span', { class: 'tyf-fe-top-tag' }, hwReady ? '慢路径 DMA 收包' : 'CPU 收包'),
+						E('div', { class: 'tyf-fe-bind ' + (hwReady ? 'is-active' : 'is-muted') }, [
+							E('span', { class: 'tyf-fe-bind-line' }, [
+								hwReady ? E('span', { class: 'tyf-fe-bind-dot', style: bindStyle }) : null
+							]),
+							E('span', { class: 'tyf-fe-bind-txt' }, hwReady ? '下发流表到 FE' : '未开启硬卸载')
+						]),
+						E('span', { class: 'tyf-fe-top-tag' }, hwReady ? '慢路径调度发送' : 'CPU 发包')
+					])
+				]),
+				E('div', { class: 'tyf-fe-arch-grid' }, [
+					E('div', { class: 'tyf-fe-node tyf-fe-endpoint ' + (lanInfo.upCount ? 'is-up' : '') }, [
+						E('div', { class: 'tyf-fe-node-head' }, [E('i', { class: 'tyf-fe-ndot' }), 'LAN 端口']),
+						E('div', { class: 'tyf-fe-node-val' }, lanInfo.top),
+						E('div', { class: 'tyf-fe-node-sub' }, lanInfo.sub)
+					]),
+					E('div', { class: 'tyf-fe-conduit' }, [
+						conduitTrack('is-up is-ltr', upSpeed, upLabel),
+						conduitTrack('is-down is-rtl', downSpeed, '← LAN')
+					]),
+					E('div', { class: 'tyf-fe-soc ' + feStateCls }, [
+						E('div', { class: 'tyf-fe-soc-head' }, [
+							E('span', { class: 'tyf-fe-soc-title' }, 'RTL9617C 硬件卸载引擎内部通路'),
+							E('span', { class: 'tyf-fe-core-chip' }, hwReady ? '绕过 CPU 直通' : '引擎旁路')
+						]),
+						E('div', { class: 'tyf-fe-core-row' }, [
+							E('div', { class: 'tyf-fe-mod is-fe ' + feStateCls }, [
+								E('div', { class: 'tyf-fe-mod-top' }, [
+									E('span', { class: 'tyf-fe-mod-name' }, 'FE 转发引擎'),
+									E('span', { class: 'tyf-fe-mod-tag' }, 'L2/L3')
+								]),
+								E('div', { class: 'tyf-fe-mod-sub' }, '64K Hash 流表查表'),
+								E('div', { class: 'tyf-fe-cap-bar' }, [
+									E('span', { class: 'tyf-fe-cap-fill ' + feStateCls, style: 'width:' + pct.toFixed(1) + '%' })
+								]),
+								E('div', { class: 'tyf-fe-mod-meta' }, feStatLine)
+							]),
+							E('div', { class: 'tyf-fe-dual-link' }, [
+								conduitTrack('is-up is-ltr', upSpeed, null),
+								conduitTrack('is-down is-ltr', downSpeed, null)
+							]),
+							E('div', { class: 'tyf-fe-mod is-pe ' + feStateCls }, [
+								E('div', { class: 'tyf-fe-mod-top' }, [
+									E('span', { class: 'tyf-fe-mod-name' }, 'PE 报文编辑'),
+									E('span', { class: 'tyf-fe-mod-tag' }, '改写')
+								]),
+								E('div', { class: 'tyf-fe-mod-sub' }, 'NAT / PPPoE / VLAN'),
+								E('div', { class: 'tyf-fe-cap-bar' }, [
+									E('span', { class: 'tyf-fe-cap-fill ' + feStateCls, style: 'width:' + slotPct.toFixed(1) + '%' })
+								]),
+								E('div', { class: 'tyf-fe-mod-meta' }, '校验和 · ' + slotInfo)
+							]),
+							E('div', { class: 'tyf-fe-dual-link' }, [
+								conduitTrack('is-up is-ltr', upSpeed, null),
+								conduitTrack('is-down is-ltr', downSpeed, null)
+							]),
+							E('div', { class: 'tyf-fe-mod is-qm ' + feStateCls }, [
+								E('div', { class: 'tyf-fe-mod-top' }, [
+									E('span', { class: 'tyf-fe-mod-name' }, 'QM 队列管理'),
+									E('span', { class: 'tyf-fe-mod-tag' }, 'DeepQ')
+								]),
+								E('div', { class: 'tyf-fe-mod-sub' }, 'VoQ 调度 · EQ0+EQ8'),
+								E('div', { class: 'tyf-fe-cap-bar' }, [
+									E('span', { class: 'tyf-fe-cap-fill ' + feStateCls, style: 'width:' + qmPct + '%' })
+								]),
+								E('div', { class: 'tyf-fe-mod-meta' }, '防突发缓冲 · 出队发包')
+							])
+						]),
+						E('div', { class: 'tyf-fe-bus-links' }, [
+							E('div', { class: 'tyf-fe-vpair' }, [
+								verticalConduit('is-btt', 'is-up', upSpeed),
+								verticalConduit('is-btt', 'is-down', downSpeed),
+								E('span', { class: 'tyf-fe-vlabel' }, 'Demux 送 FE')
+							]),
+							E('div', { class: 'tyf-fe-vpair' }, [
+								verticalConduit('is-ttb', 'is-up', upSpeed),
+								verticalConduit('is-ttb', 'is-down', downSpeed),
+								E('span', { class: 'tyf-fe-vlabel' }, '出队回 NI 发')
+							])
+						]),
+						E('div', { class: 'tyf-fe-ni-bus ' + feStateCls }, [
+							E('span', { class: 'tyf-fe-mod-name' }, 'NI 网络接口层'),
+							E('span', { class: 'tyf-fe-ni-desc' }, 'MAC · DMA · L3FE Demux（承接 LAN 与 PON 收发汇总，并直连 FE / QM / CPU）')
+						])
+					]),
+					E('div', { class: 'tyf-fe-conduit' }, [
+						conduitTrack('is-up is-ltr', upSpeed, 'PON →'),
+						conduitTrack('is-down is-rtl', downSpeed, downLabel)
+					]),
+					E('div', { class: 'tyf-fe-node tyf-fe-endpoint ' + (ponUp ? 'is-up' : '') }, [
+						E('div', { class: 'tyf-fe-node-head' }, [E('i', { class: 'tyf-fe-ndot' }), 'PON 光口']),
+						E('div', { class: 'tyf-fe-node-val' }, ponProto),
+						E('div', { class: 'tyf-fe-node-sub' }, ponAttach + ' · PDC/PUC')
+					])
+				])
+			])
+		]),
+		E('div', { class: 'tyf-fe-legend' }, [
+			E('span', { class: 'tyf-fe-leg-item' }, [E('i', { class: 'tyf-fe-swatch is-up' }), '上行直通：LAN → NI → FE → PE → QM → NI → PON']),
+			E('span', { class: 'tyf-fe-leg-item' }, [E('i', { class: 'tyf-fe-swatch is-down' }), '下行直通：PON → NI → FE → PE → QM(DeepQ) → NI → LAN']),
+			E('span', { class: 'tyf-fe-leg-item' }, [E('i', { class: 'tyf-fe-swatch is-cpu' }), 'CPU 慢路径 & 建流下发'])
+		])
+	]);
+}
+
+function offloadFlowsTable(fp) {
+	var list = (fp && fp.entries) || [];
+	var total = (fp && fp.total_entries != null) ? fp.total_entries : list.length;
+	var title = list.length
+		? ('查看硬件流表详情（' + (total > list.length ? ('前 ' + list.length + ' / 共 ' + total) : ('共 ' + list.length)) + ' 条）')
+		: '查看硬件流表详情（暂无活跃流）';
+
+	return E('details', { class: 'tyf-fe-details', 'data-tyf-fold': 'fe-flows' }, [
+		E('summary', {}, title),
+		list.length ? E('div', { class: 'tyf-fe-table-wrap' }, [
+			E('table', { class: 'tyf-fe-table' }, [
+				E('thead', {}, E('tr', {}, [
+					E('th', {}, '类型'),
+					E('th', {}, '通道方向'),
+					E('th', {}, 'Hash 槽'),
+					E('th', {}, '计数槽'),
+					E('th', {}, '命中包数'),
+					E('th', {}, '命中字节')
+				])),
+				E('tbody', {}, list.map(function(row) {
+					var kind = row.k === 'bridge' || row.l ? '二层桥接' : String(row.k || '').toUpperCase();
+					var activeStat = row.p > 0 || row.b > 0;
+					return E('tr', {}, [
+						E('td', {}, kind || '—'),
+						E('td', {}, value(row.in) + ' → ' + value(row.out)),
+						E('td', {}, value(row.h)),
+						E('td', {}, activeStat ? ('#' + value(row.c)) : '活动跟踪'),
+						E('td', {}, activeStat ? String(row.p) : '—'),
+						E('td', {}, activeStat ? formatBytes(row.b) : '—')
+					]);
+				}))
+			]),
+			E('p', { class: 'tyf-note' }, '硬件最多为 32 个接口/流组合分配独立精确计数器；其余显示“活动跟踪”的流同样由 FE 芯片全速硬件转发。如需查看明文 IP/端口五元组（含 [HW_OFFLOAD] 标记），可前往“状态 → 实时信息 → 连接”。')
+		]) : E('p', { class: 'tyf-note' }, '当前 FE 硬件流表为空，或调试接口未返回流表条目。')
+	]);
+}
+
 function offloadState(software, hardware, fe) {
 	var available = flag(fe.available), enabled = flag(fe.enabled);
 	var bindings = fe.bindings == null ? null : Number(fe.bindings);
 
 	if (!software)
-		return ['未启用', 'muted', '防火墙未开启流量卸载'];
+		return ['未启用', 'muted', '防火墙未开启流量卸载，所有转发均经由 CPU 处理'];
 	if (!hardware)
-		return ['仅软件卸载', 'muted', '硬件卸载未开启，流量不经过 FE'];
+		return ['仅软件卸载', 'muted', '硬件卸载未开启，流量经由 CPU 软件 Flowtable 转发'];
 	if (fe.error != null && Number(fe.error) !== 0)
 		return ['运行异常', 'danger', '错误码：' + fe.error];
 	if (!available)
@@ -140,21 +507,48 @@ function offloadState(software, hardware, fe) {
 	if (!enabled)
 		return ['硬件未就绪', 'danger', '已请求硬件卸载，但 FE 引擎未启用'];
 	if (!bindings)
-		return ['已启用', 'good', '已请求硬件卸载，尚无流表完成绑定'];
+		return ['已启用', 'good', 'FE 引擎已就绪，尚无接口完成卸载绑定'];
 	return ['已启用', 'good', null];
 }
 
 function offloadCard(data, software, hardware) {
 	var fe = data.fe || {};
+	var fp = data.fe_paths || null;
 	var bindings = fe.bindings == null ? null : Number(fe.bindings);
 	var state = offloadState(software, hardware, fe);
+	var rates = sampleRates(data);
+
+	var txRateStr = formatRate(rates.ponTxBps);
+	var rxRateStr = formatRate(rates.ponRxBps);
+	var upText = fp && fp.upstream
+		? (fp.upstream.flows + ' 条' + (txRateStr ? ' · ' + txRateStr : '') + (fp.upstream.bytes > 0 ? '（计数槽 ' + formatBytes(fp.upstream.bytes) + '）' : ''))
+		: (txRateStr ? txRateStr : '采样中…');
+	var downText = fp && fp.downstream
+		? (fp.downstream.flows + ' 条' + (rxRateStr ? ' · ' + rxRateStr : '') + (fp.downstream.bytes > 0 ? '（计数槽 ' + formatBytes(fp.downstream.bytes) + '）' : ''))
+		: (rxRateStr ? rxRateStr : '采样中…');
+
+	var protoDetail = fp && fp.upstream && fp.downstream
+		? ('IPv4 ' + (fp.upstream.ipv4 + fp.downstream.ipv4) + ' · IPv6 ' + (fp.upstream.ipv6 + fp.downstream.ipv6))
+		: null;
+	var slotDetail = fe.counted_flows != null && fe.counter_slots != null
+		? ('计数槽 ' + fe.counted_flows + '/' + fe.counter_slots) : null;
+	var flowDetail = [
+		value(fe.flows) + ' / ' + value(fe.hash_entries || 65536),
+		bindings == null ? null : ('绑定 ' + bindings + ' 口'),
+		protoDetail,
+		slotDetail,
+		Number(fe.bridge_flows || 0) > 0 ? ('桥接 ' + fe.bridge_flows) : null
+	].filter(Boolean).join(' · ');
 
 	return card('硬件转发', badge(state[0], state[1]), E('div', {}, [
-		rows([['软件 / 硬件卸载', (software ? '开' : '关') + ' / ' + (hardware ? '开' : '关')],
-			['FE 引擎', flag(fe.available) ? flag(fe.enabled) ? '已启用' : '未启用' : '不可用'],
-			['卸载绑定 / 硬件流', (bindings == null ? '—' : bindings + ' 个') + ' / ' + value(fe.flows)],
-			['累计安装 / 释放', value(fe.installs) + ' / ' + value(fe.deletes)]]),
-		state[2] ? E('p', { class: 'tyf-note' }, state[2]) : null
+		offloadDiagram(data, software, hardware, fe, rates),
+		rows([
+			['卸载模式', (software ? '软件开' : '软件关') + ' / ' + (hardware ? '硬件开' : '硬件关') + ' · FE ' + (flag(fe.available) ? flag(fe.enabled) ? '已启用' : '未启用' : '不可用')],
+			['活跃硬件流', flowDetail],
+			['上行 / 下行通道', '↑ ' + upText + '  |  ↓ ' + downText]
+		]),
+		state[2] ? E('p', { class: 'tyf-note' }, state[2]) : null,
+		offloadFlowsTable(fp)
 	]));
 }
 

@@ -76,7 +76,7 @@ static int taurus_vsfc_init(struct realtek_vsfc *vsfc)
 	} while (!(status & TAURUS_VSFC_STATUS_IDLE_ST) &&
 		 ktime_before(ktime_get(), timeout));
 
-	switch (vsfc->ctrl & TAURUS_VSFC_CTRL_TRIG_SEL) {
+	switch (FIELD_GET(TAURUS_VSFC_CTRL_TRIG_SEL, vsfc->ctrl)) {
 	case TAURUS_VSFC_TRIG_SEL_CPU_INTERNAL:
 		ctrl &= ~TAURUS_VSFC_CTRL_TRIG_SEL;
 		ctrl |= vsfc->ctrl & TAURUS_VSFC_CTRL_TRIG_SEL;

@@ -374,7 +374,14 @@
 		vsfc: vsfc@4f4320278 {
 			compatible = "realtek,taurus-vsfc";
 			reg = <4 0xf4320278 0 0x4c>;
-			status = "disabled";
+			trig_sel = <1>;
+			div_sel = <0>;
+			core_idle_div_en = <1>;
+			core_min = <4>;
+			det_recv_sel = <1>;
+			recv_ctrl1 = <0xaaaa0080>;
+			recv_ctrl2 = <0x88880100>;
+			recv_ctrl3 = <0x08080140>;
 		};
 
 		per_ictl: interrupt-controller@f4329004 {
@@ -704,22 +711,348 @@
 
 		pcie0: pcie@f4325000 {
 			compatible = "realtek,taurus-pcie";
-			reg = <0 0xf4325000 0 0x00000400>,
-			      <0 0xa0000000 0 0x00001000>,
-			      <0 0xa0001000 0 0x00002000>,
-			      <0 0xa0300000 0 0x00100000>,
-			      <0 0xf4333000 0 0x00002000>;
+			reg = <0 0xf4325000 0 0x400>,
+			      <0 0xa0001000 0 0x1000>,
+			      <0 0xa0002000 0 0x2000>,
+			      <0 0xa0030000 0 0x100000>,
+			      <0 0xf4333000 0 0x2000>;
 			reg-names = "glbl_regs", "rc_dbi", "config", "iatu",
 				    "serdes_phy";
-			phys = <&s0_pcie_phy0>, <&s0_pcie_phy1>;
-			phy-names = "pcie-phy0", "pcie-phy1";
+			phys = <&s0_pcie_phy0>,
+			      <&s0_pcie_phy1>;
+			phy-names = "pcie-phy0";
+
 			#address-cells = <3>;
 			#size-cells = <2>;
 			device_type = "pci";
 			bus-range = <0x0 0xff>;
 			ranges = <0x81000000 0 0 0 0xa0003000 0 0x00010000>,
 				 <0x82000000 0 0xa0400000 0 0xa0400000 0 0x0fc00000>;
+
+			id = <0>;
+			num-viewport = <1>;
+			num-lanes = <1>;
 			clocks = <&gate_pcie0_clk>;
+			interrupt-parent = <&gic>;
+			interrupts = 			<GIC_SPI TAURUS_IRQ_GLB_PCI0_0 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI TAURUS_IRQ_GLB_PCI0_1 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI TAURUS_IRQ_GLB_PCI0_2 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI TAURUS_IRQ_GLB_PCI0_3 IRQ_TYPE_LEVEL_HIGH>;
+
+			resets = <&block_rst TAURUS_PCIE0_RESET>,
+				 <&dphy_rst TAURUS_PHY_S0_PCIE_RESET>;
+			reset-names = "core_reset", "phy_reset";
+
+			serdes-cfg-verA = "revA v1.3 (2022.04.22)";
+			serdes-cfg-verB = "revB v1.5 (2023.12.13)";
+			serdes-cfg-dataA = /* S0_0 & S0_1 gen1 for revA */
+		              <0x04 0xa855>,
+		              <0x18 0x000a>,
+		              <0x20 0x3591>,
+		              <0x28 0x8670>,
+		              <0x2c 0xb90d>,
+		              <0x34 0xf71a>,
+		              <0x38 0x1000>,
+		              <0x74 0xda1f>,
+		              <0x80 0xd477>,
+		              <0x88 0x0023>,
+		              <0x8c 0x0b66>,
+		              <0x90 0x4f30>,
+		              <0xa0 0xf802>,
+		              <0xc0 0x0055>,
+		              <0x24 0x500c>,
+		              <0x24 0x520c>,
+		              /* S0_0 & S0_1 gen2 for revA */
+		              <0x104 0xa84a>,
+		              <0x118 0x000a>,
+		              <0x120 0x3591>,
+		              <0x128 0x8650>,
+		              <0x12c 0xb90d>,
+		              <0x134 0xf71a>,
+		              <0x138 0x1000>,
+		              <0x174 0xda1f>,
+		              <0x180 0xd477>,
+		              <0x184 0x55aa>,
+		              <0x188 0x0023>,
+		              <0x18c 0x0b66>,
+		              <0x1a0 0xf802>,
+		              <0x1bc 0x3900>,
+		              <0x1c0 0x004a>,
+		              <0x124 0x500c>,
+		              <0x124 0x520c>;
+			serdes-cfg-dataB = /* S0_0 & S0_1 gen1 for revB */
+		              <0x04 0xa855>,
+		              <0x08 0x60c6>,
+		              <0x18 0x001f>,
+		              <0x20 0x3591>,
+		              <0x28 0xf670>,
+		              <0x2c 0xa90d>,
+		              <0x34 0xf71a>,
+		              <0x38 0x1000>,
+		              <0x74 0xda1f>,
+				<0x78 0xe0e2>,
+		              <0x80 0xd477>,
+		              <0x88 0x0023>,
+		              <0x8c 0x0b66>,
+		              <0x90 0x4f30>,
+		              <0xa0 0xf802>,
+		              <0xc0 0x0055>,
+		              <0xc8 0xf0f3>,
+		              <0x24 0x520c>,
+		              /* S0_0 & S0_1 gen2 for revB */
+		              <0x104 0xa84a>,
+		              <0x108 0x60c6>,
+		              <0x118 0x001f>,
+		              <0x120 0x3591>,
+		              <0x128 0xf670>,
+		              <0x12c 0xa90d>,
+		              <0x134 0xf71a>,
+		              <0x138 0x1000>,
+		              <0x174 0xda1f>,
+				<0x178 0xe0e2>,
+		              <0x180 0xd479>,
+		              <0x184 0x55aa>,
+		              <0x188 0x0023>,
+		              <0x18c 0x0b66>,
+		              <0x190 0x4f0c>,
+		              <0x1a0 0xf802>,
+		              <0x1bc 0x3900>,
+		              <0x1c0 0x004a>,
+		              <0x1c8 0xf0f3>,
+		              <0x124 0x520c>;
+			status = "disabled";
+		};
+
+		pcie1: pcie@f4326000 {
+			compatible = "realtek,taurus-pcie";
+			reg = <0 0xf4326000 0 0x400>,
+			      <0 0xb0001000 0 0x1000>,
+			      <0 0xb0002000 0 0x2000>,
+			      <0 0xb0030000 0 0x100000>,
+			      <0 0xf4335000 0 0x2000>;
+			reg-names = "glbl_regs", "rc_dbi", "config", "iatu",
+				    "serdes_phy";
+			phys = <&s1_pcie_phy0>,
+			      <&s1_pcie_phy1>;
+			phy-names = "pcie-phy0";
+
+			#address-cells = <3>;
+			#size-cells = <2>;
+			device_type = "pci";
+			bus-range = <0x0 0xff>;
+			ranges = <0x81000000 0 0 0 0xb0003000 0 0x00010000>,
+				 <0x82000000 0 0xb0400000 0 0xb0400000 0 0x0fc00000>;
+
+			id = <1>;
+			num-viewport = <1>;
+			num-lanes = <1>;
+			clocks = <&gate_pcie1_clk>;
+			interrupt-parent = <&gic>;
+			interrupts = 			<GIC_SPI TAURUS_IRQ_GLB_PCI1_0 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI TAURUS_IRQ_GLB_PCI1_1 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI TAURUS_IRQ_GLB_PCI1_2 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI TAURUS_IRQ_GLB_PCI1_3 IRQ_TYPE_LEVEL_HIGH>;
+
+			resets = <&block_rst TAURUS_PCIE1_RESET>,
+				 <&dphy_rst TAURUS_PHY_S1_PCIE_RESET>;
+			reset-names = "core_reset", "phy_reset";
+
+			serdes-cfg-verA = "revA v1.3 (2022.04.22)";
+			serdes-cfg-verB = "revB v1.5 (2023.12.13)";
+			serdes-cfg-dataA = /* S0_0 & S0_1 gen1 for revA */
+		              <0x04 0xa855>,
+		              <0x18 0x000a>,
+		              <0x20 0x3591>,
+		              <0x28 0x8670>,
+		              <0x2c 0xb90d>,
+		              <0x34 0xf71a>,
+		              <0x38 0x1000>,
+		              <0x74 0xda1f>,
+		              <0x80 0xd477>,
+		              <0x88 0x0023>,
+		              <0x8c 0x0b66>,
+		              <0x90 0x4f30>,
+		              <0xa0 0xf802>,
+		              <0xc0 0x0055>,
+		              <0x24 0x500c>,
+		              <0x24 0x520c>,
+		              /* S0_0 & S0_1 gen2 for revA */
+		              <0x104 0xa84a>,
+		              <0x118 0x000a>,
+		              <0x120 0x3591>,
+		              <0x128 0x8650>,
+		              <0x12c 0xb90d>,
+		              <0x134 0xf71a>,
+		              <0x138 0x1000>,
+		              <0x174 0xda1f>,
+		              <0x180 0xd477>,
+		              <0x184 0x55aa>,
+		              <0x188 0x0023>,
+		              <0x18c 0x0b66>,
+		              <0x1a0 0xf802>,
+		              <0x1bc 0x3900>,
+		              <0x1c0 0x004a>,
+		              <0x124 0x500c>,
+		              <0x124 0x520c>;
+			serdes-cfg-dataB = /* S0_0 & S0_1 gen1 for revB */
+		              <0x04 0xa855>,
+		              <0x08 0x60c6>,
+		              <0x18 0x001f>,
+		              <0x20 0x3591>,
+		              <0x28 0xf670>,
+		              <0x2c 0xa90d>,
+		              <0x34 0xf71a>,
+		              <0x38 0x1000>,
+		              <0x74 0xda1f>,
+				<0x78 0xe0e2>,
+		              <0x80 0xd477>,
+		              <0x88 0x0023>,
+		              <0x8c 0x0b66>,
+		              <0x90 0x4f30>,
+		              <0xa0 0xf802>,
+		              <0xc0 0x0055>,
+		              <0xc8 0xf0f3>,
+		              <0x24 0x500c>,
+		              <0x24 0x520c>,
+		              /* S0_0 & S0_1 gen2 for revB */
+		              <0x104 0xa84a>,
+		              <0x108 0x60c6>,
+		              <0x118 0x001f>,
+		              <0x120 0x3591>,
+		              <0x128 0xf670>,
+		              <0x12c 0xa90d>,
+		              <0x134 0xf71a>,
+		              <0x138 0x1000>,
+		              <0x174 0xda1f>,
+				<0x178 0xe0e2>,
+		              <0x180 0xd479>,
+		              <0x184 0x55aa>,
+		              <0x188 0x0023>,
+		              <0x18c 0x0b66>,
+		              <0x190 0x4f0c>,
+		              <0x1a0 0xf802>,
+		              <0x1bc 0x3900>,
+		              <0x1c0 0x004a>,
+		              <0x1c8 0xf0f3>,
+		              <0x124 0x500c>,
+		              <0x124 0x520c>;
+			status = "disabled";
+		};
+
+		pcie2: pcie@f4327000 {
+			compatible = "realtek,taurus-pcie";
+			reg = <0 0xf4327000 0 0x400>,
+			      <0 0xc0001000 0 0x1000>,
+			      <0 0xc0002000 0 0x2000>,
+			      <0 0xc0030000 0 0x100000>,
+			      <0 0xf4337000 0 0x1000>;
+			reg-names = "glbl_regs", "rc_dbi", "config", "iatu",
+				    "serdes_phy";
+			phys = <&s2_pcie_phy0>;
+			phy-names = "pcie-phy0";
+
+			#address-cells = <3>;
+			#size-cells = <2>;
+			device_type = "pci";
+			bus-range = <0x0 0xff>;
+			ranges = <0x81000000 0 0 0 0xc0003000 0 0x00010000>,
+				 <0x82000000 0 0xc0400000 0 0xc0400000 0 0x0fc00000>;
+
+			id = <2>;
+			num-viewport = <1>;
+			num-lanes = <1>;
+			clocks = <&gate_pcie2_clk>;
+			interrupt-parent = <&gic>;
+			interrupts = 			<GIC_SPI TAURUS_IRQ_GLB_PCI2_0 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI TAURUS_IRQ_GLB_PCI2_1 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI TAURUS_IRQ_GLB_PCI2_2 IRQ_TYPE_LEVEL_HIGH>,
+			<GIC_SPI TAURUS_IRQ_GLB_PCI2_3 IRQ_TYPE_LEVEL_HIGH>;
+
+			resets = <&block_rst TAURUS_PCIE2_RESET>,
+				 <&dphy_rst TAURUS_PHY_S2_PCIE_RESET>;
+			reset-names = "core_reset", "phy_reset";
+
+			serdes-cfg-verA = "revA v1.3 (2022.04.22)";
+			serdes-cfg-verB = "revB v1.5 (2023.12.13)";
+			serdes-cfg-dataA = /* S0_0 & S0_1 gen1 for revA */
+		              <0x04 0xa855>,
+		              <0x18 0x000a>,
+		              <0x20 0x3591>,
+		              <0x28 0x8670>,
+		              <0x2c 0xb90d>,
+		              <0x34 0xf71a>,
+		              <0x38 0x1000>,
+		              <0x70 0x2000>,
+		              <0x74 0xda1f>,
+		              <0x78 0x66eb>,
+		              <0x80 0xd477>,
+		              <0x88 0x0023>,
+		              <0x8c 0x0b66>,
+		              <0x90 0x4f30>,
+		              <0xa0 0xf802>,
+		              <0xbc 0x7055>,
+		              <0x24 0x500c>,
+		              <0x24 0x520c>,
+		              /* S0_0 & S0_1 gen2 for revA */
+		              <0x104 0xa84a>,
+		              <0x118 0x000a>,
+		              <0x120 0x3591>,
+		              <0x128 0x8650>,
+		              <0x12c 0xb90d>,
+		              <0x134 0xf71a>,
+		              <0x138 0x1000>,
+		              <0x170 0x2000>,
+		              <0x174 0xda1f>,
+		              <0x180 0xd477>,
+		              <0x184 0x55aa>,
+		              <0x188 0x0023>,
+		              <0x18c 0x0b66>,
+		              <0x1a0 0xf802>,
+		              <0x1bc 0x704a>,
+		              <0x124 0x500c>,
+		              <0x124 0x520c>;
+			serdes-cfg-dataB = /* S0_0 & S0_1 gen1 for revB */
+		              <0x04 0xa855>,
+		              <0x08 0x60c6>,
+		              <0x18 0x001f>,
+		              <0x20 0x3591>,
+		              <0x28 0xf670>,
+		              <0x2c 0xa90d>,
+		              <0x34 0xf71a>,
+		              <0x38 0x1000>,
+		              <0x70 0x2000>,
+		              <0x74 0xda1f>,
+		              <0x78 0x66eb>,
+		              <0x80 0xd477>,
+		              <0x88 0x0023>,
+		              <0x8c 0x0b66>,
+		              <0x90 0x4f30>,
+		              <0xa0 0xf802>,
+		              <0xbc 0x7055>,
+		              <0xc8 0xf0f3>,
+		              <0x24 0x500c>,
+		              <0x24 0x520c>,
+		              /* S0_0 & S0_1 gen2 for revB */
+		              <0x104 0xa84a>,
+		              <0x108 0x60c6>,
+		              <0x118 0x001f>,
+		              <0x120 0x3591>,
+		              <0x128 0xf670>,
+		              <0x12c 0xa90d>,
+		              <0x134 0xf71a>,
+		              <0x138 0x1000>,
+		              <0x170 0x2000>,
+		              <0x174 0xda1f>,
+		              <0x180 0xd479>,
+		              <0x184 0x55aa>,
+		              <0x188 0x0023>,
+		              <0x18c 0x0b66>,
+		              <0x190 0x4f0c>,
+		              <0x1a0 0xf802>,
+		              <0x1bc 0x704a>,
+		              <0x1c8 0xf0f3>,
+		              <0x124 0x500c>,
+		              <0x124 0x520c>;
 			status = "disabled";
 		};
 

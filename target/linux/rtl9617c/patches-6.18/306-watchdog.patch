@@ -1,32 +1,24 @@
 diff --git a/drivers/watchdog/Kconfig b/drivers/watchdog/Kconfig
-index 05008d937..f75fdd9ad 100644
---- a/drivers/watchdog/Kconfig
-+++ b/drivers/watchdog/Kconfig
-@@ -1076,6 +1076,15 @@ config REALTEK_OTTO_WDT
+@@ -1076,6 +1076,13 @@
  
  	  When built as a module this will be called realtek_otto_wdt.
  
-+
-+config RTL9617C_WATCHDOG
-+	tristate "Realtek RTL9617C watchdog"
-+	depends on ARCH_RTL9617C && OF
++config REALTEK_TAURUS_WATCHDOG
++	tristate "Realtek Taurus watchdog"
++	depends on ARCH_REALTEK_TAURUS && OF
 +	select WATCHDOG_CORE
 +	help
-+	  Watchdog driver for Realtek RTL9617C SoCs. If the bootloader has
-+	  already started the watchdog (boot-trial timer), the driver keeps
-+	  it running and pings it until userspace opens /dev/watchdog.
++	  Peripheral watchdog driver for Realtek Taurus SoCs.
++
  config SPRD_WATCHDOG
  	tristate "Spreadtrum watchdog support"
  	depends on ARCH_SPRD || COMPILE_TEST
 diff --git a/drivers/watchdog/Makefile b/drivers/watchdog/Makefile
-index b680e4d3c..dd45e816b 100644
---- a/drivers/watchdog/Makefile
-+++ b/drivers/watchdog/Makefile
-@@ -185,6 +185,7 @@ obj-$(CONFIG_MT7621_WDT) += mt7621_wdt.o
+@@ -185,6 +185,7 @@
  obj-$(CONFIG_PIC32_WDT) += pic32-wdt.o
  obj-$(CONFIG_PIC32_DMT) += pic32-dmt.o
  obj-$(CONFIG_REALTEK_OTTO_WDT) += realtek_otto_wdt.o
-+obj-$(CONFIG_RTL9617C_WATCHDOG) += rtl9617c-wdt.o
++obj-$(CONFIG_REALTEK_TAURUS_WATCHDOG) += taurus-wdt.o
  
  # PARISC Architecture
  

@@ -7,7 +7,7 @@ index 272c83bfd..0abe3aa94 100644
  	bool "Realtek devices"
  	default y
 -	depends on PCI || (PARPORT && X86)
-+	depends on PCI || (PARPORT && X86) || ARCH_RTL9617C || COMPILE_TEST
++	depends on PCI || (PARPORT && X86) || ARCH_REALTEK_TAURUS || COMPILE_TEST
  	help
  	  If you have a network (Ethernet) card belonging to this class, say Y.
  

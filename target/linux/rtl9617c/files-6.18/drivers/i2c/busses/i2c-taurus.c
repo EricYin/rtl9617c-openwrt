@@ -78,8 +78,6 @@ struct taurus_i2c_data {
 	spinlock_t		lock;
 	struct i2c_msg		*msg;
 	struct i2c_adapter	adapter;
-	struct gpio_desc		*scl_gpiod;
-	struct gpio_desc		*sda_gpiod;
 	struct pinctrl			*pinctrl;
 	struct pinctrl_state		*pins_default;
 	struct pinctrl_state		*pins_gpio;
@@ -417,61 +415,71 @@ static int taurus_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[],
 	return num;
 }
 
-static void taurus_i2c_prepare_recovery(struct i2c_adapter *adap)
-{
-	struct taurus_i2c_data *drv_data = i2c_get_adapdata(adap);
-
-	if (drv_data->pinctrl)
-		pinctrl_select_state(drv_data->pinctrl, drv_data->pins_gpio);
-}
-
-static void taurus_i2c_unprepare_recovery(struct i2c_adapter *adap)
-{
-	struct taurus_i2c_data *drv_data = i2c_get_adapdata(adap);
-
-	if (drv_data->pinctrl)
-		pinctrl_select_state(drv_data->pinctrl, drv_data->pins_default);
-}
-
-static void taurus_i2c_scl_set(struct taurus_i2c_data *drv_data, int val)
+static void taurus_i2c_scl_set(struct gpio_desc *scl, int val)
 {
 	if (val)
-		gpiod_direction_input(drv_data->scl_gpiod);
+		gpiod_direction_input(scl);
 	else
-		gpiod_direction_output(drv_data->scl_gpiod, 0);
+		gpiod_direction_output(scl, 0);
 }
 
 static int taurus_i2c_recover_bus(struct i2c_adapter *adap)
 {
 	struct taurus_i2c_data *drv_data = i2c_get_adapdata(adap);
-	int i, ret = 0;
+	struct device *dev = drv_data->adapter.dev.parent;
+	struct gpio_desc *scl, *sda = NULL;
+	int i, ret, restore_ret;
 
-	taurus_i2c_prepare_recovery(adap);
+	ret = pinctrl_select_state(drv_data->pinctrl, drv_data->pins_gpio);
+	if (ret)
+		return ret;
+
+	scl = gpiod_get_optional(dev, "scl", GPIOD_IN);
+	if (IS_ERR(scl)) {
+		ret = PTR_ERR(scl);
+		goto restore;
+	}
+	if (!scl) {
+		ret = -EOPNOTSUPP;
+		goto restore;
+	}
+
+	sda = gpiod_get_optional(dev, "sda", GPIOD_IN);
+	if (IS_ERR(sda))
+		sda = NULL;
 
 	for (i = 0; i < TAURUS_I2C_RECOVERY_CLOCKS; i++) {
-		taurus_i2c_scl_set(drv_data, 0);
+		taurus_i2c_scl_set(scl, 0);
 		udelay(TAURUS_I2C_RECOVERY_US);
-		taurus_i2c_scl_set(drv_data, 1);
+		taurus_i2c_scl_set(scl, 1);
 		udelay(TAURUS_I2C_RECOVERY_US);
 	}
 
-	if (!gpiod_get_value_cansleep(drv_data->scl_gpiod)) {
+	if (!gpiod_get_value_cansleep(scl)) {
 		ret = -EBUSY;
-		goto out;
+		goto put_sda;
 	}
 
-	if (drv_data->sda_gpiod) {
-		taurus_i2c_scl_set(drv_data, 0);
-		gpiod_direction_output(drv_data->sda_gpiod, 0);
+	if (sda) {
+		taurus_i2c_scl_set(scl, 0);
+		gpiod_direction_output(sda, 0);
 		udelay(TAURUS_I2C_RECOVERY_US);
-		taurus_i2c_scl_set(drv_data, 1);
+		taurus_i2c_scl_set(scl, 1);
 		udelay(TAURUS_I2C_RECOVERY_US);
-		gpiod_direction_input(drv_data->sda_gpiod);
+		gpiod_direction_input(sda);
 		udelay(TAURUS_I2C_RECOVERY_US);
 	}
+	ret = 0;
 
-out:
-	taurus_i2c_unprepare_recovery(adap);
+put_sda:
+	if (sda)
+		gpiod_put(sda);
+	gpiod_put(scl);
+restore:
+	restore_ret = pinctrl_select_state(drv_data->pinctrl,
+					   drv_data->pins_default);
+	if (!ret)
+		ret = restore_ret;
 	return ret;
 }
 
@@ -482,16 +490,6 @@ static int taurus_i2c_recovery_init(struct taurus_i2c_data *drv_data,
 
 	if (!device_property_present(dev, "scl-gpios"))
 		return 0;
-
-	drv_data->scl_gpiod = devm_gpiod_get_optional(dev, "scl", GPIOD_IN);
-	if (IS_ERR(drv_data->scl_gpiod))
-		return PTR_ERR(drv_data->scl_gpiod);
-	if (!drv_data->scl_gpiod)
-		return 0;
-
-	drv_data->sda_gpiod = devm_gpiod_get_optional(dev, "sda", GPIOD_IN);
-	if (IS_ERR(drv_data->sda_gpiod))
-		return PTR_ERR(drv_data->sda_gpiod);
 
 	drv_data->pinctrl = devm_pinctrl_get(dev);
 	if (IS_ERR(drv_data->pinctrl)) {
@@ -514,8 +512,6 @@ static int taurus_i2c_recovery_init(struct taurus_i2c_data *drv_data,
 	}
 
 	drv_data->recovery.recover_bus = taurus_i2c_recover_bus;
-	drv_data->recovery.prepare_recovery = taurus_i2c_prepare_recovery;
-	drv_data->recovery.unprepare_recovery = taurus_i2c_unprepare_recovery;
 	drv_data->adapter.bus_recovery_info = &drv_data->recovery;
 
 	return 0;

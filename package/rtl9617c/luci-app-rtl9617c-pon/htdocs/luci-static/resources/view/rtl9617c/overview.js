@@ -28,8 +28,8 @@ return view.extend({
 					ui.tile('光口发射', optical.tx_disabled == null ? '未提供' : optical.tx_disabled === '1' ? '已关闭' : '已允许', 'A2h 光模块遥测'),
 					ui.tile('光学校准', bosa.configured == null ? '未提供' : bosa.configured === '1' ? '已配置' : '未就绪', 'A2H 模块已识别，DDMI 可用')
 				]),
-				ui.grid([status.card('注册与认证', null, ui.authentication(pon)),
-					status.offloadCard(pon, firewallFlag('flow_offloading'), firewallFlag('flow_offloading_hw'))]),
+				status.card('注册与认证', null, ui.authentication(pon)),
+				status.offloadCard(pon, firewallFlag('flow_offloading'), firewallFlag('flow_offloading_hw')),
 				status.card('业务网络', null, [ui.networks(data), ui.link('管理上网', 'admin/onu/internet')]),
 				hasWifi ? status.card('无线网络', null, [data.wifiError ? ui.note('无线状态读取失败。') : ui.grid(data.wifi.map(function(wifi) {
 					return status.card(wifi.ssid || wifi.name, status.badge(wifi.up ? '运行中' : '未运行', wifi.up ? 'good' : 'muted'), status.rows([

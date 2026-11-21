@@ -26,7 +26,8 @@ return {
 					cpu: {
 						available_khz: available == null || !match(trim(available), /^[0-9]+(\s+[0-9]+)*$/) ? [] :
 							map(split(trim(available), /\s+/), (value) => +value),
-						current_khz: number(policy + 'cpuinfo_cur_freq'),
+						current_khz: number(policy + 'cpuinfo_cur_freq') ?? number(policy + 'scaling_cur_freq'),
+						setspeed_khz: number(policy + 'scaling_setspeed'),
 						transition_error: number('/sys/bus/platform/devices/f4320200.clock-controller/transition_error'),
 						governor: governor == null ? null : trim(governor)
 					}

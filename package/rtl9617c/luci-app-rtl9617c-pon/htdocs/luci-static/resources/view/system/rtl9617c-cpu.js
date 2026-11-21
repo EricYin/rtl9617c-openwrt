@@ -26,11 +26,11 @@ return view.extend({
 			temperature.textContent = next.temperature_mC == null ? '未提供' : (next.temperature_mC / 1000).toFixed(1) + '°C';
 			var configured = uci.get('system', 'cpu', 'frequency');
 			applied.textContent = next.cpu.current_khz == null ? '调频驱动未就绪' :
-				next.cpu.transition_error == null ? '调频结果读取失败' :
-				next.cpu.transition_error !== 0 ? '调频失败（错误码 ' + next.cpu.transition_error + '），请查看系统日志。' :
+				next.cpu.transition_error != null && next.cpu.transition_error !== 0 ? '调频失败（错误码 ' + next.cpu.transition_error + '），请查看系统日志。' :
 				!configured ? '尚未配置运行频率' :
 				next.cpu.governor !== 'userspace' ? '当前调频策略与配置不同' :
-				Number(configured) !== next.cpu.current_khz ? '当前频率与配置不同，请检查应用结果和系统日志。' : '已生效';
+				Number(configured) !== next.cpu.current_khz ? '当前频率与配置不同，请检查应用结果和系统日志。' :
+				next.cpu.setspeed_khz != null && next.cpu.setspeed_khz !== next.cpu.current_khz ? '目标频率与当前实际频率不一致，请检查系统日志。' : '已生效';
 		}
 		update(state);
 		poll.add(function() {

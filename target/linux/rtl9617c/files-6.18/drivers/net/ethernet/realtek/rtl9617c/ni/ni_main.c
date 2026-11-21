@@ -367,91 +367,139 @@ static int rtl_ni_probe(struct platform_device *pdev)
 	void __iomem *base;
 	int ret;
 
+	dev_info(dev, "enter rtl_ni_probe\n");
+
 	ni = devm_kzalloc(dev, sizeof(*ni), GFP_KERNEL);
-	if (!ni)
+	if (!ni) {
+		dev_err(dev, "devm_kzalloc failed\n");
 		return -ENOMEM;
+	}
 	ni->dev = dev;
 	spin_lock_init(&ni->tx_lock);
 	spin_lock_init(&ni->rx_lock);
 	ret = devm_mutex_init(dev, &ni->lock);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "devm_mutex_init(lock) failed: %d\n", ret);
 		return ret;
+	}
 	ret = devm_mutex_init(dev, &ni->mib_lock);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "devm_mutex_init(mib_lock) failed: %d\n", ret);
 		return ret;
+	}
 	atomic_long_set(&ni->rx_errors, 0);
 	atomic_long_set(&ni->rx_dropped, 0);
 
 	base = devm_platform_ioremap_resource_byname(pdev, "ni");
-	if (IS_ERR(base))
+	if (IS_ERR(base)) {
+		dev_err(dev, "ioremap ni failed: %ld\n", PTR_ERR(base));
 		return PTR_ERR(base);
+	}
 	ni->regs = devm_regmap_init_mmio(dev, base, &rtl_ni_regmap_config);
-	if (IS_ERR(ni->regs))
+	if (IS_ERR(ni->regs)) {
+		dev_err(dev, "regmap_init_mmio failed: %ld\n",
+			PTR_ERR(ni->regs));
 		return PTR_ERR(ni->regs);
+	}
 	ni->dma.base = devm_platform_ioremap_resource_byname(pdev, "dma");
-	if (IS_ERR(ni->dma.base))
+	if (IS_ERR(ni->dma.base)) {
+		dev_err(dev, "ioremap dma failed: %ld\n",
+			PTR_ERR(ni->dma.base));
 		return PTR_ERR(ni->dma.base);
+	}
 	ni->qm.axi = devm_platform_ioremap_resource_byname(pdev, "qm-axi");
-	if (IS_ERR(ni->qm.axi))
+	if (IS_ERR(ni->qm.axi)) {
+		dev_err(dev, "ioremap qm-axi failed: %ld\n",
+			PTR_ERR(ni->qm.axi));
 		return PTR_ERR(ni->qm.axi);
+	}
 	ni->reset = devm_platform_ioremap_resource_byname(pdev, "reset");
-	if (IS_ERR(ni->reset))
+	if (IS_ERR(ni->reset)) {
+		dev_err(dev, "ioremap reset failed: %ld\n",
+			PTR_ERR(ni->reset));
 		return PTR_ERR(ni->reset);
+	}
 	if (IS_ENABLED(CONFIG_RTL9617C_FE)) {
 		ni->fe_axi = devm_platform_ioremap_resource_byname(pdev, "fe-axi");
-		if (IS_ERR(ni->fe_axi))
+		if (IS_ERR(ni->fe_axi)) {
+			dev_err(dev, "ioremap fe-axi failed: %ld\n",
+				PTR_ERR(ni->fe_axi));
 			return PTR_ERR(ni->fe_axi);
+		}
 	}
 
 	ni->irq = platform_get_irq(pdev, 0);
-	if (ni->irq < 0)
+	if (ni->irq < 0) {
+		dev_err(dev, "platform_get_irq failed: %d\n", ni->irq);
 		return ni->irq;
+	}
 
 	ret = rtl_ni_base_mac(ni);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "rtl_ni_base_mac failed: %d\n", ret);
 		return ret;
+	}
 
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
-	if (ret)
+	if (ret) {
+		dev_err(dev, "dma_set_mask_and_coherent failed: %d\n", ret);
 		return ret;
+	}
 	ret = rtl_ni_dma_alloc(ni);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "rtl_ni_dma_alloc failed: %d\n", ret);
 		return ret;
+	}
 	ret = rtl_ni_qm_alloc(ni);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "rtl_ni_qm_alloc failed: %d\n", ret);
 		return ret;
+	}
 	ret = devm_add_action_or_reset(dev, rtl_ni_qm_release, ni);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "devm_add_action(qm_release) failed: %d\n", ret);
 		return ret;
+	}
 
 	ni->napi_dev = alloc_netdev_dummy(0);
-	if (!ni->napi_dev)
+	if (!ni->napi_dev) {
+		dev_err(dev, "alloc_netdev_dummy failed\n");
 		return -ENOMEM;
+	}
 	netif_napi_add(ni->napi_dev, &ni->napi, rtl_ni_poll);
 	ret = devm_add_action_or_reset(dev, rtl_ni_napi_del, ni);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "devm_add_action(napi_del) failed: %d\n", ret);
 		return ret;
+	}
 	hrtimer_setup(&ni->timer, rtl_ni_timer, CLOCK_MONOTONIC,
 		      HRTIMER_MODE_REL_SOFT);
 
 	rtl_ni_irq_enable(ni, false);
 	ret = devm_request_irq(dev, ni->irq, rtl_ni_irq, 0, KBUILD_MODNAME, ni);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "devm_request_irq(%d) failed: %d\n",
+			ni->irq, ret);
 		return ret;
+	}
 
 	ni->fe = rtl_fe_create(dev, ni->regs, ni->fe_axi,
 			       ni->qm.lan_dq_bufs > 0);
-	if (IS_ERR(ni->fe))
+	if (IS_ERR(ni->fe)) {
+		dev_err(dev, "rtl_fe_create failed: %ld\n", PTR_ERR(ni->fe));
 		return PTR_ERR(ni->fe);
+	}
 
 	platform_set_drvdata(pdev, ni);
 	ret = rtl_ni_ports_register(ni);
 	if (ret) {
+		dev_err(dev, "rtl_ni_ports_register failed: %d\n", ret);
 		rtl_fe_destroy(ni->fe);
 		return ret;
 	}
 
 	rtl_ni_mib_init(ni);
+	dev_info(dev, "rtl_ni_probe succeeded\n");
 	return 0;
 }
 

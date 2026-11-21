@@ -1,30 +1,24 @@
 diff --git a/drivers/spi/Kconfig b/drivers/spi/Kconfig
-index 1872f9d54..cbb649aaf 100644
---- a/drivers/spi/Kconfig
-+++ b/drivers/spi/Kconfig
-@@ -944,6 +944,13 @@ config SPI_RSPI
- 	help
- 	  SPI driver for Renesas RSPI and QSPI blocks.
+@@ -25,6 +25,13 @@
  
-+config SPI_RTL9617C
-+	tristate "Realtek RTL9617C QSPI controller"
-+	depends on ARCH_RTL9617C && OF
+ if SPI
+ 
++config SPI_REALTEK_TAURUS_QSPI
++	tristate "Realtek Taurus QSPI controller"
++	depends on ARCH_REALTEK_TAURUS && OF
 +	select SPI_MEM
 +	help
-+	  SPI-memory controller for the boot SPI-NAND.
++	  QSPI flash controller of the Realtek Taurus SoCs.
 +
- config SPI_RZV2H_RSPI
- 	tristate "Renesas RZ/V2H RSPI controller"
- 	depends on ARCH_RENESAS || COMPILE_TEST
+ config SPI_DEBUG
+ 	bool "Debug support for SPI drivers"
+ 	depends on DEBUG_KERNEL
 diff --git a/drivers/spi/Makefile b/drivers/spi/Makefile
-index 1f7c06a30..7b11bdd01 100644
---- a/drivers/spi/Makefile
-+++ b/drivers/spi/Makefile
-@@ -128,6 +128,7 @@ obj-$(CONFIG_MACH_REALTEK_RTL)		+= spi-realtek-rtl.o
- obj-$(CONFIG_SPI_REALTEK_SNAND)		+= spi-realtek-rtl-snand.o
- obj-$(CONFIG_SPI_RPCIF)			+= spi-rpc-if.o
- obj-$(CONFIG_SPI_RSPI)			+= spi-rspi.o
-+obj-$(CONFIG_SPI_RTL9617C)		+= spi-rtl9617c.o
- obj-$(CONFIG_SPI_RZV2H_RSPI)		+= spi-rzv2h-rspi.o
- obj-$(CONFIG_SPI_RZV2M_CSI)		+= spi-rzv2m-csi.o
- obj-$(CONFIG_SPI_S3C64XX)		+= spi-s3c64xx.o
+@@ -7,6 +7,7 @@
+ 
+ # small core, mostly translating board-specific
+ # config declarations into driver model code
++obj-$(CONFIG_SPI_REALTEK_TAURUS_QSPI)	+= spi-taurus-qspi.o
+ obj-$(CONFIG_SPI_MASTER)		+= spi.o
+ obj-$(CONFIG_SPI_MEM)			+= spi-mem.o
+ obj-$(CONFIG_SPI_MUX)			+= spi-mux.o

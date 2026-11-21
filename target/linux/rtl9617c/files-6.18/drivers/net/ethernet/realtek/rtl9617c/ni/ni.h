@@ -87,7 +87,6 @@ struct rtl_ni_qm {
 	dma_addr_t lan_dq_dma;
 	size_t lan_dq_size;
 	unsigned int lan_dq_bufs;
-	struct resource lan_dq_res;
 	unsigned int read[RTL_NI_QM_VOQS];
 	struct rtl_ni_qm_refill refill;
 	bool ready;

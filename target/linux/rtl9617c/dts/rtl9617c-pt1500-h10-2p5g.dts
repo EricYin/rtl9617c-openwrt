@@ -2,7 +2,7 @@
 
 /dts-v1/;
 
-#include "rtl9617c.dtsi"
+#include "rtk-taurus.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/linux-event-codes.h>
 #include <dt-bindings/leds/common.h>
@@ -13,6 +13,7 @@
 
 	aliases {
 		serial0 = &uart0;
+		i2c0 = &i2c0;
 		led-boot = &led_power;
 		led-failsafe = &led_power;
 		led-running = &led_power;
@@ -35,23 +36,8 @@
 		#size-cells = <2>;
 		ranges;
 
-		voip-vector@0 {
-			reg = <0 0 0 0x1000>;
-			no-map;
-		};
-		voip@2000000 {
-			reg = <0 0x02000000 0 0x00300000>;
-			no-map;
-		};
-		voip-ipc@2300000 {
-			reg = <0 0x02300000 0 0x00100000>;
-			no-map;
-		};
-		ddr_noncache: ddr-noncache@9000000 {
-			reg = <0 0x09000000 0 0x01a50000>;
-		};
-		ddr-cache@bc48000 {
-			reg = <0 0x0bc48000 0 0x10000>;
+		lan_deepq: lan-deepq@c000000 {
+			reg = <0 0x0c000000 0 0x01500000>;
 		};
 		tz-smc@eeff000 {
 			reg = <0 0x0eeff000 0 0x1000>;
@@ -67,48 +53,47 @@
 
 		internet {
 			label = "LED_PPP_G";
-			gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 2 GPIO_ACTIVE_LOW>;
 			default-state = "off";
 		};
 		los {
 			label = "LED_LOS";
-			gpios = <&gpio0 10 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 10 GPIO_ACTIVE_LOW>;
 		};
 		pon {
 			label = "LED_PON";
-			gpios = <&gpio0 9 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 9 GPIO_ACTIVE_LOW>;
 		};
 		led_power: power {
 			label = "LED_PWR_G";
-			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank0 11 GPIO_ACTIVE_HIGH>;
 			default-state = "on";
 		};
 		phone {
 			label = "LED_FXS";
-			gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank0 12 GPIO_ACTIVE_HIGH>;
 		};
 		lan1 {
 			label = "LED_EPHY1";
-			gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 3 GPIO_ACTIVE_LOW>;
 		};
 		lan2 {
 			label = "LED_EPHY2";
-			gpios = <&gpio0 1 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 1 GPIO_ACTIVE_LOW>;
 		};
 		lan3 {
 			label = "LED_EPHY3";
-			gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 0 GPIO_ACTIVE_LOW>;
 		};
 	};
 
-	gpio-keys-polled {
-		compatible = "gpio-keys-polled";
-		poll-interval = <20>;
+	gpio-keys {
+		compatible = "gpio-keys";
 
 		reset {
 			label = "reset";
 			linux,code = <KEY_RESTART>;
-			gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio_bank0 8 GPIO_ACTIVE_LOW>;
 			debounce-interval = <60>;
 		};
 	};
@@ -120,8 +105,8 @@
 
 &i2c0 {
 	status = "okay";
-	scl-gpios = <&gpio0 68 GPIO_ACTIVE_HIGH>;
-	sda-gpios = <&gpio0 69 GPIO_ACTIVE_HIGH>;
+	scl-gpios = <&gpio_bank2 4 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpio_bank2 5 GPIO_ACTIVE_HIGH>;
 
 	bosa0: optical-front-end@51 {
 		compatible = "realtek,rtl9617c-bosa";
@@ -164,7 +149,7 @@
 };
 
 &ni {
-	memory-region = <&ddr_noncache>;
+	memory-region = <&lan_deepq>;
 	nvmem-cells = <&base_mac 0>;
 	nvmem-cell-names = "mac-address";
 	status = "okay";
@@ -203,7 +188,7 @@
 	nvmem-cells = <&epon_mac 0>, <&pon_sn>;
 	nvmem-cell-names = "mac-address", "pon-serial";
 	realtek,optical-front-end = <&bosa0>;
-	tx-disable-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+	tx-disable-gpios = <&gpio_bank0 15 GPIO_ACTIVE_HIGH>;
 	realtek,burst-polarity = <0>;
 	realtek,los-invert = <0>;
 	realtek,uni-ports = /bits/ 8 <3 2 1 0>;

@@ -1,8 +1,0 @@
-# SPDX-License-Identifier: GPL-2.0-only
-config CLK_RTL9617C_CPU
-	bool "Realtek RTL9617C CPU clock"
-	depends on ARCH_RTL9617C && OF
-	select PM_OPP
-	help
-	  CPU PLL clock of the Realtek RTL9617C SoC. cpufreq-dt scales it
-	  through the CPU OPP table.

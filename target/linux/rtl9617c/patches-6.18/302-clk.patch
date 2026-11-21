@@ -22,3 +22,26 @@ index 61ec08404..a4ea8174a 100644
  obj-y					+= renesas/
  obj-$(CONFIG_ARCH_ROCKCHIP)		+= rockchip/
  obj-$(CONFIG_COMMON_CLK_SAMSUNG)	+= samsung/
+
+diff --git a/drivers/clk/realtek/Kconfig b/drivers/clk/realtek/Kconfig
+new file mode 100644
+index 0000000..5639465
+--- /dev/null
++++ b/drivers/clk/realtek/Kconfig
+@@ -0,0 +1,8 @@
++# SPDX-License-Identifier: GPL-2.0-only
++config CLK_REALTEK_TAURUS
++	bool "Realtek Taurus SoC clock controller"
++	depends on ARCH_REALTEK_TAURUS && OF
++	select PM_OPP
++	help
++	  Clock tree of the Realtek Taurus SoCs: PLLs, muxes, dividers,
++	  gates and the CPU frequency daemon.
+diff --git a/drivers/clk/realtek/Makefile b/drivers/clk/realtek/Makefile
+new file mode 100644
+index 0000000..b6636ce
+--- /dev/null
++++ b/drivers/clk/realtek/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0-only
++obj-$(CONFIG_CLK_REALTEK_TAURUS) += clk-taurus.o

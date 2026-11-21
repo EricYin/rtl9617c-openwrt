@@ -382,6 +382,7 @@
 			recv_ctrl1 = <0xaaaa0080>;
 			recv_ctrl2 = <0x88880100>;
 			recv_ctrl3 = <0x08080140>;
+			status = "disabled";
 		};
 
 		per_ictl: interrupt-controller@f4329004 {
@@ -1060,7 +1061,7 @@
 			compatible = "realtek,taurus-trng";
 			reg = <0 0x90600200 0 0x68>;
 			interrupts = <GIC_SPI TAURUS_IRQ_GLB_TRNG IRQ_TYPE_LEVEL_HIGH>;
-			status = "disabled";
+			status = "okay";
 		};
 
 		leds: led-controller@4f43201bc {
@@ -1068,7 +1069,7 @@
 			reg = <4 0xf43201bc 0 0x44>;
 			#address-cells = <1>;
 			#size-cells = <0>;
-			status = "okay";
+			status = "disabled";
 		};
 
 		ni: ethernet@4f4300000 {

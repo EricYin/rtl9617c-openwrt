@@ -214,7 +214,7 @@ static int rtl_ni_engine_start(struct rtl9617c_ni *ni)
 	u32 cfg;
 	int ret;
 
-	rtl_ni_p6_bringup(ni);
+	rtl_ni_serdes_bringup(ni);
 
 	rtl_ni_write(ni, RTL_L2TM_QM_EQ_CFG, L2TM_QM_EQ_INIT);
 	rtl_ni_rmw(ni, RTL_L2TM_QM_PORT_PRVT_PROFILE(0),

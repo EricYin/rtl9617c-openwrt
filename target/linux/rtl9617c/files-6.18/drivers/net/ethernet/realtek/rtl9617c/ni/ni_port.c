@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <linux/bitfield.h>
+#include <linux/delay.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
+#include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
@@ -27,6 +29,190 @@
 #define XGE_MAC_PQUANTA_DEFAULT		0xffff
 #define TX_HDR_HIGH			BIT(13)
 #define TX_HDR_LOW(port)		((16 << 9) | ((port) << 3) | BIT(29))
+#define GLB_RESET_QXGMII		BIT(31)
+#define XGE_COM_RX_RESET		BIT(15)
+#define XGE_COM_TX_RESET		BIT(14)
+#define XGE_COM_IFACE_RESET		BIT(13)
+#define XGE_COM_MODE			GENMASK(6, 4)
+#define XGE_TX_2_KEEP			(~(RTL_NI_XGE_TX2_READ_THR | \
+					   RTL_NI_XGE_TX2_FIFO_AFULL))
+#define XGE_TX_2_INIT			(FIELD_PREP(RTL_NI_XGE_TX2_READ_THR, 10) | \
+					 FIELD_PREP(RTL_NI_XGE_TX2_FIFO_AFULL, 10))
+#define XGE_RX_CLEAR			(RTL_NI_XGE_RX_DROP_SHORT | \
+					 RTL_NI_XGE_RX_PAUSE_TERM | \
+					 RTL_NI_XGE_RX_PAUSE_EXTRACT | \
+					 RTL_NI_XGE_RX_FCS_CHK_EN)
+#define XGE_RX_INIT			(RTL_NI_XGE_RX_PROMIS | \
+					 RTL_NI_XGE_RX_DROP_SHORT | \
+					 RTL_NI_XGE_RX_PAUSE_TERM | \
+					 RTL_NI_XGE_RX_PAUSE_EXTRACT | \
+					 RTL_NI_XGE_RX_LEN_CHK_EN | \
+					 RTL_NI_XGE_RX_LEN_CHK_PAUSE | \
+					 RTL_NI_XGE_RX_LEN_CHK_PAD | \
+					 RTL_NI_XGE_RX_FCS_CHK_EN | \
+					 RTL_NI_XGE_RX_CRC_ERR_FATAL)
+#define XGE_TX_INIT			(FIELD_PREP(RTL_NI_XGE_TX_IFG_MODE, 1) | \
+					 RTL_NI_XGE_TX_PAUSE_REQ_EN | \
+					 RTL_NI_XGE_TX_PAUSE_AUTO_XON)
+
+static void rtl_ni_p6_mac_config(struct rtl9617c_ni *ni)
+{
+	u32 qm, val;
+
+	rtl_ni_rmw(ni, RTL_L2TM_ES_CTRL, RTL_L2TM_ES_CTRL_P6, 0);
+	qm = rtl_ni_read(ni, RTL_QM_ES_CTRL);
+	rtl_ni_write(ni, RTL_QM_ES_CTRL, qm & ~RTL_QM_ES_NI_P6);
+	rtl_ni_rmw(ni, RTL_NI_GLB_NITX_MISC_CFG, 0,
+		   RTL_NI_GLB_NITX_XGE6_TX_DRAIN);
+
+	/* Toggle gige_mode + inf_sel while resetting XGE MAC */
+	val = rtl_ni_read(ni, RTL_NI_XGE_MISC_CONFIG) &
+	      ~RTL_NI_XGE_MISC_INF_SEL;
+	rtl_ni_write(ni, RTL_NI_XGE_MISC_CONFIG,
+		     val | RTL_NI_XGE_MISC_GIGE_MODE);
+	rtl_ni_write(ni, RTL_NI_XGE_MISC_CONFIG,
+		     val | RTL_NI_XGE_MISC_GIGE_MODE |
+		     RTL_NI_XGE_MISC_INF_SEL);
+	usleep_range(10000, 11000);
+
+	rtl_ni_rmw(ni, RTL_NI_XGE_MAC_CFG_TX, RTL_NI_XGE_TX_IFG_MODE, 0);
+	rtl_ni_rmw(ni, RTL_NI_XGE_MAC_CFG_TX, 0,
+		   FIELD_PREP(RTL_NI_XGE_TX_IFG_MODE, 1));
+	val = rtl_ni_read(ni, RTL_NI_XGE_MAC_CFG_TX_2);
+	rtl_ni_write(ni, RTL_NI_XGE_MAC_CFG_TX_2,
+		     (val & XGE_TX_2_KEEP) | XGE_TX_2_INIT);
+
+	rtl_ni_rmw(ni, RTL_NI_XGE_MAC_CFG_COM, XGE_COM_IFACE_RESET | XGE_COM_MODE,
+		   XGE_COM_RX_RESET | XGE_COM_TX_RESET);
+	usleep_range(10000, 11000);
+	rtl_ni_rmw(ni, RTL_NI_XGE_MAC_CFG_COM, XGE_COM_RX_RESET | XGE_COM_TX_RESET |
+		   XGE_COM_IFACE_RESET | XGE_COM_MODE, 0);
+
+	val = rtl_ni_read(ni, RTL_NI_XGE_MISC_CONFIG) &
+	      ~(RTL_NI_XGE_MISC_GIGE_MODE | RTL_NI_XGE_MISC_INF_SEL);
+	rtl_ni_write(ni, RTL_NI_XGE_MISC_CONFIG, val);
+	rtl_ni_write(ni, RTL_NI_XGE_MISC_CONFIG, val | RTL_NI_XGE_MISC_INF_XFI);
+	rtl_ni_rmw(ni, RTL_NI_GLB_NITX_MISC_CFG,
+		   RTL_NI_GLB_NITX_XGE6_TX_DRAIN, 0);
+
+	rtl_ni_rmw(ni, RTL_L2TM_ES_CTRL, 0, RTL_L2TM_ES_CTRL_P6);
+	rtl_ni_write(ni, RTL_QM_ES_CTRL, qm | RTL_QM_ES_NI_P6);
+}
+
+static void rtl_ni_p6_iface_select(struct rtl9617c_ni *ni)
+{
+	u32 val;
+
+	rtl_ni_rmw(ni, RTL_NI_GLB_NITX_MISC_CFG, 0,
+		   RTL_NI_GLB_NITX_XGE6_TX_DRAIN);
+	val = rtl_ni_read(ni, RTL_NI_XGE_MISC_CONFIG) &
+	      ~(RTL_NI_XGE_MISC_GIGE_MODE | RTL_NI_XGE_MISC_INF_SEL);
+	rtl_ni_write(ni, RTL_NI_XGE_MISC_CONFIG, val);
+	/* Keep gige_mode set for 2.5G SGMII / HiSGMII operation (inf_sel = 1) */
+	rtl_ni_write(ni, RTL_NI_XGE_MISC_CONFIG,
+		     val | RTL_NI_XGE_MISC_GIGE_MODE |
+		     RTL_NI_XGE_MISC_INF_SGMII);
+	usleep_range(10000, 11000);
+
+	rtl_ni_rmw(ni, RTL_NI_XGE_MAC_CFG_COM, 0, XGE_COM_IFACE_RESET);
+	usleep_range(10000, 11000);
+	rtl_ni_rmw(ni, RTL_NI_XGE_MAC_CFG_COM, XGE_COM_IFACE_RESET, 0);
+	rtl_ni_rmw(ni, RTL_NI_GLB_NITX_MISC_CFG,
+		   RTL_NI_GLB_NITX_XGE6_TX_DRAIN, 0);
+}
+
+static int rtl_ni_port_serdes_apply(struct rtl9617c_ni_port *port,
+				    phy_interface_t interface)
+{
+	struct rtl9617c_ni *ni = port->ni;
+	int ret;
+
+	if (port->id == RTL_NI_PORT_P6) {
+		writel(readl(ni->reset) | GLB_RESET_QXGMII, ni->reset);
+		udelay(1);
+		writel(readl(ni->reset) & ~GLB_RESET_QXGMII, ni->reset);
+	}
+
+	ret = phy_set_mode_ext(port->serdes, PHY_MODE_ETHERNET, interface);
+	if (ret)
+		dev_warn(ni->dev, "%s serdes %s setup failed: %d\n",
+			 port->dev->name, phy_modes(interface), ret);
+	return ret;
+}
+
+static int rtl_ni_port_set_interface(struct rtl9617c_ni_port *port,
+				     phy_interface_t interface)
+{
+	int ret;
+
+	if (!port->serdes || port->interface == interface)
+		return 0;
+
+	ret = rtl_ni_port_serdes_apply(port, interface);
+	if (ret)
+		return ret;
+	port->interface = interface;
+
+	if (port->id == RTL_NI_PORT_P6) {
+		rtl_ni_p6_mac_config(port->ni);
+		rtl_ni_p6_iface_select(port->ni);
+	}
+	return 0;
+}
+
+int rtl_ni_serdes_bringup(struct rtl9617c_ni *ni)
+{
+	struct rtl9617c_ni_port *port = NULL;
+	unsigned int id;
+	int ret = 0;
+
+	for (id = 0; id < RTL_NI_PORTS; id++) {
+		if (ni->ports[id] && ni->ports[id]->serdes) {
+			port = ni->ports[id];
+			break;
+		}
+	}
+	if (!port || ni->serdes_ready)
+		return 0;
+
+	if (!ni->serdes_on) {
+		ret = phy_power_on(port->serdes);
+		if (ret) {
+			dev_warn(ni->dev, "serdes power on failed: %d\n", ret);
+			return ret;
+		}
+		ni->serdes_on = true;
+	}
+
+	writel(readl(ni->reset) | GLB_RESET_QXGMII, ni->reset);
+	msleep(50);
+	writel(readl(ni->reset) & ~GLB_RESET_QXGMII, ni->reset);
+	usleep_range(1000, 2000);
+
+	for (id = 0; id < RTL_NI_PORTS; id++) {
+		port = ni->ports[id];
+		if (!port || !port->serdes)
+			continue;
+		ret = rtl_ni_port_serdes_apply(port, port->interface);
+		if (ret)
+			break;
+	}
+
+	if (ni->ports[RTL_NI_PORT_P6]) {
+		rtl_ni_p6_mac_config(ni);
+		rtl_ni_rmw(ni, RTL_NI_XGE_MAC_CFG_COM,
+			   RTL_NI_XGE_MAC_CFG_COM_CLR_ON_RD |
+			   RTL_NI_XGE_MAC_CFG_COM_RT_MIB_EN,
+			   RTL_NI_XGE_MAC_CFG_COM_RT_MIB_EN);
+		rtl_ni_rmw(ni, RTL_NI_XGE_MAC_CFG_RX, XGE_RX_CLEAR, XGE_RX_INIT);
+		rtl_ni_rmw(ni, RTL_NI_XGE_MAC_CFG_TX, XGE_TX_INIT, XGE_TX_INIT);
+		rtl_ni_write(ni, RTL_NI_GLB_INTF_RST_CONFIG, 0);
+		rtl_ni_p6_iface_select(ni);
+	}
+
+	ni->serdes_ready = !ret;
+	return ret;
+}
 
 static struct rtl9617c_ni_port *rtl_ni_config_to_port(struct phylink_config *config)
 {
@@ -44,8 +230,7 @@ static void rtl_ni_mac_config(struct phylink_config *config, unsigned int mode,
 {
 	struct rtl9617c_ni_port *port = rtl_ni_config_to_port(config);
 
-	if (port->id == RTL_NI_PORT_P6)
-		rtl_ni_p6_set_interface(port->ni, state->interface);
+	rtl_ni_port_set_interface(port, state->interface);
 }
 
 #include "ni_ext.h"
@@ -97,9 +282,10 @@ static void rtl_ni_mac_link_up(struct phylink_config *config,
 			   PORT_GLB_10M | PORT_GLB_HALF,
 			   (speed == SPEED_10 ? PORT_GLB_10M : 0) |
 			   (duplex == DUPLEX_HALF ? PORT_GLB_HALF : 0));
-	} else if (port->serdes) {
-		phy_set_speed(port->serdes, speed);
 	}
+
+	if (port->serdes)
+		phy_set_speed(port->serdes, speed);
 
 	rtl_ni_port_set_pause(port, tx_pause, rx_pause);
 }
@@ -405,7 +591,7 @@ static void rtl_ni_port_destroy(struct rtl9617c_ni_port *port)
 	if (port->serdes && ni->serdes_on) {
 		phy_power_off(port->serdes);
 		ni->serdes_on = false;
-		ni->p6_ready = false;
+		ni->serdes_ready = false;
 	}
 	if (port->phylink) {
 		rtnl_lock();
@@ -424,6 +610,7 @@ static int rtl_ni_port_create(struct rtl9617c_ni *ni, struct device_node *np)
 	phy_interface_t interface;
 	struct net_device *dev;
 	const char *label;
+	unsigned int i;
 	u32 id;
 	int ret;
 
@@ -460,12 +647,21 @@ static int rtl_ni_port_create(struct rtl9617c_ni *ni, struct device_node *np)
 	if (ret)
 		goto err;
 
-	if (!rtl_ni_is_ge(id)) {
-		port->serdes = devm_of_phy_optional_get(ni->dev, np, NULL);
-		if (IS_ERR(port->serdes)) {
-			ret = PTR_ERR(port->serdes);
-			port->serdes = NULL;
-			goto err;
+	port->serdes = devm_of_phy_optional_get(ni->dev, np, NULL);
+	if (IS_ERR(port->serdes)) {
+		ret = PTR_ERR(port->serdes);
+		port->serdes = NULL;
+		goto err;
+	}
+
+	if (port->serdes) {
+		for (i = 0; i < RTL_NI_PORTS; i++) {
+			if (ni->ports[i] && ni->ports[i]->serdes) {
+				dev_warn(ni->dev,
+					 "%s and %s share the serdes lane\n",
+					 ni->ports[i]->dev->name, dev->name);
+				break;
+			}
 		}
 	}
 
@@ -474,13 +670,13 @@ static int rtl_ni_port_create(struct rtl9617c_ni *ni, struct device_node *np)
 	config->type = PHYLINK_NETDEV;
 	config->mac_capabilities = MAC_SYM_PAUSE | MAC_ASYM_PAUSE | MAC_10 |
 				   MAC_100 | MAC_1000;
-	if (rtl_ni_is_ge(id)) {
-		__set_bit(PHY_INTERFACE_MODE_INTERNAL, config->supported_interfaces);
-		__set_bit(PHY_INTERFACE_MODE_GMII, config->supported_interfaces);
-	} else {
+	if (port->serdes || !rtl_ni_is_ge(id)) {
 		config->mac_capabilities |= MAC_2500FD;
 		__set_bit(PHY_INTERFACE_MODE_SGMII, config->supported_interfaces);
 		__set_bit(PHY_INTERFACE_MODE_2500BASEX, config->supported_interfaces);
+	} else {
+		__set_bit(PHY_INTERFACE_MODE_INTERNAL, config->supported_interfaces);
+		__set_bit(PHY_INTERFACE_MODE_GMII, config->supported_interfaces);
 	}
 
 	port->phylink = phylink_create(config, of_fwnode_handle(np), interface,

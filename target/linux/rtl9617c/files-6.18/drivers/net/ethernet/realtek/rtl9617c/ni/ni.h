@@ -128,7 +128,7 @@ struct rtl9617c_ni {
 	struct rtl9617c_ni_endpoint __rcu *pon;
 	u8 mac[ETH_ALEN];
 	bool serdes_on;
-	bool p6_ready;
+	bool serdes_ready;
 	bool xge_bypass_saved;
 	u32 xge_bypass;
 	struct mutex mib_lock;
@@ -181,8 +181,7 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni);
 void rtl_ni_qm_stop(struct rtl9617c_ni *ni);
 int rtl_ni_qm_poll(struct rtl9617c_ni *ni, struct napi_struct *napi, int budget);
 
-int rtl_ni_p6_bringup(struct rtl9617c_ni *ni);
-int rtl_ni_p6_set_interface(struct rtl9617c_ni *ni, phy_interface_t interface);
+int rtl_ni_serdes_bringup(struct rtl9617c_ni *ni);
 
 int rtl_ni_ports_register(struct rtl9617c_ni *ni);
 void rtl_ni_ports_unregister(struct rtl9617c_ni *ni);

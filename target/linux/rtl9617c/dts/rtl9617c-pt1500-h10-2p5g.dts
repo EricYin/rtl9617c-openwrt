@@ -111,8 +111,6 @@
 	bosa0: optical-front-end@51 {
 		compatible = "realtek,rtl9617c-bosa";
 		reg = <0x51>;
-		nvmem-cells = <&bosa_calibration>;
-		nvmem-cell-names = "calibration";
 	};
 };
 
@@ -158,24 +156,32 @@
 		port@1 {
 			reg = <1>;
 			label = "lan2";
+			nvmem-cells = <&base_mac 2>;
+			nvmem-cell-names = "mac-address";
 			phy-mode = "internal";
 			phy-handle = <&phy2>;
 		};
 		port@2 {
 			reg = <2>;
 			label = "lan3";
+			nvmem-cells = <&base_mac 3>;
+			nvmem-cell-names = "mac-address";
 			phy-mode = "internal";
 			phy-handle = <&phy3>;
 		};
 		port@3 {
 			reg = <3>;
 			label = "lan4";
+			nvmem-cells = <&base_mac 4>;
+			nvmem-cell-names = "mac-address";
 			phy-mode = "internal";
 			phy-handle = <&phy4>;
 		};
 		port@6 {
 			reg = <6>;
 			label = "lan1";
+			nvmem-cells = <&base_mac 1>;
+			nvmem-cell-names = "mac-address";
 			phy-mode = "2500base-x";
 			phy-handle = <&phy_2p5g>;
 			phys = <&serdes>;
@@ -185,8 +191,8 @@
 
 &pon {
 	status = "okay";
-	nvmem-cells = <&epon_mac 0>, <&pon_sn>;
-	nvmem-cell-names = "mac-address", "pon-serial";
+	nvmem-cells = <&epon_mac 0>, <&base_mac 0>, <&pon_sn>;
+	nvmem-cell-names = "mac-address", "base-mac", "pon-serial";
 	realtek,optical-front-end = <&bosa0>;
 	tx-disable-gpios = <&gpio_bank0 15 GPIO_ACTIVE_HIGH>;
 	realtek,burst-polarity = <0>;
@@ -266,26 +272,6 @@
 
 							device_sn: device-serial@1030 {
 								reg = <0x1030 0x20>;
-							};
-
-							wifi_cal_radio0: wifi-calibration@2000 {
-								reg = <0x2000 0x1000>;
-							};
-
-							wifi_cal_radio1: wifi-calibration@3000 {
-								reg = <0x3000 0x1000>;
-							};
-
-							bosa_calibration: bosa-calibration@4000 {
-								reg = <0x4000 0x400>;
-							};
-
-							bosa_olt_calibration: olt-calibration@4800 {
-								reg = <0x4800 0x400>;
-							};
-
-							xtemp_calibration: xtemp-calibration@5000 {
-								reg = <0x5000 0x1000>;
 							};
 						};
 					};

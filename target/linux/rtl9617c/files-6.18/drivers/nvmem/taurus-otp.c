@@ -55,6 +55,7 @@ static int taurus_otp_probe(struct platform_device *pdev)
 		.reg_read = taurus_otp_reg_read,
 		.reg_write = taurus_otp_reg_write,
 	};
+	struct arm_smccc_res smc_res;
 	u8 *otp_buf;
 	u32 otp_offset;
 	phys_addr_t phyaddr;
@@ -68,14 +69,20 @@ static int taurus_otp_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 
-	smc_buf = kmalloc(TAURUS_OTP_SIZE, GFP_KERNEL);
+	smc_buf = kzalloc(TAURUS_OTP_SIZE, GFP_KERNEL);
 	if (!smc_buf)
 		return -ENOMEM;
 
 	phyaddr = virt_to_phys(smc_buf);
 	arch_sync_dma_for_cpu(phyaddr, TAURUS_OTP_SIZE, DMA_BIDIRECTIONAL);
 	arm_smccc_smc(TAURUS_SVC_OTP_GPHY_PATCH_READ, 0, 0, phyaddr, 0, 0, 0, 0,
-		      &(struct arm_smccc_res){0});
+		      &smc_res);
+	if (smc_res.a0) {
+		dev_err(&pdev->dev, "OTP read via SMC failed: 0x%lx\n",
+			smc_res.a0);
+		kfree(smc_buf);
+		return -EIO;
+	}
 
 	otp_buf = devm_kmalloc(&pdev->dev, resource_size(res), GFP_KERNEL);
 	if (!otp_buf) {

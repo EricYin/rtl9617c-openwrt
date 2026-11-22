@@ -224,8 +224,16 @@ static void *rtl9617c_read_nvmem_pair(struct device_node *start,
 		void *buf;
 
 		cell = of_nvmem_cell_get(np, primary);
+		if (PTR_ERR(cell) == -EPROBE_DEFER) {
+			of_node_put(np);
+			return ERR_PTR(-EPROBE_DEFER);
+		}
 		if (IS_ERR(cell) && fallback)
 			cell = of_nvmem_cell_get(np, fallback);
+		if (PTR_ERR(cell) == -EPROBE_DEFER) {
+			of_node_put(np);
+			return ERR_PTR(-EPROBE_DEFER);
+		}
 		if (!IS_ERR(cell)) {
 			buf = nvmem_cell_read(cell, len);
 			nvmem_cell_put(cell);
@@ -241,7 +249,7 @@ static void *rtl9617c_read_nvmem_pair(struct device_node *start,
 	return NULL;
 }
 
-static void rtl9617c_load_efuse_once(struct phy_device *phydev)
+static int rtl9617c_load_efuse_once(struct phy_device *phydev)
 {
 	struct device_node *np = phydev->mdio.dev.of_node;
 	void *buf;
@@ -249,13 +257,15 @@ static void rtl9617c_load_efuse_once(struct phy_device *phydev)
 	unsigned int i;
 
 	if (rtl9617c_gphy_efuse_loaded || !np)
-		return;
+		return 0;
 
+	buf = rtl9617c_read_nvmem_pair(np, "param", "phy_param", &len);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
 	rtl9617c_gphy_efuse_loaded = true;
 
-	buf = rtl9617c_read_nvmem_pair(np, "phy_param", "param", &len);
 	if (!buf)
-		return;
+		return 0;
 	if (len >= 4) {
 		rtl9617c_gphy_efuse_data.param = get_unaligned_le32(buf);
 		rtl9617c_gphy_efuse_data.valid = true;
@@ -263,9 +273,11 @@ static void rtl9617c_load_efuse_once(struct phy_device *phydev)
 	kfree(buf);
 
 	if (!rtl9617c_gphy_efuse_data.valid)
-		return;
+		return 0;
 
-	buf = rtl9617c_read_nvmem_pair(np, "phy_patch", "patch", &len);
+	buf = rtl9617c_read_nvmem_pair(np, "calibration", "calib", &len);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
 	if (buf) {
 		if (len >= 32) {
 			const u8 *p = buf;
@@ -289,15 +301,21 @@ static void rtl9617c_load_efuse_once(struct phy_device *phydev)
 	}
 
 	if (!rtl9617c_gphy_efuse_data.valid)
-		return;
+		return 0;
 
-	buf = rtl9617c_read_nvmem_pair(np, "calibration", "calib", &len);
+	buf = rtl9617c_read_nvmem_pair(np, "phy_patch", "patch", &len);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
 	if (buf) {
 		if (len >= 16)
 			rtl9617c_gphy_efuse_data.r_cal_msb =
 				get_unaligned_le16((const u8 *)buf + 14);
 		kfree(buf);
 	}
+
+	phydev_info(phydev, "GPHY OTP calibration enabled (param=0x%08x)\n",
+		    rtl9617c_gphy_efuse_data.param);
+	return 0;
 }
 
 static bool rtl9617c_is_rev_a(void)
@@ -418,14 +436,17 @@ static void rtl9617c_gphy_apply_efuse(struct phy_device *phydev, int slot)
 static int rtl9617c_gphy_config_init(struct phy_device *phydev)
 {
 	u8 addrs[4] = { };
+	int ret;
 	int slot;
 
 	mutex_lock(&rtl9617c_gphy_patch_lock);
 	rtl9617c_gphy_discover_addrs(phydev, addrs);
 	slot = rtl9617c_gphy_addr_to_slot(phydev, addrs);
 	rtl9617c_gphy_apply_global_patch(phydev, addrs);
-	rtl9617c_load_efuse_once(phydev);
+	ret = rtl9617c_load_efuse_once(phydev);
 	mutex_unlock(&rtl9617c_gphy_patch_lock);
+	if (ret)
+		return ret;
 
 	/* Ensure BMCR power-down is cleared and leave page 0x0d04 DT LEDs alone */
 	phy_modify(phydev, MII_BMCR, BMCR_PDOWN, 0);

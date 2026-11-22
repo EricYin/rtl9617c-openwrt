@@ -101,6 +101,7 @@ struct rtl9617c_ni_port {
 	struct phy *serdes;
 	phy_interface_t interface;
 	unsigned int id;
+	u8 mac_offset;
 	bool registered;
 };
 

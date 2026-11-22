@@ -234,6 +234,28 @@ static int rtl_pon_factory_serial(struct rtl9617c_pon *pon)
 	return 0;
 }
 
+static int rtl_pon_base_mac(struct rtl9617c_pon *pon)
+{
+	struct nvmem_cell *cell;
+	size_t length = 0;
+	u8 *buffer;
+	int ret = 0;
+
+	cell = nvmem_cell_get(pon->dev, "base-mac");
+	if (IS_ERR(cell))
+		return PTR_ERR(cell);
+	buffer = nvmem_cell_read(cell, &length);
+	nvmem_cell_put(cell);
+	if (IS_ERR(buffer))
+		return PTR_ERR(buffer);
+	if (length >= ETH_ALEN && is_valid_ether_addr(buffer))
+		ether_addr_copy(pon->onu_mac, buffer);
+	else
+		ret = -ENODATA;
+	kfree(buffer);
+	return ret;
+}
+
 static int rtl9617c_pon_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -295,6 +317,10 @@ static int rtl9617c_pon_probe(struct platform_device *pdev)
 		put_device(&engine->dev);
 	}
 	ret = of_get_mac_address(dev->of_node, pon->onu_mac);
+	if (ret == -EPROBE_DEFER)
+		return ret;
+	if (ret || !is_valid_ether_addr(pon->onu_mac))
+		ret = rtl_pon_base_mac(pon);
 	if (ret)
 		return ret;
 	ether_addr_copy(pon->factory_mac, pon->onu_mac);

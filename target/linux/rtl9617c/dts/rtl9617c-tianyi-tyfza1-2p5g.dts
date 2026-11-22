@@ -237,8 +237,8 @@
 
 &pon {
 	status = "okay";
-	nvmem-cells = <&epon_mac 0>, <&pon_sn>;
-	nvmem-cell-names = "mac-address", "pon-serial";
+	nvmem-cells = <&epon_mac 0>, <&base_mac 0>, <&pon_sn>;
+	nvmem-cell-names = "mac-address", "base-mac", "pon-serial";
 	realtek,optical-front-end = <&bosa0>;
 	tx-disable-gpios = <&gpio_bank0 15 GPIO_ACTIVE_HIGH>;
 	realtek,burst-polarity = <0>;
@@ -336,8 +336,8 @@
 								reg = <0x4800 0x400>;
 							};
 
-							xtemp_calibration: xtemp-calibration@5000 {
-								reg = <0x5000 0x1000>;
+							fpga_image: fpga-image@10000 {
+								reg = <0x10000 0x7e0000>;
 							};
 						};
 					};
@@ -345,6 +345,11 @@
 			};
 		};
 	};
+};
+
+/* SoC TMS sensor reads 12C low per factory xtemp calibration; report raw + 12C */
+&cpu_thermal {
+	deviation = <0xfffcd120>;
 };
 
 &serdes {

@@ -553,6 +553,8 @@
 			reg-names = "mdio", "gphy";
 			#address-cells = <1>;
 			#size-cells = <0>;
+			nvmem-cells = <&gphy_param &gphy_calib &gphy_patch>;
+			nvmem-cell-names = "param", "calibration", "phy_patch";
 			status = "disabled";
 		};
 
@@ -628,6 +630,24 @@
 		otp: otp@fff80300 {
 			compatible = "realtek,taurus-otp";
 			reg = <0x0 0xfff80300 0x0 0x100>;
+
+			nvmem-layout {
+				compatible = "fixed-layout";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				gphy_param: param@80 {
+					reg = <0x80 0x4>;
+				};
+
+				gphy_patch: phy-patch@84 {
+					reg = <0x84 0x10>;
+				};
+
+				gphy_calib: calibration@94 {
+					reg = <0x94 0x20>;
+				};
+			};
 		};
 
 		usb_hsphy: usbphy@f432b020 {

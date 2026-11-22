@@ -179,9 +179,27 @@ static netdev_tx_t rtl_ni_start_xmit(struct sk_buff *skb, struct net_device *dev
 	return rtl_ni_xmit_frame(port->ni, dev, skb, &frame);
 }
 
-static unsigned int rtl_ni_mac_offset(unsigned int id)
+static int rtl_ni_port_mac_probe(struct rtl9617c_ni_port *port)
 {
-	return id + 1;
+	u8 addr[ETH_ALEN];
+	int ret;
+
+	ret = of_get_mac_address(port->dev->dev.of_node, addr);
+	if (ret == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+
+	if (!ret && is_valid_ether_addr(addr) &&
+	    !memcmp(addr, port->ni->mac, ETH_ALEN - 1)) {
+		eth_hw_addr_set(port->dev, addr);
+		port->mac_offset = addr[ETH_ALEN - 1] -
+				   port->ni->mac[ETH_ALEN - 1];
+	} else {
+		eth_hw_addr_set(port->dev, port->ni->mac);
+		port->mac_offset = 0;
+	}
+
+	rtl_ni_port_set_mac(port);
+	return 0;
 }
 
 static void rtl_ni_port_mac(struct rtl9617c_ni_port *port)
@@ -189,7 +207,7 @@ static void rtl_ni_port_mac(struct rtl9617c_ni_port *port)
 	u8 mac[ETH_ALEN];
 
 	ether_addr_copy(mac, port->ni->mac);
-	eth_addr_add(mac, rtl_ni_mac_offset(port->id));
+	eth_addr_add(mac, port->mac_offset);
 	eth_hw_addr_set(port->dev, mac);
 }
 
@@ -204,7 +222,7 @@ static int rtl_ni_set_mac_address(struct net_device *dev, void *addr)
 	if (!is_valid_ether_addr(sa->sa_data))
 		return -EADDRNOTAVAIL;
 
-	val = ether_addr_to_u64(sa->sa_data) - rtl_ni_mac_offset(port->id);
+	val = ether_addr_to_u64(sa->sa_data) - port->mac_offset;
 	u64_to_ether_addr(val & GENMASK_ULL(47, 0), ni->mac);
 	rtl_ni_set_mac(ni);
 	for (id = 0; id < RTL_NI_PORTS; id++) {
@@ -438,7 +456,9 @@ static int rtl_ni_port_create(struct rtl9617c_ni *ni, struct device_node *np)
 	dev->max_mtu = ETH_DATA_LEN;
 	dev->hw_features |= NETIF_F_RXCSUM;
 	dev->features |= NETIF_F_RXCSUM;
-	rtl_ni_port_mac(port);
+	ret = rtl_ni_port_mac_probe(port);
+	if (ret)
+		goto err;
 
 	if (!rtl_ni_is_ge(id)) {
 		port->serdes = devm_of_phy_optional_get(ni->dev, np, NULL);
@@ -508,7 +528,8 @@ int rtl_ni_ports_register(struct rtl9617c_ni *ni)
 		ret = rtl_ni_port_create(ni, np);
 		if (ret == -EPROBE_DEFER) {
 			of_node_put(np);
-			break;
+			rtl_ni_ports_unregister(ni);
+			return ret;
 		}
 		if (ret)
 			dev_err(ni->dev, "%pOF: port setup failed: %d\n", np, ret);

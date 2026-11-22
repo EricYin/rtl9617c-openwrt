@@ -8,7 +8,8 @@ platform_check_image() {
 	[ "$#" -gt 1 ] && return 1
 
 	case "$board" in
-	youhua,pt1500-h10-2p5g)
+	youhua,pt1500-h10-2p5g|\
+	tianyi,tyfza1-2p5g)
 		fit_check_image "$1"
 		return $?
 		;;
@@ -23,7 +24,8 @@ platform_do_upgrade() {
 	local board=$(board_name)
 
 	case "$board" in
-	youhua,pt1500-h10-2p5g)
+	youhua,pt1500-h10-2p5g|\
+	tianyi,tyfza1-2p5g)
 		fit_do_upgrade "$1"
 		;;
 	*)

@@ -14,6 +14,9 @@ rtl9617c_setup_interfaces()
 	youhua,pt1500-h10-2p5g)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "pon0"
 		;;
+	tianyi,tyfza1-2p5g)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "pon0"
+		;;
 	*)
 		echo "Unsupported hardware. Network interfaces not initialized"
 		;;

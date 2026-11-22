@@ -1,5 +1,18 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
+config RTL9617C_PE
+	tristate "Realtek RTL9617C packet engine (PE) support"
+	depends on ARCH_REALTEK_TAURUS || COMPILE_TEST
+	depends on OF && HAS_IOMEM && HAS_DMA
+	select FW_LOADER
+	help
+	  Packet engine cores of Realtek RTL9617C SoCs. Boots the two MIPS32
+	  Taroko PE cores from rtl9617c/pe-radio.bin and publishes radio
+	  contexts to them for the wireless hardware data path.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called rtl9617c-pe.
+
 config RTL9617C_NI
 	tristate "Realtek RTL9617C network interface support"
 	depends on ARCH_REALTEK_TAURUS || COMPILE_TEST
@@ -24,6 +37,18 @@ config RTL9617C_FE
 	help
 	  Offload routed and bridged flows to the RTL9617C flow engine
 	  through the flow block API (tc flower, netfilter flowtable).
+
+config RTL9617C_WIFI
+	tristate "Wi-Fi hardware data path"
+	depends on RTL9617C_FE && (RTL9617C_NI = y || m)
+	depends on NETFILTER
+	help
+	  mac80211 Ethernet-converged Wi-Fi data path of Realtek RTL9617C
+	  SoCs. Registers AP netdevices with the NI Wi-Fi queues and
+	  programs the flow engine for their ingress and peer routes.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called rtl9617c-wifi.
 
 config RTL9617C_BOSA
 	tristate "Optical front end (BOSA) support"

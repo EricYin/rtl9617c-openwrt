@@ -148,7 +148,10 @@ void rtl_fe_action_build(u32 words[RTL_FE_ACTION_WORDS],
 	rtl_fe_action_set(words, RTL_FE_DPID_PRI, 1);
 	rtl_fe_action_set(words, RTL_FE_PERMIT, 1);
 	rtl_fe_action_set(words, RTL_FE_DEEPQ, action->deep_queue);
-	rtl_fe_action_set(words, RTL_FE_MCGID, action->destination);
+	rtl_fe_action_set(words, RTL_FE_MCGID,
+			  action->mcgid ? action->mcgid : action->destination);
+	rtl_fe_action_set(words, RTL_FE_MDATA_BYTE_VLD, action->mdata_byte_vld);
+	rtl_fe_action_set(words, RTL_FE_MDATA_BYTE, action->mdata_byte);
 	rtl_fe_action_set(words, RTL_FE_L3_IF_VLD, l3);
 	rtl_fe_action_set(words, RTL_FE_SMAC_TRANS, action->bridge);
 	rtl_fe_action_set(words, RTL_FE_IGR_L3_IF_IDX, action->ingress_interface);
@@ -339,6 +342,11 @@ void rtl_fe_mask_bridge(u32 words[RTL_FE_MASK_WORDS])
 unsigned int rtl_fe_hash_bucket(u16 crc16)
 {
 	return crc16 & 0xffe0;
+}
+
+void rtl_fe_wifi_mask(u32 words[RTL_FE_MASK_WORDS])
+{
+	rtl_fe_bits_set(words, 135, 8, 0);
 }
 
 void rtl_fe_cpu_miss(u32 words[4])

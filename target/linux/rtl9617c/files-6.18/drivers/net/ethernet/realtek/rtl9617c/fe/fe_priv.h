@@ -31,6 +31,8 @@
 #define FE_DEEPQ_DEST			32
 #define FE_SOURCE_P6			6
 #define FE_SOURCE_PON			7
+#define FE_SOURCE_WIFI			18
+#define FE_WIFI_MASKS			4
 
 struct rtl_fe_bridge;
 struct rtl_itu_paths;
@@ -49,8 +51,16 @@ struct rtl_fe_port {
 	unsigned int source;
 	unsigned int destination;
 	unsigned int llid;
+	unsigned int wifi_id;
 	unsigned int bindings;
 	bool retired;
+};
+
+struct rtl_fe_wifi_peer {
+	struct list_head list;
+	struct rtl_fe_port *port;
+	u8 address[ETH_ALEN];
+	unsigned int destination;
 };
 
 struct rtl_fe_mac {
@@ -150,6 +160,7 @@ struct rtl_fe {
 	struct delayed_work cleanup_work;
 	struct list_head ports;
 	struct list_head flows;
+	struct list_head wifi_peers;
 	struct list_head blocks;
 	struct rhashtable cookies;
 	void *memory;
@@ -166,7 +177,9 @@ struct rtl_fe {
 	u64 misses;
 	u32 *saved;
 	u32 mask_saved[RTL_FE_MASK_WORDS];
+	u32 wifi_mask_saved[FE_WIFI_MASKS][RTL_FE_MASK_WORDS];
 	u32 bridge_mask_saved[3][RTL_FE_MASK_WORDS];
+	u32 wifi_ippb_saved;
 	struct rtl_fe_cam_protocol protocol_cam[FE_CAM_PROTOCOLS];
 	u8 ppp_protocol_ids[2];
 	u32 lan_saved[FE_LAN_PORTS];

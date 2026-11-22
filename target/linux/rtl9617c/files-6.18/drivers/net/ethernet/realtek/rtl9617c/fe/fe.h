@@ -19,6 +19,10 @@ int rtl_fe_add_port(struct rtl_fe *fe, struct net_device *netdev,
 		    unsigned int llid);
 void rtl_fe_remove_port(struct rtl_fe *fe, struct net_device *netdev);
 int rtl_fe_flush_port(struct rtl_fe *fe, struct net_device *netdev);
+int rtl_fe_add_wifi_port(struct rtl_fe *fe, struct net_device *netdev,
+			 unsigned int id);
+int rtl_fe_wifi_peer_route(struct rtl_fe *fe, struct net_device *netdev,
+			   const u8 *address, unsigned int destination);
 int rtl_fe_setup_tc(struct rtl_fe *fe, struct net_device *netdev,
 		    enum tc_setup_type type, void *data);
 void rtl_fe_start(struct rtl_fe *fe);
@@ -55,6 +59,20 @@ static inline void rtl_fe_remove_port(struct rtl_fe *fe,
 static inline int rtl_fe_flush_port(struct rtl_fe *fe, struct net_device *netdev)
 {
 	return 0;
+}
+
+static inline int rtl_fe_add_wifi_port(struct rtl_fe *fe,
+				       struct net_device *netdev, unsigned int id)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int rtl_fe_wifi_peer_route(struct rtl_fe *fe,
+					 struct net_device *netdev,
+					 const u8 *address,
+					 unsigned int destination)
+{
+	return -EOPNOTSUPP;
 }
 
 static inline int rtl_fe_setup_tc(struct rtl_fe *fe, struct net_device *netdev,

@@ -1,0 +1,14 @@
+diff --git a/include/linux/skbuff.h b/include/linux/skbuff.h
+index 71f4567..315c463 100644
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -1025,6 +1025,9 @@ struct sk_buff {
+ #endif
+ #ifdef CONFIG_SKB_DECRYPTED
+ 	__u8			decrypted:1;
++#endif
++#ifdef CONFIG_RTL9617C_SKB_EXT
++	__u8			rtl9617c_wifi_miss:1;
+ #endif
+ 	__u8			slow_gro:1;
+ #if IS_ENABLED(CONFIG_IP_SCTP)

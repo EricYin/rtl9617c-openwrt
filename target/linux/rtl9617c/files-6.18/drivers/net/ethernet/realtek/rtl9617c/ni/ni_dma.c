@@ -14,6 +14,7 @@
 #define DMA_CTRL_RUN			(BIT(0) | (3 << 2) | BIT(4))
 #define DMA_CTRL_RESET			BIT(8)
 #define DMA_AXI_USER_SELECT		0x014
+#define DMA_AXI_USER_PATTERN0		0x018
 #define DMA_AXI_USER_PATTERN1		0x01c
 #define DMA_AXI_USER_PATTERN1_INIT	0x02008080
 #define DMA_VP(n)			(0x100 + (n) * 0xa0)
@@ -39,6 +40,8 @@
 
 #define DMA_DESC_CTRL			0x61000002
 #define DMA_DESC_CTRL_OAM		0x61000000
+#define DMA_DESC_CTRL_WIFI		0x81000001
+#define DMA_DESC_WIFI_SOURCE		18U
 #define DMA_DESC_LEN_SHIFT		8
 #define DMA_HDR_LOW_LEN			GENMASK(28, 15)
 #define DMA_MIN_FRAME			60U
@@ -56,6 +59,12 @@ static unsigned int rtl_ni_dma_buf_offset(unsigned int index)
 {
 	return RTL_NI_DMA_ENTRIES * sizeof(struct rtl_ni_dma_desc) +
 	       index * RTL_NI_DMA_BUF_SIZE;
+}
+
+static unsigned int rtl_wifi_lookup_control(unsigned int id, unsigned int length)
+{
+	return DMA_DESC_CTRL_WIFI | (DMA_DESC_WIFI_SOURCE << 25) |
+	       (length << DMA_DESC_LEN_SHIFT) | (id << 1);
 }
 
 int rtl_ni_dma_alloc(struct rtl9617c_ni *ni)
@@ -100,6 +109,7 @@ int rtl_ni_dma_start(struct rtl_ni_dma *dma)
 		return ret;
 	writel((RTL_NI_CPU_PORT << 3) | DMA_VP_HEADER_A_INIT, vp + DMA_VP_HEADER_A);
 
+	writel(0, base + DMA_AXI_USER_PATTERN0);
 	val = readl(base + DMA_AXI_USER_SELECT);
 	val &= ~(3U << (RTL_NI_DMA_VP * 2));
 	val |= 1U << (RTL_NI_DMA_VP * 2);
@@ -183,4 +193,93 @@ int rtl_ni_dma_xmit(struct rtl_ni_dma *dma, struct sk_buff *skb,
 	writel(dma->head, rtl_ni_dma_vp(dma) + DMA_VP_WRITE);
 	writel(BIT(0), rtl_ni_dma_vp(dma) + DMA_VP_MISC_IRQ);
 	return 0;
+}
+
+int rtl_ni_dma_wifi_xmit(struct rtl_ni_dma *dma, struct sk_buff *skb,
+			 unsigned int id)
+{
+	unsigned int offset = rtl_ni_dma_buf_offset(dma->head);
+	unsigned int len = max(skb->len, DMA_MIN_FRAME);
+	void *buf;
+
+	if (!id || id > RTL_NI_WIFI_IDS || skb->len < ETH_HLEN ||
+	    len > RTL_NI_DMA_BUF_SIZE)
+		return -EINVAL;
+	if (skb_is_gso(skb) || skb_vlan_tag_present(skb) ||
+	    skb->ip_summed == CHECKSUM_PARTIAL)
+		return -EOPNOTSUPP;
+
+	rtl_ni_dma_reclaim(dma);
+	if (!rtl_ni_dma_avail(dma))
+		return -ENOSPC;
+	buf = dma->mem + offset;
+	memset(buf, 0, len);
+	if (skb_copy_bits(skb, 0, buf, skb->len))
+		return -EFAULT;
+	dma->desc[dma->head].addr = cpu_to_le32(dma->mem_dma + offset);
+	dma->desc[dma->head].ctrl = cpu_to_le32(rtl_wifi_lookup_control(id, len));
+	dma_wmb();
+	dma->head = (dma->head + 1) & (RTL_NI_DMA_ENTRIES - 1);
+	writel(dma->head, rtl_ni_dma_vp(dma) + DMA_VP_WRITE);
+	dev_consume_skb_any(skb);
+	return 0;
+}
+
+bool rtl_ni_dma_vp_drained(struct rtl_ni_dma *dma)
+{
+	unsigned int hw = readl(rtl_ni_dma_vp(dma) + DMA_VP_READ) &
+			  (RTL_NI_DMA_ENTRIES - 1);
+
+	return hw == dma->head;
+}
+
+int rtl_ni_dma_vp_drain_wait(struct rtl_ni_dma *dma)
+{
+	u32 hw;
+	int ret;
+
+	ret = readl_poll_timeout_atomic(rtl_ni_dma_vp(dma) + DMA_VP_READ, hw,
+					(hw & (RTL_NI_DMA_ENTRIES - 1)) ==
+					dma->head, 1, 100000);
+	return ret;
+}
+
+u32 rtl_ni_dma_wifi_vp_reg_read(struct rtl9617c_ni *ni, unsigned int vp)
+{
+	return readl(ni->dma.base + DMA_VP(vp) + DMA_VP_READ) &
+	       GENMASK(15, 0);
+}
+
+int rtl_ni_dma_wifi_vp_start(struct rtl_ni_dma *dma, unsigned int vp,
+			     dma_addr_t uplink_dma, unsigned int order,
+			     void __iomem **vp_regs)
+{
+	void __iomem *base = dma->base;
+	void __iomem *reg = base + DMA_VP(vp);
+	u32 val;
+	int ret;
+
+	writel(0, reg + DMA_VP_ENABLE);
+	writel(0, reg + DMA_VP_IRQ_ENABLE);
+	writel(lower_32_bits(uplink_dma) | order, reg + DMA_VP_BASE_LOW);
+	writel(DMA_VP_BASE_HIGH_INIT, reg + DMA_VP_BASE_HIGH);
+	writel(DMA_VP_BASE_ACCESS_BUSY | DMA_VP_BASE_ACCESS_WRITE,
+	       reg + DMA_VP_BASE_ACCESS);
+	ret = readl_poll_timeout_atomic(reg + DMA_VP_BASE_ACCESS, val,
+					!(val & DMA_VP_BASE_ACCESS_BUSY), 1,
+					100000);
+	if (ret)
+		return ret;
+	writel(0, reg + DMA_VP_HEADER_A);
+	val = readl(base + DMA_AXI_USER_SELECT);
+	val &= ~(3U << (vp * 2));
+	writel(val, base + DMA_AXI_USER_SELECT);
+	writel(BIT(0), reg + DMA_VP_ENABLE);
+	*vp_regs = reg;
+	return 0;
+}
+
+void rtl_ni_dma_wifi_vp_stop(struct rtl_ni_dma *dma, unsigned int vp)
+{
+	writel(0, dma->base + DMA_VP(vp) + DMA_VP_ENABLE);
 }

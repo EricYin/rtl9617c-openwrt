@@ -1124,5 +1124,23 @@
 			realtek,network-engine = <&ni>;
 			status = "disabled";
 		};
+
+		pe0: pe@490300000 {
+			compatible = "realtek,rtl9617c-pe";
+			reg = <4 0xf4320098 0 0x4>, <4 0x90300000 0 0x20>,
+			      <4 0x9030306c 0 0x4>, <4 0xf4320004 0 0x4>;
+			reg-names = "reset", "atu", "ram-ctrl", "bist";
+			realtek,pe-index = <0>;
+			status = "disabled";
+		};
+
+		pe1: pe@490300100 {
+			compatible = "realtek,rtl9617c-pe";
+			reg = <4 0xf4320098 0 0x4>, <4 0x90300100 0 0x20>,
+			      <4 0x90303074 0 0x4>, <4 0xf4320004 0 0x4>;
+			reg-names = "reset", "atu", "ram-ctrl", "bist";
+			realtek,pe-index = <1>;
+			status = "disabled";
+		};
 	};
 };

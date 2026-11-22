@@ -28,6 +28,43 @@ struct rtl9617c_ni_frame {
 	bool oam;
 };
 
+struct rtl9617c_ni_wifi_endpoint {
+	struct net_device *netdev;
+	void (*receive)(struct rtl9617c_ni_wifi_endpoint *endpoint,
+			struct napi_struct *napi, struct sk_buff *skb,
+			bool forwarded);
+};
+
+struct rtl9617c_wifi_radio_info {
+	unsigned int vp;
+	void __iomem *vp_regs;
+	dma_addr_t uplink_dma;
+	unsigned int cpu;
+	unsigned int eq;
+	u32 epp_prod_reg;
+	u32 epp_cons_reg;
+	u32 epp_base_reg;
+	u32 eq_push_reg;
+	unsigned int epp_shift;
+	u32 epp_base;
+	u32 epp_cursor;
+	u32 vp_read;
+};
+
+int rtl9617c_ni_wifi_attach(struct device *dev,
+			    struct rtl9617c_ni_wifi_endpoint *endpoint);
+int rtl9617c_ni_wifi_detach(struct device *dev, unsigned int id);
+int rtl9617c_ni_wifi_id(struct device *dev, struct net_device *netdev);
+bool rtl9617c_ni_wifi_enabled(struct device *dev);
+int rtl9617c_ni_wifi_peer_route(struct device *dev, struct net_device *netdev,
+				const u8 *address, unsigned int destination);
+int rtl9617c_ni_wifi_lookup(struct device *dev, struct sk_buff *skb,
+			    unsigned int id);
+int rtl9617c_ni_wifi_radio_attach(struct device *dev, unsigned int slot,
+				  struct rtl9617c_wifi_radio_info *info);
+void rtl9617c_ni_wifi_radio_detach(struct device *dev, unsigned int slot);
+u32 rtl9617c_ni_wifi_vp_read(struct device *dev, unsigned int slot);
+
 int rtl9617c_ni_open(struct device *dev);
 void rtl9617c_ni_close(struct device *dev, struct net_device *owner);
 netdev_tx_t rtl9617c_ni_transmit(struct device *dev, struct net_device *owner,

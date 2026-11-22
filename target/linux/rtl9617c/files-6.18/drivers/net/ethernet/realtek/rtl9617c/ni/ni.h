@@ -47,6 +47,15 @@
 					 RTL_NI_QM_TAILROOM)
 #define RTL_NI_QM_PE_EQ			6
 #define RTL_NI_QM_PE_BUFS		2496
+#define RTL_NI_QM_PE_EQ_BUFS		(RTL_NI_QM_PE_BUFS / 2)
+#define RTL_NI_QM_PE_BID_START		1536
+#define RTL_NI_WIFI_IDS			60
+#define RTL_NI_WIFI_RADIOS		2
+#define RTL_NI_WIFI_EPP_SHIFT		15
+#define RTL_NI_WIFI_EPP_BYTES		BIT(RTL_NI_WIFI_EPP_SHIFT)
+#define RTL_NI_WIFI_EPP_ORDER		(RTL_NI_WIFI_EPP_SHIFT + 1)
+#define RTL_NI_WIFI_UPLINK_ENTRIES	1024
+#define RTL_NI_WIFI_VP_FIRST		9
 #define RTL_NI_DQ_BUFS			512
 #define RTL_NI_DQ_BUF_SIZE		2048
 #define RTL_NI_DQ_SIZE			(2 * RTL_NI_DQ_BUFS * RTL_NI_DQ_BUF_SIZE)
@@ -81,6 +90,10 @@ struct rtl_ni_qm {
 	dma_addr_t buf_dma;
 	void *ring;
 	dma_addr_t ring_dma;
+	void *wifi_buf;
+	dma_addr_t wifi_buf_dma;
+	void *wifi_ring;
+	dma_addr_t wifi_ring_dma;
 	void *dq;
 	dma_addr_t dq_dma;
 	void *lan_dq;
@@ -89,7 +102,17 @@ struct rtl_ni_qm {
 	unsigned int lan_dq_bufs;
 	unsigned int read[RTL_NI_QM_VOQS];
 	struct rtl_ni_qm_refill refill;
+	bool wifi_ready;
 	bool ready;
+};
+
+struct rtl_ni_wifi_radio {
+	void *uplink;
+	dma_addr_t uplink_dma;
+	unsigned int vp;
+	unsigned int cpu;
+	unsigned int eq;
+	bool active;
 };
 
 struct rtl9617c_ni_port {
@@ -126,6 +149,8 @@ struct rtl9617c_ni {
 	struct rtl9617c_ni_port *ports[RTL_NI_PORTS];
 	struct net_device __rcu *rx_dev[RTL_NI_PORTS];
 	struct rtl9617c_ni_endpoint __rcu *pon;
+	struct rtl9617c_ni_wifi_endpoint __rcu *wifi[RTL_NI_WIFI_IDS + 1];
+	struct rtl_ni_wifi_radio wifi_radio[RTL_NI_WIFI_RADIOS];
 	u8 mac[ETH_ALEN];
 	bool serdes_on;
 	bool serdes_ready;
@@ -174,6 +199,16 @@ void rtl_ni_dma_reclaim(struct rtl_ni_dma *dma);
 bool rtl_ni_dma_avail(struct rtl_ni_dma *dma);
 int rtl_ni_dma_xmit(struct rtl_ni_dma *dma, struct sk_buff *skb,
 		    const struct rtl9617c_ni_frame *frame);
+int rtl_ni_dma_wifi_xmit(struct rtl_ni_dma *dma, struct sk_buff *skb,
+			 unsigned int id);
+bool rtl_ni_dma_vp_drained(struct rtl_ni_dma *dma);
+int rtl_ni_dma_vp_drain_wait(struct rtl_ni_dma *dma);
+#define DMA_VP_READ			0x1c
+u32 rtl_ni_dma_wifi_vp_reg_read(struct rtl9617c_ni *ni, unsigned int vp);
+int rtl_ni_dma_wifi_vp_start(struct rtl_ni_dma *dma, unsigned int vp,
+			     dma_addr_t uplink_dma, unsigned int order,
+			     void __iomem **vp_regs);
+void rtl_ni_dma_wifi_vp_stop(struct rtl_ni_dma *dma, unsigned int vp);
 
 int rtl_ni_qm_alloc(struct rtl9617c_ni *ni);
 void rtl_ni_qm_free(struct rtl9617c_ni *ni);

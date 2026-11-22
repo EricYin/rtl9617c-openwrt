@@ -10,6 +10,7 @@
 #include <linux/of_net.h>
 #include <linux/platform_device.h>
 #include <linux/unaligned.h>
+#include <linux/rtl9617c-wifi.h>
 
 #include "ni.h"
 #include "fe/fe.h"
@@ -498,6 +499,12 @@ static int rtl_ni_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	if (IS_REACHABLE(CONFIG_RTL9617C_WIFI)) {
+		ret = rtl_wifi_start(dev);
+		if (ret)
+			dev_warn(dev, "NI Wi-Fi notifier unavailable: %d\n", ret);
+	}
+
 	rtl_ni_mib_init(ni);
 	dev_info(dev, "rtl_ni_probe succeeded\n");
 	return 0;
@@ -507,6 +514,8 @@ static void rtl_ni_remove(struct platform_device *pdev)
 {
 	struct rtl9617c_ni *ni = platform_get_drvdata(pdev);
 
+	if (IS_REACHABLE(CONFIG_RTL9617C_WIFI))
+		rtl_wifi_stop();
 	rtl_ni_mib_exit(ni);
 	rtl_ni_ports_unregister(ni);
 	rtl_fe_destroy(ni->fe);

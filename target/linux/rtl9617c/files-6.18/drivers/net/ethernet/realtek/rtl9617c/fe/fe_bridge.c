@@ -398,6 +398,9 @@ static int rtl_fe_bridge_learn(struct rtl_fe_bridge *bridge,
 		data.key.mask = RTL_FE_MASK_LEARN_PPPOE;
 		data.ppp_protocol_slot = fe->ppp_protocol_ids[in->ppp_protocol == PPP_IPV6];
 	}
+	if (data.input->wifi_id)
+		data.key.mask = data.pppoe_input ? RTL_FE_MASK_WIFI_LEARN_PPPOE :
+						   RTL_FE_MASK_WIFI_LEARN;
 	data.action.check_mask = data.key.mask;
 	ether_addr_copy(data.source, in->source);
 	ether_addr_copy(data.destination, in->destination);

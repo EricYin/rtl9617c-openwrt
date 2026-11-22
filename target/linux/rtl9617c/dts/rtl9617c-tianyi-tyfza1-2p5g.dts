@@ -246,6 +246,14 @@
 	realtek,uni-ports = /bits/ 8 <3 2 1 0>;
 };
 
+&pe0 {
+	status = "okay";
+};
+
+&pe1 {
+	status = "okay";
+};
+
 &qspi {
 	status = "okay";
 

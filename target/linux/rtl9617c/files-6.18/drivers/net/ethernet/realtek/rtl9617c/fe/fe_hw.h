@@ -32,6 +32,10 @@
 #define RTL_FE_MASK_BRIDGE		61
 #define RTL_FE_MASK_LEARN		59
 #define RTL_FE_MASK_LEARN_PPPOE		57
+#define RTL_FE_MASK_WIFI_L3		62
+#define RTL_FE_MASK_WIFI_BRIDGE		60
+#define RTL_FE_MASK_WIFI_LEARN		58
+#define RTL_FE_MASK_WIFI_LEARN_PPPOE	56
 
 #define RTL_FE_ACTION_GROUPS		0x00140000U
 
@@ -184,6 +188,9 @@ struct rtl_fe_action {
 	u8 gem_set;
 	u8 gem_index;
 	u8 bridge;
+	u8 mdata_byte_vld;
+	u8 mdata_byte;
+	u16 mcgid;
 	struct rtl_fe_vlan vlan[2];
 };
 
@@ -219,6 +226,7 @@ void rtl_fe_key_bridge(u32 words[RTL_FE_KEY_WORDS], const u8 *source,
 void rtl_fe_key_crc(const u32 words[RTL_FE_KEY_WORDS], u32 *crc32, u16 *crc16);
 void rtl_fe_mask_l3(u32 words[RTL_FE_MASK_WORDS]);
 void rtl_fe_mask_bridge(u32 words[RTL_FE_MASK_WORDS]);
+void rtl_fe_wifi_mask(u32 words[RTL_FE_MASK_WORDS]);
 unsigned int rtl_fe_hash_bucket(u16 crc16);
 void rtl_fe_cpu_miss(u32 words[4]);
 void rtl_fe_classify_hash(u32 words[RTL_FE_CLASSIFIER_WORDS],

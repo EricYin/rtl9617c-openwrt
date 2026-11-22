@@ -11,6 +11,7 @@
 #include <linux/unaligned.h>
 
 #include "ni.h"
+#include "rtl9617c-wifi-format.h"
 
 #define QM_EQ_PROFILE_CPU0		RTL_QM_EQ_PROFILE(RTL_NI_QM_EQ)
 #define QM_DQ_EQ_PRIVATE		1
@@ -25,6 +26,7 @@
 #define QM_LAN_DQ_SRAM_BASE		0x80000000U
 #define QM_LAN_DQ_SRAM_BUFS		244U
 #define QM_LAN_DQ_SRAM_BID_BASE		4352U
+#define QM_WIFI_FIFO_PROFILE(n)		(6U + (n))
 #define QM_LAN_DQ_DDR_BUFS		10588U
 #define QM_LAN_DQ_DDR_BID_BASE		5796U
 #define QM_EQ_CFG2_HEAD_DEFAULT		FIELD_PREP(RTL_QM_EQ_CFG2_REFILL_THS, 0xff)
@@ -675,11 +677,18 @@ int rtl_ni_qm_alloc(struct rtl9617c_ni *ni)
 					&qm->buf_dma, DMA_FROM_DEVICE, GFP_KERNEL);
 	if (!qm->buf)
 		return -ENOMEM;
+	qm->wifi_buf = dma_alloc_noncoherent(ni->dev,
+					     RTL_NI_QM_PE_BUFS * RTL_NI_QM_BUF_SIZE,
+					     &qm->wifi_buf_dma, DMA_BIDIRECTIONAL,
+					     GFP_KERNEL);
+	qm->wifi_ring = dmam_alloc_coherent(ni->dev,
+					    RTL_NI_WIFI_RADIOS * 8 * RTL_NI_WIFI_EPP_BYTES,
+					    &qm->wifi_ring_dma, GFP_KERNEL);
 	qm->ring = dmam_alloc_coherent(ni->dev, RTL_NI_QM_RING_SIZE * RTL_NI_QM_VOQS,
 				       &qm->ring_dma, GFP_KERNEL);
 	qm->dq = dmam_alloc_coherent(ni->dev, RTL_NI_DQ_SIZE, &qm->dq_dma,
 				     GFP_KERNEL);
-	if (!qm->ring || !qm->dq) {
+	if (!qm->wifi_buf || !qm->wifi_ring || !qm->ring || !qm->dq) {
 		rtl_ni_qm_free(ni);
 		return -ENOMEM;
 	}
@@ -696,6 +705,13 @@ void rtl_ni_qm_free(struct rtl9617c_ni *ni)
 	struct rtl_ni_qm *qm = &ni->qm;
 
 	rtl_ni_qm_lan_dq_free(ni);
+	if (qm->wifi_buf) {
+		dma_free_noncoherent(ni->dev,
+				     RTL_NI_QM_PE_BUFS * RTL_NI_QM_BUF_SIZE,
+				     qm->wifi_buf, qm->wifi_buf_dma,
+				     DMA_BIDIRECTIONAL);
+		qm->wifi_buf = NULL;
+	}
 	if (!qm->buf)
 		return;
 	dma_free_noncoherent(ni->dev, RTL_NI_QM_BUFS * RTL_NI_QM_BUF_SIZE, qm->buf,
@@ -806,6 +822,21 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 		rtl_ni_write(ni, cfg + 12, QM_EQ_CFG_DESC);
 		rtl_ni_write(ni, cfg + 16, 2);
 	}
+	for (i = 0; i < RTL_NI_WIFI_RADIOS; i++) {
+		unsigned int cfg = RTL_QM_EQ_CFG0(RTL_NI_QM_PE_EQ + i);
+
+		rtl_ni_write(ni, cfg, RTL_QM_EQ_CFG0_EN);
+		rtl_ni_write(ni, cfg + 4,
+			     FIELD_PREP(RTL_QM_EQ_CFG1_TOTAL_BUFS, RTL_NI_QM_PE_EQ_BUFS) |
+			     FIELD_PREP(RTL_QM_EQ_CFG1_BID_START,
+					RTL_NI_QM_PE_BID_START + i * RTL_NI_QM_PE_EQ_BUFS));
+		rtl_ni_write(ni, cfg + 8,
+			     FIELD_PREP(RTL_QM_EQ_CFG2_BUFSZ, QM_EQ_CFG2_BUFSZ_2048) |
+			     RTL_QM_EQ_CFG2_CPU_EQ |
+			     FIELD_PREP(RTL_QM_EQ_CFG2_REFILL_THS, 24));
+		rtl_ni_write(ni, cfg + 12, QM_EQ_CFG_DESC);
+		rtl_ni_write(ni, cfg + 16, 2);
+	}
 
 	ret = rtl_ni_qm_deepq(ni);
 	if (ret)
@@ -865,6 +896,42 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 			return ret;
 	}
 
+	for (i = 0; i < RTL_NI_WIFI_RADIOS; i++) {
+		unsigned int cpu = 3 - i, profile = QM_WIFI_FIFO_PROFILE(i);
+
+		rtl_ni_write(ni, RTL_QM_DEST_PORT_PKT_BUF_CFG(cpu),
+			     FIELD_PREP(RTL_QM_PKT_BUF_HEAD_FIRST, RTL_NI_QM_HEADROOM / 16) |
+			     FIELD_PREP(RTL_QM_PKT_BUF_TAIL_FIRST, RTL_NI_QM_TAILROOM / 16) |
+			     FIELD_PREP(RTL_QM_PKT_BUF_HEAD_REST, RTL_NI_QM_HEADROOM / 16) |
+			     FIELD_PREP(RTL_QM_PKT_BUF_TAIL_REST, RTL_NI_QM_TAILROOM / 16));
+		rtl_ni_rmw(ni, RTL_QM_CPU_EPP_FIFO_CFG_PROFILE(profile),
+			   RTL_QM_EPP_FIFO_CFG_MASK,
+			   FIELD_PREP(RTL_QM_EPP_FIFO_SIZE, RTL_NI_WIFI_EPP_BYTES / 16) |
+			   FIELD_PREP(RTL_QM_EPP_FIFO_TIMER_THS, 15) |
+			   FIELD_PREP(RTL_QM_EPP_FIFO_HIGH_THS, 2));
+		for (unsigned int cos = 0; cos < 8; cos++) {
+			dma_addr_t ring = qm->wifi_ring_dma +
+					  (i * 8 + cos) * RTL_NI_WIFI_EPP_BYTES;
+
+			rtl_ni_write(ni, RTL_QM_CPUEPP_FIFO_PADDR_START(cpu * 8 + cos),
+				     ring);
+			rtl_ni_write(ni, RTL_QM_CPUEPP_FIFO_RDPTR(cpu * 8 + cos),
+				     rtl_ni_read(ni, RTL_QM_CPUEPP_FIFO_WRPTR(cpu * 8 + cos)) &
+				     QM_EPP_WRITE_MASK);
+		}
+	}
+	for (unsigned int pool = 0; pool < RTL_NI_WIFI_RADIOS; pool++) {
+		for (i = 0; i < RTL_NI_QM_PE_EQ_BUFS - 4; i++) {
+			ret = rtl_ni_qm_push(ni,
+					     qm->wifi_buf_dma +
+					     (pool * RTL_NI_QM_PE_EQ_BUFS + i) *
+					     RTL_NI_QM_BUF_SIZE,
+					     RTL_NI_QM_PE_EQ + pool);
+			if (ret)
+				return ret;
+		}
+	}
+
 	ret = rtl_ni_qm_cpu_credits(ni);
 	if (ret)
 		return ret;
@@ -905,12 +972,14 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 	rtl_ni_write(ni, RTL_QM_ES_CTRL, QM_ES_CTRL_RUN);
 	rtl_ni_rmw(ni, RTL_QM_ES_CTRL1, 0, RTL_QM_ES_CTRL1_PUC_EN);
 	rtl_ni_rmw(ni, RTL_QM_RMU0_CTRL, 0, RTL_QM_RMU0_RX_EN);
+	qm->wifi_ready = true;
 	qm->ready = true;
 	return 0;
 }
 
 void rtl_ni_qm_stop(struct rtl9617c_ni *ni)
 {
+	ni->qm.wifi_ready = false;
 	ni->qm.ready = false;
 	if (ni->qm.lan_dq_bufs)
 		rtl_ni_qm_lan_dq_enable(ni, false);
@@ -971,13 +1040,27 @@ static void rtl_ni_qm_retire(struct rtl9617c_ni *ni, unsigned int voq, u32 cmd,
 
 static void rtl_ni_qm_deliver(struct rtl9617c_ni *ni, struct napi_struct *napi,
 			      struct sk_buff *skb, u32 cmd, u32 h0, u32 h1,
-			      bool csum)
+			      bool csum, unsigned int wifi_id, bool forwarded)
 {
 	unsigned int source = FIELD_GET(QM_HDR_SOURCE, h1);
 	struct rtl9617c_ni_endpoint *endpoint;
+	struct rtl9617c_ni_wifi_endpoint *wifi;
 	struct net_device *dev;
 
 	rcu_read_lock();
+	if (wifi_id) {
+		wifi = wifi_id <= RTL_NI_WIFI_IDS ?
+		       rcu_dereference(ni->wifi[wifi_id]) : NULL;
+		if (wifi && netif_running(wifi->netdev)) {
+			skb->priority = h1 & 7;
+			wifi->receive(wifi, napi, skb, forwarded);
+		} else {
+			atomic_long_inc(&ni->rx_dropped);
+			dev_kfree_skb_any(skb);
+		}
+		rcu_read_unlock();
+		return;
+	}
 	if (source >= RTL_NI_PORTS) {
 		endpoint = rcu_dereference(ni->pon);
 		if (endpoint && (source == QM_SOURCE_PON ||
@@ -1027,54 +1110,96 @@ int rtl_ni_qm_poll(struct rtl9617c_ni *ni, struct napi_struct *napi, int budget)
 		bool full = qm->read[voq] == wr && nonempty;
 
 		while ((qm->read[voq] != wr || full) && count < budget) {
-			void *entry = qm->ring + voq * RTL_NI_QM_RING_SIZE + qm->read[voq];
-			unsigned int eq, len, hdr;
+			void *entry = qm->ring + voq * RTL_NI_QM_RING_SIZE +
+				      qm->read[voq];
+			unsigned int eq, len, hdr, wifi_id = 0;
+			bool forwarded = false, refill, wifi_eq;
 			struct sk_buff *skb;
-			u32 cmd, offset, h0, h1;
+			u32 cmd, offset, h0, h1, length_word;
 			void *data;
 
 			full = false;
 			dma_rmb();
 			cmd = get_unaligned_le32(entry);
+			length_word = get_unaligned_le32(entry + 4);
 			eq = FIELD_GET(QM_CMD_EQ, cmd);
-			if ((eq == RTL_NI_QM_EQ || eq == RTL_NI_QM_EQ + 1) &&
+			wifi_eq = eq == RTL_NI_QM_PE_EQ || eq == RTL_NI_QM_PE_EQ + 1;
+			if (!wifi_eq && eq >= RTL_NI_QM_EQ &&
+			    eq < RTL_NI_QM_EQ + RTL_NI_QM_EQS &&
 			    qm->refill.count[eq - RTL_NI_QM_EQ] == RTL_NI_QM_EQ_BUFS)
 				break;
 
 			count++;
-			offset = (cmd & QM_CMD_ADDR) - lower_32_bits(qm->buf_dma);
-			if (offset >= RTL_NI_QM_BUFS * RTL_NI_QM_BUF_SIZE ||
-			    (eq != RTL_NI_QM_EQ && eq != RTL_NI_QM_EQ + 1)) {
-				atomic_long_inc(&ni->rx_errors);
-				rtl_ni_qm_retire(ni, voq, cmd, false);
-				continue;
+			if (wifi_eq) {
+				offset = (cmd & QM_CMD_ADDR) -
+					 lower_32_bits(qm->wifi_buf_dma);
+				if (offset >= RTL_NI_QM_PE_BUFS * RTL_NI_QM_BUF_SIZE) {
+					atomic_long_inc(&ni->rx_errors);
+					rtl_ni_qm_retire(ni, voq, cmd, false);
+					continue;
+				}
+				dma_sync_single_for_cpu(ni->dev,
+							qm->wifi_buf_dma + offset,
+							RTL_NI_QM_BUF_SIZE,
+							DMA_FROM_DEVICE);
+				data = qm->wifi_buf + offset + RTL_NI_QM_HEADROOM;
+				wifi_id = rtl_wifi_epp_id(length_word);
+				forwarded = !!wifi_id;
+				refill = false;
+			} else {
+				offset = (cmd & QM_CMD_ADDR) - lower_32_bits(qm->buf_dma);
+				if (offset >= RTL_NI_QM_BUFS * RTL_NI_QM_BUF_SIZE ||
+				    (eq != RTL_NI_QM_EQ && eq != RTL_NI_QM_EQ + 1)) {
+					atomic_long_inc(&ni->rx_errors);
+					rtl_ni_qm_retire(ni, voq, cmd, false);
+					continue;
+				}
+				dma_sync_single_for_cpu(ni->dev, qm->buf_dma + offset,
+							RTL_NI_QM_BUF_SIZE, DMA_FROM_DEVICE);
+				data = qm->buf + offset + RTL_NI_QM_HEADROOM;
+				refill = true;
 			}
-
-			dma_sync_single_for_cpu(ni->dev, qm->buf_dma + offset,
-						RTL_NI_QM_BUF_SIZE, DMA_FROM_DEVICE);
-			data = qm->buf + offset + RTL_NI_QM_HEADROOM;
 			h0 = get_unaligned_be32(data);
 			h1 = get_unaligned_be32(data + 4);
 			hdr = (h0 & QM_HDR_EXT) ? 16 : 8;
 			len = FIELD_GET(QM_HDR_LEN, h1);
 			if (h0 & QM_HDR_EXT)
 				len -= 8;
+			if (forwarded) {
+				int payload = rtl_wifi_epp_length(length_word,
+					RTL_NI_QM_DATA_SIZE - RTL_WIFI_INTERNAL_BYTES);
+
+				if (payload < 0) {
+					atomic_long_inc(&ni->rx_errors);
+					rtl_ni_qm_retire(ni, voq, cmd, false);
+					continue;
+				}
+				len = payload;
+				hdr = RTL_WIFI_INTERNAL_BYTES;
+			} else if (!wifi_eq && (h0 & QM_HDR_EXT) &&
+				   FIELD_GET(QM_HDR_SOURCE, h1) == RTL_WIFI_SOURCE) {
+				u32 metadata = get_unaligned_be32(data + 12);
+
+				if (((metadata >> 8) & 15) != 15)
+					wifi_id = metadata & 255;
+			}
 			if ((cmd & QM_CMD_VALID) != QM_CMD_VALID || len < ETH_HLEN ||
 			    len > RTL_NI_QM_DATA_SIZE - hdr) {
 				atomic_long_inc(&ni->rx_errors);
-				rtl_ni_qm_retire(ni, voq, cmd, true);
+				rtl_ni_qm_retire(ni, voq, cmd, refill);
 				continue;
 			}
 
 			skb = napi_alloc_skb(napi, len);
 			if (!skb) {
 				atomic_long_inc(&ni->rx_dropped);
-				rtl_ni_qm_retire(ni, voq, cmd, true);
+				rtl_ni_qm_retire(ni, voq, cmd, refill);
 				continue;
 			}
 			skb_put_data(skb, data + hdr, len);
-			rtl_ni_qm_retire(ni, voq, cmd, true);
-			rtl_ni_qm_deliver(ni, napi, skb, cmd, h0, h1, csum);
+			rtl_ni_qm_retire(ni, voq, cmd, refill);
+			rtl_ni_qm_deliver(ni, napi, skb, cmd, h0, h1, csum,
+					  wifi_id, forwarded);
 		}
 	}
 

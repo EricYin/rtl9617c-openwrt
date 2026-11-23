@@ -349,7 +349,7 @@
 
 /* SoC TMS sensor reads 12C low per factory xtemp calibration; report raw + 12C */
 &cpu_thermal {
-	deviation = <0xfffcd120>;
+	deviation = <0xffffd120>;
 };
 
 &serdes {

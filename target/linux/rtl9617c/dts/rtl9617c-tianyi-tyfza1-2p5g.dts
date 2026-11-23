@@ -225,8 +225,11 @@
 };
 
 &pcie0 {
+	reset-gpios = <&gpio_bank3 5 GPIO_ACTIVE_LOW>;
 	status = "okay";
+};
 
+&pcie0_port {
 	wifi5g: wifi@0,0 {
 		compatible = "pci10ec,c852";
 		reg = <0x0000 0 0 0 0>;
@@ -236,8 +239,11 @@
 };
 
 &pcie1 {
+	reset-gpios = <&gpio_bank3 6 GPIO_ACTIVE_LOW>;
 	status = "okay";
+};
 
+&pcie1_port {
 	wifi2g: wifi@0,0 {
 		compatible = "pci10ec,0192";
 		reg = <0x0000 0 0 0 0>;

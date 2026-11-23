@@ -71,7 +71,7 @@
 		};
 		phone {
 			label = "LED_FXS";
-			gpios = <&gpio_bank4 11 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio_bank4 11 GPIO_ACTIVE_LOW>;
 		};
 		lan1 {
 			label = "LED_EPHY0";

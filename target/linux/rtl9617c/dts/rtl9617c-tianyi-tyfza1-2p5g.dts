@@ -92,6 +92,8 @@
 		usb {
 			label = "LED_USB1";
 			gpios = <&gpio_bank0 2 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "usbport";
+			trigger-sources = <&usb_port1>;
 		};
 		wps {
 			label = "LED_WPS_G";
@@ -364,4 +366,24 @@
 	reset-on-timeout;
 	delay-reset = <134>;
 	status = "okay";
+};
+
+&usb_hsphy {
+	status = "okay";
+};
+
+&usb_ssphy {
+	usb-vbus-gpios = <&gpio_bank3 4 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+};
+
+&usb3 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	usb_port1: port@1 {
+		reg = <1>;
+		#trigger-source-cells = <0>;
+	};
 };

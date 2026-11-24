@@ -40,10 +40,6 @@ Existing source regressions:
 ```sh
 python3 package/rtl9617c/rtl9617c-pon-control/tests/puc-token-buckets.py
 python3 package/rtl9617c/rtl9617c-pon-control/tests/fe-eif-owner.py
-python3 package/rtl9617c/rtl9617c-pon-control/tests/tx-dma-layout.py
-python3 package/rtl9617c/rtl9617c-pon-control/tests/te-policer.py
-python3 package/rtl9617c/rtl9617c-pon-control/tests/te-police-flow.py
-python3 package/rtl9617c/rtl9617c-pon-control/tests/mcast-pool.py
 
 src=package/rtl9617c/rtl9617c-pon-control/src
 tests=package/rtl9617c/rtl9617c-pon-control/tests
@@ -56,9 +52,7 @@ cc -std=gnu11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 "$out/oam-flags"
 ```
 
-The publication worktree passed the original four regressions with ASan/UBSan, the package's strict AArch64 C syntax checks with `PON_FIRMWARE_VERSION` defined, and whitespace checks. The PIR test exercises the actual production initializer for all 256 EPON queues, ITU queue preservation, an empty range and write-timeout boundaries. The EIF test exercises the actual allocation/release functions and failure ownership.
-
-The hardware-capability branch adds host-side tests for the OEM TX buffer header (`tx-dma-layout.py`), the L3TE policer/WRED/DoS register layer (`te-policer.py`), the FE `FLOW_ACTION_POLICE` slot lifecycle (`te-police-flow.py`) and the multicast MCGID/MCE/ARB-FIB pools (`mcast-pool.py`). They compile the actual driver logic against mocked MMIO, so they prove packing, allocation and rollback behaviour but not silicon behaviour.
+The publication worktree passed these four regressions with ASan/UBSan, the package's strict AArch64 C syntax checks with `PON_FIRMWARE_VERSION` defined, and whitespace checks. The PIR test exercises the actual production initializer for all 256 EPON queues, ITU queue preservation, an empty range and write-timeout boundaries. The EIF test exercises the actual allocation/release functions and failure ownership.
 
 This publication retains the upstream Linux 6.18.55 version and generic patch stack. The development tree's broader 6.18.60 update is deliberately outside this change. The original target PPPoE patch is retained, including its VLAN/CVLAN `used_keys` updates; the separate generic patch that duplicates those updates is not imported. No new dependency on flow priority or wireless forward-path APIs was identified.
 
@@ -66,4 +60,4 @@ A complete firmware rebuild and boot test of this exact publication branch have 
 
 ## Scope and remaining work
 
-External-AP wireless forwarding performance is still unresolved. The branch now also carries the Phase 1/2 hardware-capability work: TRNG and Baby Jumbo MTU, `FLOW_ACTION_PRIORITY` to the 8-VoQ CoS field, GRE passthrough, 6-bit DSCP remark, L3PE egress mirror, the L3TE flow/group policer + WRED + L3 DoS register layer, FE `FLOW_ACTION_POLICE` wiring and the multicast table manager. These are gated so the pre-existing paths remain the default where the evidence is incomplete; device validation of the mirror, policer, WRED, multicast and TX checksum/LSO behaviour is still outstanding. Host Policing, the per-attack-type DoS table, NAPT6 and the L3PE Dual-Header tunnel wiring remain open. No captured packets, provisioned MAC/serial values, passwords, private keys or local deployment markers are part of this branch; synthetic test identities replace device-specific examples in source comments.
+External-AP wireless forwarding performance is still unresolved. No experimental deep-queue pools, DSCP/COS modifications, cache observers, temporary modules, captured packets, provisioned MAC/serial values, passwords, private keys or local deployment markers are part of this branch. Synthetic test identities replace device-specific examples in source comments. The original development and build worktrees remain unchanged.

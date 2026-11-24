@@ -396,6 +396,8 @@ out:
 	return ret;
 }
 
+#define NI_LAN_DQ_PORT		14
+
 static void l2tm_es_set_weights(struct rtl9617c_ni *ni, unsigned int port_id,
 				const u8 weights[NI_VOQ_NUM])
 {
@@ -414,6 +416,20 @@ static void l2tm_es_set_weights(struct rtl9617c_ni *ni, unsigned int port_id,
 	rtl_ni_rmw(ni, RTL_L2TM_ES_SCH_CFG0(idx), 0xffU, 0xffU);
 	rtl_ni_write(ni, RTL_L2TM_ES_VOQ3_0_W(idx), w30);
 	rtl_ni_write(ni, RTL_L2TM_ES_VOQ7_4_W(idx), w74);
+
+	/*
+	 * Downstream pon0 -> lan1 (port 6) offloaded flows traverse L3QM DeepQ
+	 * port 14 (NI_LAN_DQ_PORT); sync its L3TM ES weights so strict/WRR
+	 * applies across DeepQ as well as L2TM ES.
+	 */
+	if (port_id == 6) {
+		rtl_ni_rmw(ni, RTL_QM_SCH_CFG(NI_LAN_DQ_PORT),
+			   RTL_QM_SCH_VOQ_EN, RTL_QM_SCH_VOQ_EN);
+		rtl_ni_write(ni, RTL_QM_VOQ3_0_WEIGHT_RATIO_CFG(NI_LAN_DQ_PORT),
+			     w30);
+		rtl_ni_write(ni, RTL_QM_VOQ3_0_WEIGHT_RATIO_CFG(NI_LAN_DQ_PORT) + 4,
+			     w74);
+	}
 }
 
 static int qos_setup_tbf(struct rtl9617c_ni_port *port,
@@ -447,40 +463,59 @@ static int qos_setup_mqprio(struct rtl9617c_ni_port *port,
 	return 0;
 }
 
+int rtl_ni_qos_ets_to_weights(const struct tc_ets_qopt_offload *ets,
+			      u8 weights[NI_VOQ_NUM])
+{
+	unsigned int voq, bands, max_q = 0;
+
+	memset(weights, 0, NI_VOQ_NUM);
+	if (!ets)
+		return -EINVAL;
+	if (ets->command == TC_ETS_DESTROY)
+		return 0;
+	if (ets->command != TC_ETS_REPLACE)
+		return -EOPNOTSUPP;
+
+	bands = ets->replace_params.bands;
+	if (!bands || bands > NI_VOQ_NUM)
+		return -EOPNOTSUPP;
+
+	for (voq = 0; voq < bands; voq++)
+		max_q = max(max_q, ets->replace_params.quanta[voq]);
+
+	for (voq = 0; voq < NI_VOQ_NUM; voq++) {
+		unsigned int band = ets->replace_params.priomap[voq];
+		u32 q;
+
+		if (band >= bands)
+			band = voq;
+		if (band >= bands)
+			continue;
+		q = ets->replace_params.quanta[band];
+		if (q && max_q)
+			weights[voq] = clamp_t(u32,
+					       div_u64((u64)q * 255ULL + max_q / 2,
+						       max_q),
+					       1U, 255U);
+	}
+	return 0;
+}
+
 static int qos_setup_ets(struct rtl9617c_ni_port *port,
 			 struct tc_ets_qopt_offload *ets)
 {
-	u8 weights[NI_VOQ_NUM] = { };
-	unsigned int b, max_q = 0;
+	u8 weights[NI_VOQ_NUM];
+	int ret;
 
-	if (ets->parent != TC_H_ROOT)
+	if (!ets || ets->parent != TC_H_ROOT)
 		return -EOPNOTSUPP;
 
-	switch (ets->command) {
-	case TC_ETS_REPLACE:
-		if (ets->replace_params.bands > NI_VOQ_NUM)
-			return -EOPNOTSUPP;
-		for (b = 0; b < ets->replace_params.bands; b++)
-			max_q = max(max_q, ets->replace_params.quanta[b]);
-		for (b = 0; b < ets->replace_params.bands; b++) {
-			u32 q = ets->replace_params.quanta[b];
+	ret = rtl_ni_qos_ets_to_weights(ets, weights);
+	if (ret)
+		return ret;
 
-			if (!q || !max_q)
-				weights[b] = 0; /* Strict Priority */
-			else
-				weights[b] = clamp_t(u32,
-						     div_u64((u64)q * 255ULL + max_q / 2,
-							     max_q),
-						     1U, 255U);
-		}
-		l2tm_es_set_weights(port->ni, port->id, weights);
-		return 0;
-	case TC_ETS_DESTROY:
-		l2tm_es_set_weights(port->ni, port->id, weights);
-		return 0;
-	default:
-		return -EOPNOTSUPP;
-	}
+	l2tm_es_set_weights(port->ni, port->id, weights);
+	return 0;
 }
 
 static int qos_setup_flower(struct rtl9617c_ni_port *port,

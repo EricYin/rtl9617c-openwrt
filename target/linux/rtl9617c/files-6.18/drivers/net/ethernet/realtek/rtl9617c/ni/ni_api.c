@@ -4,6 +4,7 @@
 #include <linux/rcupdate.h>
 
 #include "ni.h"
+#include "ni_ext.h"
 #include "fe/fe.h"
 
 #define NI_OAM_PORT			12
@@ -151,6 +152,13 @@ void rtl9617c_ni_fe_remove_port(struct device *dev, struct net_device *netdev)
 	rtl_fe_remove_port(rtl_ni_from_dev(dev)->fe, netdev);
 }
 EXPORT_SYMBOL_GPL(rtl9617c_ni_fe_remove_port);
+
+int rtl9617c_ni_ets_to_weights(const struct tc_ets_qopt_offload *qopt,
+			       u8 weights[8])
+{
+	return rtl_ni_qos_ets_to_weights(qopt, weights);
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_ets_to_weights);
 
 int rtl9617c_ni_fe_setup_tc(struct device *dev, struct net_device *netdev,
 			    enum tc_setup_type type, void *data)

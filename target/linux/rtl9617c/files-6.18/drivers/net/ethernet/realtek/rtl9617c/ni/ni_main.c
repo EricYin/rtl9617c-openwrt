@@ -9,6 +9,7 @@
 #include <linux/of.h>
 #include <linux/of_net.h>
 #include <linux/platform_device.h>
+#include <linux/rtnetlink.h>
 #include <linux/unaligned.h>
 
 #include "ni.h"
@@ -36,6 +37,13 @@
  */
 #define L2TE_CB_GLB_LTH_BUFS		1024
 #define L2TE_CB_GLB_HTH_BUFS		2048
+#define RTL_NI_GLB_PKT_LEN_CFG		0xa034
+#define RTL_NI_GLB_MIN_PKT_LEN		GENMASK(25, 16)
+#define RTL_NI_GLB_MAX_PKT_LEN		GENMASK(13, 0)
+#define RTL_NI_GLB_SF_PKT_LEN_CFG	0xa038
+#define RTL_NI_XGE_MAC_FRAME_LEN_MAX	0xb230
+#define RTL_NI_XGE_MAX_FRAME_LEN_MASK	GENMASK(15, 0)
+#define RTL_NI_PKT_MIN_BYTES		64U
 
 static const struct regmap_config rtl_ni_regmap_config = {
 	.reg_bits = 32,
@@ -115,7 +123,7 @@ netdev_tx_t rtl_ni_xmit_frame(struct rtl9617c_ni *ni, struct net_device *dev,
 	int ret;
 
 	spin_lock_irqsave(&ni->tx_lock, flags);
-	ret = rtl_ni_dma_xmit(&ni->dma, skb, frame);
+	ret = rtl_ni_dma_xmit(&ni->dma, skb, frame, dev->mtu);
 	if (ret == -ENOSPC) {
 		netif_stop_queue(dev);
 		rtl_ni_stop_queues(ni);
@@ -250,11 +258,17 @@ static int rtl_ni_engine_start(struct rtl9617c_ni *ni)
 		if (ni->ports[id])
 			rtl_ni_rmw(ni, RTL_NI_PORT_RX_CTRL(id),
 				   PORT_RX_CTRL_MASK, PORT_RX_CTRL_CPU);
+	/*
+	 * Program NI global/XGE6 packet length limits above 1518/1522 so
+	 * bootloader defaults cannot truncate Baby Jumbo (1536+ MTU) frames.
+	 */
 	if (ni->ports[RTL_NI_PORT_P6]) {
 		ni->xge_bypass = rtl_ni_read(ni, RTL_NI_XGE_BYPASS_CFG);
 		ni->xge_bypass_saved = true;
 		rtl_ni_rmw(ni, RTL_NI_XGE_BYPASS_CFG, RTL_NI_XGE_BYPASS_FIELDS,
 			   RTL_NI_XGE_BYPASS_CPU0);
+		rtl_ni_rmw(ni, RTL_NI_XGE_MAC_FRAME_LEN_MAX,
+			   RTL_NI_XGE_MAX_FRAME_LEN_MASK, RTL_NI_QM_BUF_SIZE);
 	}
 
 	rtl_ni_rmw(ni, RTL_NI_GLB_STATIC, RTL_NI_GLB_PORT_TO_CPU, GLB_PORT_TO_CPU_DMA);
@@ -264,6 +278,14 @@ static int rtl_ni_engine_start(struct rtl9617c_ni *ni)
 	rtl_ni_l2te_fc_enable(ni, true);
 
 	rtl_ni_set_mac(ni);
+	rtl_ni_rmw(ni, RTL_NI_GLB_PKT_LEN_CFG,
+		   RTL_NI_GLB_MIN_PKT_LEN | RTL_NI_GLB_MAX_PKT_LEN,
+		   FIELD_PREP(RTL_NI_GLB_MIN_PKT_LEN, RTL_NI_PKT_MIN_BYTES) |
+		   FIELD_PREP(RTL_NI_GLB_MAX_PKT_LEN, RTL_NI_QM_BUF_SIZE));
+	mdelay(1);
+	rtl_ni_rmw(ni, RTL_NI_GLB_SF_PKT_LEN_CFG, RTL_NI_GLB_MAX_PKT_LEN,
+		   FIELD_PREP(RTL_NI_GLB_MAX_PKT_LEN, RTL_NI_QM_BUF_SIZE));
+	mdelay(1);
 	rtl_ni_write(ni, RTL_NI_RX_ADDR, (RTL_NI_XRAM_RX_END - 1) << 16);
 	rtl_ni_write(ni, RTL_NI_TX_ADDR, (RTL_NI_XRAM_TX_END - 1) << 16 |
 		     RTL_NI_XRAM_TX_START);
@@ -306,6 +328,8 @@ static void rtl_ni_engine_stop(struct rtl9617c_ni *ni)
 	spin_lock_irqsave(&ni->rx_lock, flags);
 	rtl_ni_qm_stop(ni);
 	spin_unlock_irqrestore(&ni->rx_lock, flags);
+	usleep_range(100, 200);
+	rtl_ni_qm_drain_slots(ni);
 
 	spin_lock_irqsave(&ni->tx_lock, flags);
 	rtl_ni_dma_stop(&ni->dma);
@@ -389,6 +413,9 @@ static int rtl_ni_probe(struct platform_device *pdev)
 	}
 	atomic_long_set(&ni->rx_errors, 0);
 	atomic_long_set(&ni->rx_dropped, 0);
+	atomic_long_set(&ni->rx_zerocopy_pkts, 0);
+	atomic_long_set(&ni->rx_copybreak_pkts, 0);
+	atomic_long_set(&ni->rx_alloc_fallback, 0);
 
 	base = devm_platform_ioremap_resource_byname(pdev, "ni");
 	if (IS_ERR(base)) {
@@ -450,16 +477,6 @@ static int rtl_ni_probe(struct platform_device *pdev)
 		dev_err(dev, "rtl_ni_dma_alloc failed: %d\n", ret);
 		return ret;
 	}
-	ret = rtl_ni_qm_alloc(ni);
-	if (ret) {
-		dev_err(dev, "rtl_ni_qm_alloc failed: %d\n", ret);
-		return ret;
-	}
-	ret = devm_add_action_or_reset(dev, rtl_ni_qm_release, ni);
-	if (ret) {
-		dev_err(dev, "devm_add_action(qm_release) failed: %d\n", ret);
-		return ret;
-	}
 
 	ni->napi_dev = alloc_netdev_dummy(0);
 	if (!ni->napi_dev) {
@@ -470,6 +487,17 @@ static int rtl_ni_probe(struct platform_device *pdev)
 	ret = devm_add_action_or_reset(dev, rtl_ni_napi_del, ni);
 	if (ret) {
 		dev_err(dev, "devm_add_action(napi_del) failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = rtl_ni_qm_alloc(ni);
+	if (ret) {
+		dev_err(dev, "rtl_ni_qm_alloc failed: %d\n", ret);
+		return ret;
+	}
+	ret = devm_add_action_or_reset(dev, rtl_ni_qm_release, ni);
+	if (ret) {
+		dev_err(dev, "devm_add_action(qm_release) failed: %d\n", ret);
 		return ret;
 	}
 	hrtimer_setup(&ni->timer, rtl_ni_timer, CLOCK_MONOTONIC,
@@ -484,7 +512,7 @@ static int rtl_ni_probe(struct platform_device *pdev)
 	}
 
 	ni->fe = rtl_fe_create(dev, ni->regs, ni->fe_axi,
-			       ni->qm.lan_dq_bufs > 0);
+			       ni->qm.lan_dq_bufs > 0, &ni->te);
 	if (IS_ERR(ni->fe)) {
 		dev_err(dev, "rtl_fe_create failed: %ld\n", PTR_ERR(ni->fe));
 		return PTR_ERR(ni->fe);
@@ -499,8 +527,40 @@ static int rtl_ni_probe(struct platform_device *pdev)
 	}
 
 	rtl_ni_mib_init(ni);
+
+	ret = rtl_te_flow_init(ni);
+	if (ret)
+		dev_warn(dev, "rtl_te_flow_init failed: %d\n", ret);
+
 	dev_info(dev, "rtl_ni_probe succeeded\n");
 	return 0;
+}
+
+static void rtl_ni_shutdown(struct platform_device *pdev)
+{
+	struct rtl9617c_ni *ni = platform_get_drvdata(pdev);
+	unsigned int id;
+
+	if (!ni)
+		return;
+
+	rtl_ni_mib_exit(ni);
+
+	rtnl_lock();
+	for (id = 0; id < RTL_NI_PORTS; id++) {
+		struct rtl9617c_ni_port *port = ni->ports[id];
+
+		if (port && port->registered && netif_running(port->dev))
+			dev_close(port->dev);
+	}
+	rtnl_unlock();
+
+	mutex_lock(&ni->lock);
+	if (ni->users) {
+		rtl_ni_engine_stop(ni);
+		ni->users = 0;
+	}
+	mutex_unlock(&ni->lock);
 }
 
 static void rtl_ni_remove(struct platform_device *pdev)
@@ -511,6 +571,7 @@ static void rtl_ni_remove(struct platform_device *pdev)
 	rtl_ni_ports_unregister(ni);
 	rtl_fe_destroy(ni->fe);
 	hrtimer_cancel(&ni->timer);
+	rtl_te_flow_exit(ni);
 }
 
 static const struct of_device_id rtl_ni_of_match[] = {
@@ -522,6 +583,7 @@ MODULE_DEVICE_TABLE(of, rtl_ni_of_match);
 static struct platform_driver rtl_ni_driver = {
 	.probe = rtl_ni_probe,
 	.remove = rtl_ni_remove,
+	.shutdown = rtl_ni_shutdown,
 	.driver = {
 		.name = "rtl9617c-ni",
 		.of_match_table = rtl_ni_of_match,

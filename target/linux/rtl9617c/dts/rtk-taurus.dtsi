@@ -62,27 +62,35 @@
 
 		opp-400000000 {
 			opp-hz = /bits/ 64 <400000000>;
+			clock-latency-ns = <20000000>;
 		};
 		opp-625000000 {
 			opp-hz = /bits/ 64 <625000000>;
+			clock-latency-ns = <20000000>;
 		};
 		opp-700000000 {
 			opp-hz = /bits/ 64 <700000000>;
+			clock-latency-ns = <20000000>;
 		};
 		opp-800000000 {
 			opp-hz = /bits/ 64 <800000000>;
+			clock-latency-ns = <20000000>;
 		};
 		opp-900000000 {
 			opp-hz = /bits/ 64 <900000000>;
+			clock-latency-ns = <20000000>;
 		};
 		opp-1000000000 {
 			opp-hz = /bits/ 64 <1000000000>;
+			clock-latency-ns = <20000000>;
 		};
 		opp-1100000000 {
 			opp-hz = /bits/ 64 <1100000000>;
+			clock-latency-ns = <20000000>;
 		};
 		opp-1200000000 {
 			opp-hz = /bits/ 64 <1200000000>;
+			clock-latency-ns = <20000000>;
 		};
 	};
 
@@ -159,7 +167,7 @@
 
 		soc_clks: clock-controller@f4320000 {
 			compatible = "realtek,taurus-soc-clks";
-			reg = <0 0xf4320000 0 0x1d0>;
+			reg = <0 0xf4320000 0 0x260>;
 
 			pll_cpll_clk: pll_cpll {
 				compatible = "realtek,taurus-pll-cpll-clk";
@@ -1145,6 +1153,16 @@
 			compatible = "realtek,taurus-trng";
 			reg = <0 0x90600200 0 0x68>;
 			interrupts = <GIC_SPI TAURUS_IRQ_GLB_TRNG IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+		};
+
+		crypto: crypto@90500000 {
+			compatible = "realtek,taurus-crypto";
+			reg = <0 0x90500000 0 0x8000>,
+			      <0 0x9030304c 0 0x4>;
+			reg-names = "crypto", "protect";
+			interrupts = <GIC_SPI TAURUS_IRQ_GLB_IPSEC IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&div_crypto_clk>;
 			status = "okay";
 		};
 

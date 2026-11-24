@@ -285,6 +285,11 @@
 	status = "okay";
 };
 
+&trng {
+	self-test;
+	status = "okay";
+};
+
 &uart0 {
 	status = "okay";
 };

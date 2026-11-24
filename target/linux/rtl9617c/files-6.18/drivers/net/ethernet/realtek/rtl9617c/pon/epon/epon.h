@@ -72,9 +72,9 @@ struct rtl_oam_port {
 #define RTL_MPCP_PACKET_FLAG 0x20d8
 #define RTL_OAM_PREFIX_BYTES 16
 
-/* Largest PON payload the board's PUC accepts on either rate. */
+/* Largest PON payload accepted for 1536 Baby Jumbo + ETH + QinQ (<= 1700). */
 #define RTL_EPON_MAX_LLIDS		32
-#define RTL_EPON_MAX_FRAME_BYTES	1522
+#define RTL_EPON_MAX_FRAME_BYTES	1558
 /* Above 16 LLIDs the queue field only has 4 usable slots. */
 #define RTL_EPON_QUEUE_SPLIT_LLIDS	16
 #define RTL_EPON_QUEUES_HIGH_LLID	4

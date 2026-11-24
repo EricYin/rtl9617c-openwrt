@@ -4,6 +4,7 @@
 #include <linux/netdevice.h>
 #include <linux/rcupdate.h>
 #include <linux/rtnetlink.h>
+#include <net/pkt_cls.h>
 #include "pon/pon.h"
 #include "pon/pon_priv.h"
 #include "rtl9617c_ni.h"
@@ -70,11 +71,45 @@ static int rtl_data_set_address(struct net_device *dev, void *address)
 	return ret;
 }
 
-static int rtl_data_setup_tc(struct net_device *dev,enum tc_setup_type type,void *data)
+static int rtl_data_setup_tc(struct net_device *dev, enum tc_setup_type type, void *data)
 {
-	struct rtl_oam_port *port=netdev_priv(dev);
-	return rtl9617c_ni_fe_setup_tc(port->pon->ni_dev,dev,type,data);
+	struct rtl_oam_port *port = netdev_priv(dev);
+
+	if (type == TC_SETUP_QDISC_ETS) {
+		const struct rtl_dq_io io = {
+			port->pon, rtl_puc_bp_read, rtl_puc_bp_write,
+			rtl_puc_bp_access
+		};
+		struct tc_ets_qopt_offload *ets = data;
+		u8 weights[8];
+		int ret;
+
+		if (!ets || ets->parent != TC_H_ROOT)
+			return -EOPNOTSUPP;
+		ret = rtl9617c_ni_ets_to_weights(ets, weights);
+		if (ret)
+			return ret;
+		mutex_lock(&port->pon->control_lock);
+		mutex_lock(&port->pon->lock);
+		if (!port->pon->puc_configured || port->llid >= 32) {
+			ret = -EOPNOTSUPP;
+		} else {
+			u32 en_mask = rtl_pon_rd(port->pon,
+						 VALID_VOQ0 - (port->llid / 4) * 4);
+			unsigned int enabled = (en_mask >> ((port->llid % 4) * 8)) & 0xffU;
+
+			ret = rtl_itu_puc_schedule(&io, port->llid,
+						   enabled ? enabled : 0xffU,
+						   weights);
+		}
+		mutex_unlock(&port->pon->lock);
+		mutex_unlock(&port->pon->control_lock);
+		return ret;
+	}
+
+	return rtl9617c_ni_fe_setup_tc(port->pon->ni_dev, dev, type, data);
 }
+
 const struct net_device_ops rtl_data_ops = {
 	.ndo_setup_tc = rtl_data_setup_tc,
 	.ndo_open = rtl_oam_open,

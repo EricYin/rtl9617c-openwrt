@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[4]
 DRIVER = ROOT / 'target/linux/rtl9617c/files-6.18/drivers/net/ethernet/realtek/rtl9617c/fe'
 source = (DRIVER / 'fe_main.c').read_text()
 private = (DRIVER / 'fe_priv.h').read_text()
-start = source.index('static int rtl_fe_interface_get(')
+start = source.index('static u32 rtl_fe_interface_value(')
 end = source.index('static unsigned int rtl_fe_mtu_shift(', start)
 functions = source[start:end]
 limits = '\n'.join(re.search(r'^#define ' + name + r'\s+.*$', text, re.M).group(0)
@@ -44,8 +44,13 @@ struct rtl_fe_flow {
 struct rtl_fe {
  struct rtl_fe_interface interfaces[FE_INTERFACES];
  unsigned long counters[(FE_INTERFACES + 63) / 64];
+ unsigned long busy_phys[(FE_INTERFACES + 63) / 64];
  unsigned int words[32], staging, command, calls, fail_at;
 };
+static bool test_bit(unsigned int bit, const unsigned long *bits)
+{ return !!(bits[bit / 64] & BIT(bit % 64)); }
+static bool rtl_fe_tunnel_phys_busy(struct rtl_fe *fe, unsigned int phys)
+{ return phys < FE_INTERFACES && test_bit(phys, fe->busy_phys); }
 static unsigned int find_first_zero_bit(const unsigned long *bits, unsigned int count)
 {
  for (unsigned int i = 0; i < count; i++)
@@ -140,11 +145,40 @@ static void failures_retain_ownership(void)
  assert(rtl_fe_interface_put(&fe, &flow) == 0);
  assert(!fe.counters[0] && !fe.interfaces[0].users && fe.words[0] == 0xaabbccdd);
 }
+static void tunnel_phys_rows_skipped(void)
+{
+ struct rtl_fe fe = {0};
+ struct rtl_fe_flow flows[20] = {0};
+ unsigned int i;
+
+ for (i = 0; i < 16; i++) {
+  flows[i].source_mac = i % 15;
+  flows[i].pppoe = 3U | ((0x400 + i) << 2);
+  assert(rtl_fe_interface_get(&fe, &flows[i]) == 0);
+  assert(flows[i].counter == i);
+ }
+ __set_bit(16, fe.busy_phys);
+ __set_bit(17, fe.busy_phys);
+ flows[16].source_mac = 1;
+ flows[16].pppoe = 3U | (0x500 << 2);
+ assert(rtl_fe_interface_get(&fe, &flows[16]) == 0);
+ assert(flows[16].counter == 18);
+
+ /* Busy tunnel row is not shared even if parameters match after bind. */
+ assert(rtl_fe_interface_bind_slot(&fe, &flows[17], 16) == 0);
+ flows[18].source_mac = flows[17].source_mac;
+ flows[18].pppoe = flows[17].pppoe;
+ flows[18].counter = 0;
+ assert(rtl_fe_interface_get(&fe, &flows[18]) == 0);
+ assert(flows[18].counter != 16);
+ assert(rtl_fe_interface_bind_slot(&fe, &flows[19], 32) == -EINVAL);
+}
 int main(void)
 {
  exhaust_and_share();
  failures_retain_ownership();
- puts("PASS: actual fe_interface_get/put; 32 unique owners; compatible sharing; incompatible 33rd ENOSPC; last-owner restore; failure ownership");
+ tunnel_phys_rows_skipped();
+ puts("PASS: actual fe_interface_get/put; 32 unique owners; compatible sharing; incompatible 33rd ENOSPC; last-owner restore; failure ownership; tunnel phys busy skipped");
  return 0;
 }
 '''

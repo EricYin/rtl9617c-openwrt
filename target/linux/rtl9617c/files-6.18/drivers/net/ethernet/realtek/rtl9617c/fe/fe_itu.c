@@ -196,6 +196,38 @@ static int rtl_fe_itu_invariant(const struct rtl_itu_paths *paths,
 	return 0;
 }
 
+static bool rtl_fe_itu_allow_cos_override(const struct rtl_itu_paths *paths,
+					  const struct rtl_itu_path *path)
+{
+	unsigned int i;
+
+	/*
+	 * OMCC (tcont 0), non-zero OLT-assigned queues, and WRR-weighted
+	 * multi-queue T-CONTs enforce explicit OLT queue contracts. Allow
+	 * FLOW_ACTION_PRIORITY overrides only on single-queue SP T-CONTs.
+	 */
+	if (!paths || !path || !path->tcont ||
+	    path->tcont >= ARRAY_SIZE(paths->weights) || path->queue)
+		return false;
+
+	for (i = 0; i < ARRAY_SIZE(paths->weights[path->tcont]); i++) {
+		if (paths->weights[path->tcont][i])
+			return false;
+	}
+
+	for (i = 0; i < paths->count && i < ARRAY_SIZE(paths->path); i++) {
+		const struct rtl_itu_path *other = &paths->path[i];
+
+		if (other->multicast || !other->pbits ||
+		    other->tcont != path->tcont)
+			continue;
+		if (other->queue != path->queue)
+			return false;
+	}
+
+	return true;
+}
+
 static int rtl_fe_itu_upstream(struct rtl_fe_rule *data,
 			       struct rtl_evto_packet *logical, bool exact)
 {
@@ -213,7 +245,10 @@ static int rtl_fe_itu_upstream(struct rtl_fe_rule *data,
 		return ret;
 	data->action.destination = FE_DEEPQ_DEST + result.path->tcont;
 	data->action.deep_queue = 1;
-	data->action.cos = result.path->queue;
+	if (!data->cos_set ||
+	    !rtl_fe_itu_allow_cos_override(data->input->fe->itu_paths,
+					   result.path))
+		data->action.cos = result.path->queue;
 	data->action.gem_set = 1;
 	data->action.gem_index = result.path->index;
 	return 0;
@@ -485,7 +520,9 @@ int rtl_fe_itu_rule(struct rtl_fe_rule *data)
 			return -EOPNOTSUPP;
 		data->action.destination = FE_DEEPQ_DEST + path->tcont;
 		data->action.deep_queue = 1;
-		data->action.cos = path->queue;
+		if (!data->cos_set ||
+		    !rtl_fe_itu_allow_cos_override(fe->itu_paths, path))
+			data->action.cos = path->queue;
 		data->action.gem_set = 1;
 		data->action.gem_index = path->index;
 	}

@@ -27,6 +27,13 @@
 #define XGE6_FC_PAU_RX_EN		BIT(3)
 #define XGE_MAC_PQUANTA_MASK		GENMASK(15, 0)
 #define XGE_MAC_PQUANTA_DEFAULT		0xffff
+/*
+ * header_a fields this port puts in play.  header_high is the word the DMA ring
+ * carries at +8, i.e. header_a[31:0], where OEM sets bit 13 for control frames.
+ * header_low is the word at +12, i.e. header_a[63:32], whose bits [2:0] are cos,
+ * [8:3] ldpid, [14:9] lspid and [29] fe_bypass (RE-1 spec 2.5); pkt_size in
+ * [28:15] of that word is filled in by ni_dma.c.
+ */
 #define TX_HDR_HIGH			BIT(13)
 #define TX_HDR_LOW(port)		((16 << 9) | ((port) << 3) | BIT(29))
 #define GLB_RESET_QXGMII		BIT(31)
@@ -348,6 +355,15 @@ static int rtl_ni_stop(struct net_device *dev)
 	return 0;
 }
 
+/*
+ * QM RX runs single-buffer 2048B pools (RTL_NI_QM_DATA_SIZE = 1600, minus up
+ * to 16B QM header = 1584B max RX frame). 1536 MTU fits PPPoE-over-1500
+ * (1508+) plus ETH_HLEN and QinQ (1558B) safely below that 1584B ceiling.
+ */
+#define RTL_NI_PORT_MAX_MTU		1536U
+#define RTL_NI_TX_FRAME_MAX		(RTL_NI_PORT_MAX_MTU + ETH_HLEN + \
+					 2 * VLAN_HLEN)
+
 static netdev_tx_t rtl_ni_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct rtl9617c_ni_port *port = netdev_priv(dev);
@@ -357,7 +373,14 @@ static netdev_tx_t rtl_ni_start_xmit(struct sk_buff *skb, struct net_device *dev
 		.header_low = TX_HDR_LOW(egress),
 	};
 
-	if (skb->len < ETH_HLEN || skb->len > RTL_NI_FRAME_MAX) {
+	/*
+	 * A GSO super-packet is larger than an MTU-sized frame: the stack caps it
+	 * at dev->gso_max_size = RTL_NI_TX_GSO_MAX instead (see
+	 * rtl_ni_port_offload), which is what still fits one descriptor buffer.
+	 * Everything else keeps the plain 1558-byte ceiling.
+	 */
+	if (skb->len < ETH_HLEN ||
+	    skb->len > (skb_is_gso(skb) ? RTL_NI_TX_GSO_MAX : RTL_NI_TX_FRAME_MAX)) {
 		DEV_STATS_INC(dev, tx_dropped);
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
@@ -485,10 +508,44 @@ static netdev_tx_t rtl_ni_port_xmit(struct sk_buff *skb,
 	return rtl_ni_start_xmit(skb, dev);
 }
 
+#define RTL_NI_TX_OFFLOAD_FEATURES	(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | \
+					 NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6)
+
+static netdev_features_t rtl_ni_fix_features(struct net_device *dev,
+					     netdev_features_t features)
+{
+	if (!rtl_ni_tx_csum && !rtl_ni_tso)
+		features &= ~(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM);
+	if (!rtl_ni_tso)
+		features &= ~(NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6);
+	else if (!rtl_ni_tso_v6)
+		features &= ~NETIF_F_TSO6;
+	return features;
+}
+
+/*
+ * Linux's skb_gso_ok() checks gso_type/fraglist but not skb->len against
+ * dev->tso_max_size, so a GRO-coalesced forwarded packet can arrive larger
+ * than a single TX DMA slot.  Force software GSO segmentation for oversized
+ * or encapsulated super-packets rather than dropping them in start_xmit().
+ */
+static netdev_features_t rtl_ni_features_check(struct sk_buff *skb,
+					       struct net_device *dev,
+					       netdev_features_t features)
+{
+	if (skb_is_gso(skb) &&
+	    (skb->encapsulation ||
+	     skb->len + RTL_NI_DMA_HDR_LEN > RTL_NI_DMA_BUF_SIZE))
+		features &= ~NETIF_F_GSO_MASK;
+	return features;
+}
+
 static const struct net_device_ops rtl_ni_netdev_ops = {
 	.ndo_open = rtl_ni_port_open,
 	.ndo_stop = rtl_ni_stop,
 	.ndo_start_xmit = rtl_ni_port_xmit,
+	.ndo_fix_features = rtl_ni_fix_features,
+	.ndo_features_check = rtl_ni_features_check,
 	.ndo_set_mac_address = rtl_ni_set_mac_address,
 	.ndo_validate_addr = eth_validate_addr,
 	.ndo_tx_timeout = rtl_ni_tx_timeout,
@@ -603,6 +660,46 @@ static void rtl_ni_port_destroy(struct rtl9617c_ni_port *port)
 	free_netdev(port->dev);
 }
 
+/*
+ * Advertise the TX offloads from the module parameters (see ni_dma.c).  Every
+ * parameter defaults to 0, so an unmodified boot advertises exactly what it did
+ * before: RXCSUM only.
+ *
+ * TSO is dropped by the core unless NETIF_F_SG and a CSUM feature are present
+ * as well (netdev_fix_features(), net/core/dev.c); this driver linearises every
+ * frame with skb_copy_bits(), so consuming scatter-gather skbs is safe.  A
+ * super-packet is capped at RTL_NI_TX_GSO_MAX so that it still fits one 2048-byte
+ * descriptor buffer, i.e. the hardware gets 1-2 MSS-sized segments per frame.
+ */
+static void rtl_ni_port_offload(struct net_device *dev)
+{
+	dev->hw_features |= RTL_NI_TX_OFFLOAD_FEATURES;
+	dev->wanted_features |= RTL_NI_TX_OFFLOAD_FEATURES;
+	dev->features |= rtl_ni_fix_features(dev, RTL_NI_TX_OFFLOAD_FEATURES);
+	netif_set_tso_max_size(dev, RTL_NI_TX_GSO_MAX);
+}
+
+void rtl_ni_ports_update_features(void)
+{
+	netdev_features_t wanted = rtl_ni_fix_features(NULL,
+						       RTL_NI_TX_OFFLOAD_FEATURES);
+	struct net_device *dev;
+
+	if (system_state < SYSTEM_RUNNING)
+		return;
+
+	rtnl_lock();
+	for_each_netdev(&init_net, dev) {
+		if (dev->netdev_ops == &rtl_ni_netdev_ops) {
+			dev->wanted_features =
+				(dev->wanted_features & ~RTL_NI_TX_OFFLOAD_FEATURES) |
+				wanted;
+			netdev_update_features(dev);
+		}
+	}
+	rtnl_unlock();
+}
+
 static int rtl_ni_port_create(struct rtl9617c_ni *ni, struct device_node *np)
 {
 	struct rtl9617c_ni_port *port;
@@ -640,9 +737,10 @@ static int rtl_ni_port_create(struct rtl9617c_ni *ni, struct device_node *np)
 		strscpy(dev->name, label, sizeof(dev->name));
 	dev->netdev_ops = &rtl_ni_netdev_ops;
 	dev->ethtool_ops = &rtl_ni_ethtool_ops;
-	dev->max_mtu = ETH_DATA_LEN;
+	dev->max_mtu = RTL_NI_PORT_MAX_MTU;
 	dev->hw_features |= NETIF_F_RXCSUM;
 	dev->features |= NETIF_F_RXCSUM;
+	rtl_ni_port_offload(dev);
 	ret = rtl_ni_port_mac_probe(port);
 	if (ret)
 		goto err;
@@ -677,6 +775,10 @@ static int rtl_ni_port_create(struct rtl9617c_ni *ni, struct device_node *np)
 	} else {
 		__set_bit(PHY_INTERFACE_MODE_INTERNAL, config->supported_interfaces);
 		__set_bit(PHY_INTERFACE_MODE_GMII, config->supported_interfaces);
+		config->lpi_capabilities = MAC_100FD | MAC_1000FD;
+		__set_bit(PHY_INTERFACE_MODE_INTERNAL, config->lpi_interfaces);
+		__set_bit(PHY_INTERFACE_MODE_GMII, config->lpi_interfaces);
+		config->lpi_timer_default = 250000;
 	}
 
 	port->phylink = phylink_create(config, of_fwnode_handle(np), interface,

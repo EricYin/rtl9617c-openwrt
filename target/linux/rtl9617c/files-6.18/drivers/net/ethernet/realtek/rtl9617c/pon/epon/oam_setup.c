@@ -33,7 +33,7 @@ static struct net_device *rtl_oam_allocate(struct rtl9617c_pon *pon, unsigned in
 	snprintf(dev->name, sizeof(dev->name), control ? "pon-oam%u" : "pon%u", index);
 	dev->netdev_ops = control ? &rtl_oam_ops : &rtl_data_ops;
 	dev->sysfs_groups[0] = &rtl_oam_group;
-	dev->max_mtu = ETH_DATA_LEN;
+	dev->max_mtu = control ? ETH_DATA_LEN : 1536;
 	if (control)
 		dev->flags |= IFF_NOARP;
 	/* Factory identity is supplied before netifd. Until then the zero

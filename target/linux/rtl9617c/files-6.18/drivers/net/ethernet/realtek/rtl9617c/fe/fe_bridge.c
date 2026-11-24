@@ -16,6 +16,7 @@
 #include <net/switchdev.h>
 
 #include "fe_priv.h"
+#include "fe_mcast.h"
 #include "rtl9617c_itu.h"
 
 #define FE_BRIDGE_PENDING	256
@@ -559,6 +560,7 @@ static int rtl_fe_bridge_netdev_event(struct notifier_block *nb,
 		rtl_fe_bridge_hook_dev(bridge, dev, true);
 		break;
 	case NETDEV_UNREGISTER:
+		rtl_fe_mcast_port_gone(bridge->fe, dev);
 		rtl_fe_bridge_hook_dev(bridge, dev, false);
 		break;
 	case NETDEV_DOWN:
@@ -574,7 +576,8 @@ static int rtl_fe_bridge_netdev_event(struct notifier_block *nb,
 }
 
 static int rtl_fe_bridge_switchdev(struct rtl_fe_bridge *bridge,
-				   unsigned long event)
+				   unsigned long event, void *ptr,
+				   bool blocking)
 {
 	switch (event) {
 	case SWITCHDEV_FDB_ADD_TO_DEVICE:
@@ -583,9 +586,29 @@ static int rtl_fe_bridge_switchdev(struct rtl_fe_bridge *bridge,
 		break;
 	case SWITCHDEV_PORT_OBJ_ADD:
 	case SWITCHDEV_PORT_OBJ_DEL:
-	case SWITCHDEV_PORT_ATTR_SET:
+		/* The bridge enqueues MDB objects with SWITCHDEV_F_DEFER, so the
+		 * blocking chain runs them from switchdev's deferred workqueue
+		 * (process context).  Only the software MCGID / L2 port mask is
+		 * tracked: the ARB MC FIB field semantics are still UNKNOWN
+		 * (spec U5), so no hardware entry is synthesised and nothing is
+		 * claimed to the bridge.  Unsupported objects are left
+		 * unhandled (NOTIFY_DONE); this never reports a fake success. */
+		if (blocking)
+			rtl_fe_mcast_mdb_event(bridge->fe, event, ptr);
 		rtl_fe_bridge_invalidate(bridge, true);
 		break;
+	case SWITCHDEV_PORT_ATTR_SET: {
+		const struct switchdev_notifier_port_attr_info *info = ptr;
+
+		/* Port multicast routing is not offloaded by this driver, so the
+		 * attribute stays unhandled instead of being acknowledged. */
+		if (info && info->attr &&
+		    info->attr->id == SWITCHDEV_ATTR_ID_PORT_MROUTER)
+			dev_dbg(bridge->fe->dev,
+				"mcast: PORT_MROUTER attribute not offloaded\n");
+		rtl_fe_bridge_invalidate(bridge, true);
+		break;
+	}
 	}
 	return NOTIFY_DONE;
 }
@@ -594,14 +617,16 @@ static int rtl_fe_bridge_switchdev_event(struct notifier_block *nb,
 					 unsigned long event, void *ptr)
 {
 	return rtl_fe_bridge_switchdev(container_of(nb, struct rtl_fe_bridge,
-						    switchdev_nb), event);
+						    switchdev_nb), event, ptr,
+				       false);
 }
 
 static int rtl_fe_bridge_switchdev_blocking_event(struct notifier_block *nb,
 						  unsigned long event, void *ptr)
 {
 	return rtl_fe_bridge_switchdev(container_of(nb, struct rtl_fe_bridge,
-						    switchdev_blocking_nb), event);
+						    switchdev_blocking_nb), event,
+				       ptr, true);
 }
 
 void rtl_fe_bridge_flow_removed(struct rtl_fe *fe)

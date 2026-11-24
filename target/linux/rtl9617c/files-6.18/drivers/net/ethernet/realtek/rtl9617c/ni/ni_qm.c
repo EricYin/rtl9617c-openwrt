@@ -5,12 +5,20 @@
 #include <linux/etherdevice.h>
 #include <linux/io.h>
 #include <linux/ip.h>
+#include <linux/mm.h>
+#include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/rcupdate.h>
 #include <linux/unaligned.h>
+#include <net/page_pool/helpers.h>
 
 #include "ni.h"
+
+static bool rtl_ni_rx_zerocopy = true;
+module_param_named(rx_zerocopy, rtl_ni_rx_zerocopy, bool, 0644);
+MODULE_PARM_DESC(rx_zerocopy,
+		 "Zero-copy RX via page_pool + napi_build_skb (default 1)");
 
 #define QM_EQ_PROFILE_CPU0		RTL_QM_EQ_PROFILE(RTL_NI_QM_EQ)
 #define QM_DQ_EQ_PRIVATE		1
@@ -666,20 +674,116 @@ static void rtl_ni_qm_lan_dq_free(struct rtl9617c_ni *ni)
 	qm->lan_dq_bufs = 0;
 }
 
+static unsigned int rtl_ni_qm_slot_hash(u32 dma)
+{
+	return ((dma >> 7) * 0x9e3779b1U) >> (32 - RTL_NI_QM_SLOT_HASH_BITS);
+}
+
+static int rtl_ni_qm_slot_insert(struct rtl_ni_qm_slot *slots, u32 dma,
+				 struct page *page)
+{
+	unsigned int idx = rtl_ni_qm_slot_hash(dma);
+	unsigned int i;
+
+	for (i = 0; i < RTL_NI_QM_SLOT_HASH_SIZE; i++) {
+		unsigned int pos = (idx + i) & RTL_NI_QM_SLOT_HASH_MASK;
+
+		if (!slots[pos].page) {
+			slots[pos].dma = dma;
+			slots[pos].page = page;
+			return 0;
+		}
+	}
+	return -ENOSPC;
+}
+
+static int rtl_ni_qm_slot_lookup(const struct rtl_ni_qm_slot *slots, u32 dma)
+{
+	unsigned int idx = rtl_ni_qm_slot_hash(dma);
+	unsigned int i;
+
+	for (i = 0; i < RTL_NI_QM_SLOT_HASH_SIZE; i++) {
+		unsigned int pos = (idx + i) & RTL_NI_QM_SLOT_HASH_MASK;
+
+		if (!slots[pos].page)
+			return -ENOENT;
+		if (slots[pos].dma == dma)
+			return pos;
+	}
+	return -ENOENT;
+}
+
+static void rtl_ni_qm_slot_remove_at(struct rtl_ni_qm_slot *slots,
+				     unsigned int pos)
+{
+	unsigned int hole = pos;
+	unsigned int scan = pos;
+
+	for (;;) {
+		unsigned int home;
+
+		scan = (scan + 1) & RTL_NI_QM_SLOT_HASH_MASK;
+		if (!slots[scan].page) {
+			slots[hole].page = NULL;
+			slots[hole].dma = 0;
+			return;
+		}
+		home = rtl_ni_qm_slot_hash(slots[scan].dma);
+		if (((hole - home) & RTL_NI_QM_SLOT_HASH_MASK) <
+		    ((scan - home) & RTL_NI_QM_SLOT_HASH_MASK)) {
+			slots[hole] = slots[scan];
+			hole = scan;
+		}
+	}
+}
+
+void rtl_ni_qm_drain_slots(struct rtl9617c_ni *ni)
+{
+	struct rtl_ni_qm *qm = &ni->qm;
+	unsigned int i;
+
+	if (qm->rx_slots && qm->pool) {
+		for (i = 0; i < RTL_NI_QM_SLOT_HASH_SIZE; i++) {
+			if (!qm->rx_slots[i].page)
+				continue;
+			page_pool_put_full_page(qm->pool, qm->rx_slots[i].page,
+						false);
+			qm->rx_slots[i].page = NULL;
+			qm->rx_slots[i].dma = 0;
+		}
+	}
+	memset(&qm->refill, 0, sizeof(qm->refill));
+}
+
 int rtl_ni_qm_alloc(struct rtl9617c_ni *ni)
 {
+	struct page_pool_params pp_params = {
+		.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV,
+		.order = 0,
+		.pool_size = RTL_NI_QM_BUFS,
+		.nid = dev_to_node(ni->dev),
+		.dev = ni->dev,
+		.napi = &ni->napi,
+		.dma_dir = DMA_FROM_DEVICE,
+		.offset = 0,
+		.max_len = RTL_NI_QM_BUF_SIZE - RTL_NI_QM_TAILROOM,
+	};
 	struct rtl_ni_qm *qm = &ni->qm;
 	int ret;
 
-	qm->buf = dma_alloc_noncoherent(ni->dev, RTL_NI_QM_BUFS * RTL_NI_QM_BUF_SIZE,
-					&qm->buf_dma, DMA_FROM_DEVICE, GFP_KERNEL);
-	if (!qm->buf)
-		return -ENOMEM;
+	qm->pool = page_pool_create(&pp_params);
+	if (IS_ERR(qm->pool)) {
+		ret = PTR_ERR(qm->pool);
+		qm->pool = NULL;
+		return ret;
+	}
+	qm->rx_slots = devm_kcalloc(ni->dev, RTL_NI_QM_SLOT_HASH_SIZE,
+				    sizeof(*qm->rx_slots), GFP_KERNEL);
 	qm->ring = dmam_alloc_coherent(ni->dev, RTL_NI_QM_RING_SIZE * RTL_NI_QM_VOQS,
 				       &qm->ring_dma, GFP_KERNEL);
 	qm->dq = dmam_alloc_coherent(ni->dev, RTL_NI_DQ_SIZE, &qm->dq_dma,
 				     GFP_KERNEL);
-	if (!qm->ring || !qm->dq) {
+	if (!qm->rx_slots || !qm->ring || !qm->dq) {
 		rtl_ni_qm_free(ni);
 		return -ENOMEM;
 	}
@@ -695,12 +799,12 @@ void rtl_ni_qm_free(struct rtl9617c_ni *ni)
 {
 	struct rtl_ni_qm *qm = &ni->qm;
 
+	rtl_ni_qm_drain_slots(ni);
 	rtl_ni_qm_lan_dq_free(ni);
-	if (!qm->buf)
+	if (!qm->pool)
 		return;
-	dma_free_noncoherent(ni->dev, RTL_NI_QM_BUFS * RTL_NI_QM_BUF_SIZE, qm->buf,
-			     qm->buf_dma, DMA_FROM_DEVICE);
-	qm->buf = NULL;
+	page_pool_destroy(qm->pool);
+	qm->pool = NULL;
 }
 
 static int rtl_ni_qm_lan_dq_wait_pool(struct rtl9617c_ni *ni, unsigned int eq,
@@ -767,7 +871,7 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 	if (ret)
 		return ret;
 
-	memset(&qm->refill, 0, sizeof(qm->refill));
+	rtl_ni_qm_drain_slots(ni);
 	rtl_ni_rmw(ni, RTL_QM_RMU0_CTRL, RTL_QM_RMU0_RX_EN, 0);
 	rtl_ni_rmw(ni, RTL_QM_ES_CTRL, RTL_QM_ES_TX_EN, 0);
 	rtl_ni_write(ni, RTL_QM_EPP64_P3_0_INT_EN, 0);
@@ -781,9 +885,6 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 	rtl_ni_read(ni, RTL_QM_CPUEPP_FIFO_RDPTR(0));
 	rtl_ni_qm_axi_reorder(ni);
 	memset(qm->ring, 0, RTL_NI_QM_RING_SIZE * RTL_NI_QM_VOQS);
-	dma_sync_single_for_device(ni->dev, qm->buf_dma,
-				   RTL_NI_QM_BUFS * RTL_NI_QM_BUF_SIZE,
-				   DMA_FROM_DEVICE);
 	if (qm->lan_dq_bufs)
 		dma_sync_single_for_device(ni->dev, qm->lan_dq_dma,
 					   qm->lan_dq_size, DMA_BIDIRECTIONAL);
@@ -859,15 +960,36 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 			     qm->ring_dma + i * RTL_NI_QM_RING_SIZE);
 	}
 	for (i = 0; i < RTL_NI_QM_BUFS; i++) {
-		ret = rtl_ni_qm_push(ni, qm->buf_dma + i * RTL_NI_QM_BUF_SIZE,
+		struct page *page;
+		dma_addr_t dma;
+		u32 dma32;
+
+		page = page_pool_dev_alloc_pages(qm->pool);
+		if (!page) {
+			ret = -ENOMEM;
+			goto err_drain;
+		}
+		dma = page_pool_get_dma_addr(page);
+		if (upper_32_bits(dma) || (dma & ~QM_CMD_ADDR)) {
+			page_pool_put_full_page(qm->pool, page, false);
+			ret = -EFAULT;
+			goto err_drain;
+		}
+		dma32 = lower_32_bits(dma);
+		ret = rtl_ni_qm_slot_insert(qm->rx_slots, dma32, page);
+		if (ret) {
+			page_pool_put_full_page(qm->pool, page, false);
+			goto err_drain;
+		}
+		ret = rtl_ni_qm_push(ni, dma32,
 				     RTL_NI_QM_EQ + i / RTL_NI_QM_EQ_BUFS);
 		if (ret)
-			return ret;
+			goto err_drain;
 	}
 
 	ret = rtl_ni_qm_cpu_credits(ni);
 	if (ret)
-		return ret;
+		goto err_drain;
 	rtl_ni_write(ni, RTL_QM_SCH_CFG(0), RTL_QM_SCH_VOQ_EN);
 	rtl_ni_rmw(ni, RTL_NI_GLB_INTERNAL_PORT_ID_CFG,
 		   RTL_NI_GLB_L3QMRX_DEMUX_SEL, 0);
@@ -878,11 +1000,11 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 			continue;
 		ret = rtl_ni_qm_ingress(ni, i);
 		if (ret)
-			return ret;
+			goto err_drain;
 	}
 	ret = rtl_ni_qm_pon_map(ni);
 	if (ret)
-		return ret;
+		goto err_drain;
 
 	for (i = 0; i < L2TE_CB_FREECNT_ENTRIES; i++) {
 		rtl_ni_write(ni, RTL_L2TE_CB_PORT_FREECNT_DATA,
@@ -890,7 +1012,7 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 		ret = rtl_ni_qm_table_write(ni,
 					    RTL_L2TE_CB_PORT_FREECNT_ACCESS, i);
 		if (ret)
-			return ret;
+			goto err_drain;
 	}
 
 	rtl_ni_rmw(ni, RTL_L2TM_ES_CTRL, 0, BIT(8) | BIT(9));
@@ -907,6 +1029,10 @@ int rtl_ni_qm_start(struct rtl9617c_ni *ni)
 	rtl_ni_rmw(ni, RTL_QM_RMU0_CTRL, 0, RTL_QM_RMU0_RX_EN);
 	qm->ready = true;
 	return 0;
+
+err_drain:
+	rtl_ni_qm_drain_slots(ni);
+	return ret;
 }
 
 void rtl_ni_qm_stop(struct rtl9617c_ni *ni)
@@ -960,13 +1086,8 @@ static void rtl_ni_qm_retire(struct rtl9617c_ni *ni, unsigned int voq, u32 cmd,
 	qm->read[voq] = (qm->read[voq] + RTL_NI_QM_CMD_SIZE) & QM_RING_ADDR_MASK;
 	mb();
 	rtl_ni_write(ni, RTL_QM_CPUEPP_FIFO_RDPTR(voq), qm->read[voq]);
-	if (refill) {
-		u32 offset = (cmd & QM_CMD_ADDR) - lower_32_bits(qm->buf_dma);
-
-		dma_sync_single_for_device(ni->dev, qm->buf_dma + offset,
-					   RTL_NI_QM_BUF_SIZE, DMA_FROM_DEVICE);
+	if (refill)
 		rtl_ni_qm_refill_add(&qm->refill, cmd);
-	}
 }
 
 static void rtl_ni_qm_deliver(struct rtl9617c_ni *ni, struct napi_struct *napi,
@@ -1015,7 +1136,9 @@ int rtl_ni_qm_poll(struct rtl9617c_ni *ni, struct napi_struct *napi, int budget)
 {
 	struct rtl_ni_qm *qm = &ni->qm;
 	bool csum = rtl_ni_read(ni, RTL_FE_CAM_DATA_AUX) & RTL_FE_CAM_AUX_L4_CSUM;
+	bool zc_en = READ_ONCE(rtl_ni_rx_zerocopy);
 	int voq, count = 0;
+	unsigned int zc_pkts = 0, cb_pkts = 0, fb_pkts = 0;
 
 	rtl_ni_qm_refill_drain(ni, NAPI_POLL_WEIGHT);
 
@@ -1028,10 +1151,12 @@ int rtl_ni_qm_poll(struct rtl9617c_ni *ni, struct napi_struct *napi, int budget)
 
 		while ((qm->read[voq] != wr || full) && count < budget) {
 			void *entry = qm->ring + voq * RTL_NI_QM_RING_SIZE + qm->read[voq];
-			unsigned int eq, len, hdr;
+			unsigned int eq, len, hdr, sync_len;
+			struct page *page, *new_page = NULL;
 			struct sk_buff *skb;
-			u32 cmd, offset, h0, h1;
-			void *data;
+			u32 cmd, dma, h0, h1;
+			int slot_idx;
+			void *va, *data;
 
 			full = false;
 			dma_rmb();
@@ -1042,17 +1167,21 @@ int rtl_ni_qm_poll(struct rtl9617c_ni *ni, struct napi_struct *napi, int budget)
 				break;
 
 			count++;
-			offset = (cmd & QM_CMD_ADDR) - lower_32_bits(qm->buf_dma);
-			if (offset >= RTL_NI_QM_BUFS * RTL_NI_QM_BUF_SIZE ||
+			dma = cmd & QM_CMD_ADDR;
+			slot_idx = rtl_ni_qm_slot_lookup(qm->rx_slots, dma);
+			if (slot_idx < 0 ||
 			    (eq != RTL_NI_QM_EQ && eq != RTL_NI_QM_EQ + 1)) {
 				atomic_long_inc(&ni->rx_errors);
 				rtl_ni_qm_retire(ni, voq, cmd, false);
 				continue;
 			}
 
-			dma_sync_single_for_cpu(ni->dev, qm->buf_dma + offset,
-						RTL_NI_QM_BUF_SIZE, DMA_FROM_DEVICE);
-			data = qm->buf + offset + RTL_NI_QM_HEADROOM;
+			page = qm->rx_slots[slot_idx].page;
+			va = page_address(page);
+			dma_sync_single_for_cpu(ni->dev,
+						(dma_addr_t)dma + RTL_NI_QM_HEADROOM,
+						64, DMA_FROM_DEVICE);
+			data = va + RTL_NI_QM_HEADROOM;
 			h0 = get_unaligned_be32(data);
 			h1 = get_unaligned_be32(data + 4);
 			hdr = (h0 & QM_HDR_EXT) ? 16 : 8;
@@ -1062,21 +1191,91 @@ int rtl_ni_qm_poll(struct rtl9617c_ni *ni, struct napi_struct *napi, int budget)
 			if ((cmd & QM_CMD_VALID) != QM_CMD_VALID || len < ETH_HLEN ||
 			    len > RTL_NI_QM_DATA_SIZE - hdr) {
 				atomic_long_inc(&ni->rx_errors);
+				dma_sync_single_for_device(ni->dev,
+							   (dma_addr_t)dma + RTL_NI_QM_HEADROOM,
+							   64, DMA_FROM_DEVICE);
 				rtl_ni_qm_retire(ni, voq, cmd, true);
 				continue;
 			}
 
-			skb = napi_alloc_skb(napi, len);
-			if (!skb) {
-				atomic_long_inc(&ni->rx_dropped);
-				rtl_ni_qm_retire(ni, voq, cmd, true);
-				continue;
+			sync_len = max(64U, hdr + len);
+			if (hdr + len > 64)
+				dma_sync_single_for_cpu(ni->dev,
+							(dma_addr_t)dma + RTL_NI_QM_HEADROOM + 64,
+							hdr + len - 64,
+							DMA_FROM_DEVICE);
+
+			if (zc_en && len > RTL_NI_RX_COPYBREAK) {
+				dma_addr_t new_dma = 0;
+
+				new_page = page_pool_dev_alloc_pages(qm->pool);
+				if (likely(new_page)) {
+					new_dma = page_pool_get_dma_addr(new_page);
+					if (unlikely(upper_32_bits(new_dma) ||
+						     (new_dma & ~QM_CMD_ADDR))) {
+						page_pool_put_full_page(qm->pool,
+									new_page,
+									true);
+						new_page = NULL;
+					}
+				}
+				if (likely(new_page)) {
+					skb = napi_build_skb(va, RTL_NI_QM_BUF_SIZE);
+					if (likely(skb)) {
+						u32 new_cmd;
+
+						skb_mark_for_recycle(skb);
+						skb_reserve(skb, RTL_NI_QM_HEADROOM + hdr);
+						skb_put(skb, len);
+						rtl_ni_qm_slot_remove_at(qm->rx_slots,
+									 slot_idx);
+						WARN_ON_ONCE(rtl_ni_qm_slot_insert(
+							qm->rx_slots,
+							lower_32_bits(new_dma),
+							new_page));
+						new_cmd = (lower_32_bits(new_dma) &
+							   QM_CMD_ADDR) |
+							  FIELD_PREP(QM_CMD_EQ, eq);
+						rtl_ni_qm_retire(ni, voq, new_cmd, true);
+						zc_pkts++;
+						rtl_ni_qm_deliver(ni, napi, skb, cmd,
+								  h0, h1, csum);
+						continue;
+					}
+					page_pool_put_full_page(qm->pool, new_page, true);
+					atomic_long_inc(&ni->rx_dropped);
+					dma_sync_single_for_device(ni->dev,
+								   (dma_addr_t)dma + RTL_NI_QM_HEADROOM,
+								   sync_len,
+								   DMA_FROM_DEVICE);
+					rtl_ni_qm_retire(ni, voq, cmd, true);
+					continue;
+				}
+				fb_pkts++;
 			}
-			skb_put_data(skb, data + hdr, len);
+
+			skb = napi_alloc_skb(napi, len);
+			if (likely(skb)) {
+				skb_put_data(skb, data + hdr, len);
+				cb_pkts++;
+			} else {
+				atomic_long_inc(&ni->rx_dropped);
+			}
+			dma_sync_single_for_device(ni->dev,
+						   (dma_addr_t)dma + RTL_NI_QM_HEADROOM,
+						   sync_len, DMA_FROM_DEVICE);
 			rtl_ni_qm_retire(ni, voq, cmd, true);
-			rtl_ni_qm_deliver(ni, napi, skb, cmd, h0, h1, csum);
+			if (likely(skb))
+				rtl_ni_qm_deliver(ni, napi, skb, cmd, h0, h1, csum);
 		}
 	}
+
+	if (zc_pkts)
+		atomic_long_add(zc_pkts, &ni->rx_zerocopy_pkts);
+	if (cb_pkts)
+		atomic_long_add(cb_pkts, &ni->rx_copybreak_pkts);
+	if (fb_pkts)
+		atomic_long_add(fb_pkts, &ni->rx_alloc_fallback);
 
 	rtl_ni_qm_refill_drain(ni, NAPI_POLL_WEIGHT);
 	return count;

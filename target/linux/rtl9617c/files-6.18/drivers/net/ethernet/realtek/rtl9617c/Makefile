@@ -5,9 +5,10 @@ ccflags-y += -I$(src)
 obj-$(CONFIG_RTL9617C_NI) += rtl9617c-ni.o
 rtl9617c-ni-y := ni/ni_main.o ni/ni_port.o ni/ni_dma.o ni/ni_qm.o \
 		 ni/ni_mib.o ni/ni_api.o ni/ni_ptp.o \
-		 ni/ni_qos.o ni/ni_l2fe.o
+		 ni/ni_qos.o ni/ni_l2fe.o ni/ni_te_flow.o
 rtl9617c-ni-$(CONFIG_RTL9617C_FE) += fe/fe_main.o fe/fe_hw.o fe/fe_itu.o \
-				     fe/fe_bridge.o
+				     fe/fe_bridge.o fe/fe_mcast.o \
+				     fe/fe_napt6.o fe/fe_tunnel.o
 
 obj-$(CONFIG_RTL9617C_BOSA) += rtl9617c-bosa.o
 rtl9617c-bosa-y := bosa/bosa.o

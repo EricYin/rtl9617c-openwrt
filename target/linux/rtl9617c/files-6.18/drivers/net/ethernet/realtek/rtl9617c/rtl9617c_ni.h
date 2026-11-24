@@ -47,6 +47,10 @@ int rtl9617c_ni_mib_read(struct device *dev, unsigned int port,
 int rtl9617c_ni_fe_add_port(struct device *dev, struct net_device *netdev,
 			    unsigned int llid);
 void rtl9617c_ni_fe_remove_port(struct device *dev, struct net_device *netdev);
+struct tc_ets_qopt_offload;
+
+int rtl9617c_ni_ets_to_weights(const struct tc_ets_qopt_offload *qopt,
+			       u8 weights[8]);
 int rtl9617c_ni_fe_setup_tc(struct device *dev, struct net_device *netdev,
 			    enum tc_setup_type type, void *data);
 int rtl9617c_ni_fe_attach(struct device *dev);

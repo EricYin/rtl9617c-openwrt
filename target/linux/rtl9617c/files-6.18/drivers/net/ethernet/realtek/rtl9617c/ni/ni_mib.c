@@ -28,6 +28,7 @@ static const char rtl_ni_mib_names[RTL9617C_NI_MIB_COUNTERS][ETH_GSTRING_LEN] = 
 
 static const char rtl_ni_extra_names[][ETH_GSTRING_LEN] = {
 	"ni_rx_errors", "ni_rx_dropped",
+	"ni_rx_zerocopy", "ni_rx_copybreak", "ni_rx_alloc_fallback",
 };
 
 static bool rtl_ni_mib_skip(unsigned int dir, unsigned int index)
@@ -479,4 +480,7 @@ void rtl_ni_get_ethtool_stats(struct net_device *dev,
 	}
 	data[count] = atomic_long_read(&ni->rx_errors);
 	data[count + 1] = atomic_long_read(&ni->rx_dropped);
+	data[count + 2] = atomic_long_read(&ni->rx_zerocopy_pkts);
+	data[count + 3] = atomic_long_read(&ni->rx_copybreak_pkts);
+	data[count + 4] = atomic_long_read(&ni->rx_alloc_fallback);
 }

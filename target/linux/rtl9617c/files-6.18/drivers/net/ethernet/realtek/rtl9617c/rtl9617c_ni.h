@@ -8,6 +8,8 @@
 #define RTL9617C_NI_MIB_RX		26
 #define RTL9617C_NI_MIB_TX		26
 #define RTL9617C_NI_MIB_COUNTERS	(RTL9617C_NI_MIB_RX + RTL9617C_NI_MIB_TX)
+#define RTL9617C_NI_TX_OFFLOAD_FEATURES	(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | \
+					 NETIF_F_SG | NETIF_F_TSO | NETIF_F_TSO6)
 
 struct rtl_itu_paths;
 
@@ -17,6 +19,7 @@ struct rtl9617c_ni_endpoint {
 			struct napi_struct *napi, struct sk_buff *skb,
 			unsigned int source);
 	void (*wake)(struct rtl9617c_ni_endpoint *endpoint);
+	void (*update_features)(struct rtl9617c_ni_endpoint *endpoint);
 };
 
 struct rtl9617c_ni_frame {
@@ -58,5 +61,7 @@ int rtl9617c_ni_fe_detach(struct device *dev);
 ssize_t rtl9617c_ni_fe_state(struct device *dev, char *buffer);
 int rtl9617c_ni_itu_paths(struct device *dev, struct net_device *netdev,
 			  const struct rtl_itu_paths *paths);
+netdev_features_t rtl9617c_ni_tx_offload_features(void);
+unsigned int rtl9617c_ni_tx_gso_max(void);
 
 #endif

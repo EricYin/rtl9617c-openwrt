@@ -146,7 +146,6 @@ static int taurus_vsfc_init(struct realtek_vsfc *vsfc)
 static int taurus_vsfc_probe(struct platform_device *pdev)
 {
 	struct realtek_vsfc *vsfc;
-	struct resource *res;
 	int ret;
 	u32 value;
 
@@ -156,8 +155,7 @@ static int taurus_vsfc_probe(struct platform_device *pdev)
 
 	vsfc->pdev = pdev;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	vsfc->regs = devm_ioremap(&pdev->dev, res->start, resource_size(res));
+	vsfc->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(vsfc->regs))
 		return PTR_ERR(vsfc->regs);
 

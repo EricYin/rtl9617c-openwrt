@@ -152,7 +152,12 @@ struct dentry;
 #define L3TE_WRED_SEL_F6_W1_MASK	0x7u
 #define L3TE_WRED_SEL_F7_W1_SHIFT	3
 
-/* section 4.4 PIE/WRED per port (engine instance) enable, whole word write */
+/*
+ * section 4.4 PIE/WRED per-engine enable words (4 PIE/WRED instances 0..3,
+ * distinct from the 8 L3TE egress ports / 64 VOQs).  Global WRED is enabled in
+ * L3TE_TE_GLB_CTRL; these registers are written whole-word because OEM AAL
+ * writes the raw 32-bit value directly without per-bit field definitions.
+ */
 #define L3TE_PIE_WRED_PORTS		4u
 #define L3TE_PIE_WRED_PORT_EN(p)	(0x9080u + 4u * (p))
 

@@ -148,6 +148,7 @@ void rtl_mpcp_refresh(struct rtl9617c_pon *pon);
 void rtl_oam_netlink_receive(struct sk_buff *skb);
 void rtl_oam_receive(struct rtl9617c_ni_endpoint *endpoint, struct napi_struct *napi, struct sk_buff *skb, unsigned int source);
 void rtl_oam_wake(struct rtl9617c_ni_endpoint *endpoint);
+void rtl_oam_update_features(struct rtl9617c_ni_endpoint *endpoint);
 int rtl_oam_open(struct net_device *dev);
 int rtl_oam_stop(struct net_device *dev);
 extern const struct net_device_ops rtl_oam_ops;

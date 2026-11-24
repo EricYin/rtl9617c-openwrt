@@ -64,6 +64,10 @@
 			opp-hz = /bits/ 64 <400000000>;
 			clock-latency-ns = <20000000>;
 		};
+		opp-600000000 {
+			opp-hz = /bits/ 64 <600000000>;
+			clock-latency-ns = <20000000>;
+		};
 		opp-625000000 {
 			opp-hz = /bits/ 64 <625000000>;
 			clock-latency-ns = <20000000>;
@@ -1182,7 +1186,10 @@
 			      <4 0xf4320098 0 0x4>,
 			      <4 0xf432f000 0 0x1000>;
 			reg-names = "ni", "dma", "qm-axi", "reset", "fe-axi";
-			interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;
+			interrupts = <GIC_SPI TAURUS_IRQ_GLB_QM_CPU_FIFO0_REQ IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI TAURUS_IRQ_GLB_QM_CPU_FIFO1_REQ IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI TAURUS_IRQ_GLB_QM_CPU_FIFO2_REQ IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI TAURUS_IRQ_GLB_QM_CPU_FIFO3_REQ IRQ_TYPE_LEVEL_HIGH>;
 			status = "disabled";
 
 			ethernet-ports {

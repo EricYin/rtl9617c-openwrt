@@ -2300,8 +2300,10 @@ static int te_cmd_pie(struct rtl_te_flow *te, char **tok, unsigned int ntok)
 	if (port >= L3TE_PIE_WRED_PORTS)
 		return -EINVAL;
 
-	/* section 4.4: the vendor writes the whole 32 bit word; bit meanings are
-	 * still unknown, so the raw value is what an operator supplies.
+	/* section 4.4: 4 PIE/WRED engine instances (0..3, separate from the
+	 * 8 L3TE ports / 64 VOQs); the OEM AAL writes the whole 32-bit word
+	 * directly and per-bit field masks are undocumented, so pass through
+	 * the operator-supplied value verbatim.
 	 */
 	spin_lock_irqsave(&te->lock, flags);
 	te_write(te, L3TE_PIE_WRED_PORT_EN(port), value);

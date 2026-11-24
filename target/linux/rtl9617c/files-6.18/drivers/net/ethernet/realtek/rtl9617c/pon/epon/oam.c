@@ -265,6 +265,28 @@ void rtl_oam_wake(struct rtl9617c_ni_endpoint *endpoint)
 	}
 }
 
+void rtl_oam_update_features(struct rtl9617c_ni_endpoint *endpoint)
+{
+	struct rtl9617c_pon *pon = container_of(endpoint, struct rtl9617c_pon, oam_endpoint);
+	netdev_features_t wanted = rtl9617c_ni_tx_offload_features();
+	unsigned int gso_max = rtl9617c_ni_tx_gso_max();
+	unsigned int i;
+
+	ASSERT_RTNL();
+	for (i = 0; i < 32; i++) {
+		struct net_device *dev = rtnl_dereference(pon->data_devices[i]);
+
+		if (!dev)
+			continue;
+		netif_set_tso_max_size(dev, gso_max);
+		netif_set_tso_max_segs(dev, MAX_SKB_FRAGS + 1);
+		dev->wanted_features =
+			(dev->wanted_features & ~RTL9617C_NI_TX_OFFLOAD_FEATURES) |
+			wanted;
+		netdev_update_features(dev);
+	}
+}
+
 void rtl_pon_oam_carrier(struct rtl9617c_pon *pon)
 {
 	u32 status = readl(pon->mac + RTL_EPON_0010);

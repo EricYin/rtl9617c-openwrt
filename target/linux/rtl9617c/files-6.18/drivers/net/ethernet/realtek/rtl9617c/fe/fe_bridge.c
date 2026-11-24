@@ -337,8 +337,8 @@ static bool rtl_fe_bridge_known(struct rtl_fe *fe, const struct rtl_fe_rule *dat
 {
 	struct rtl_fe_flow *flow;
 
-	list_for_each_entry(flow, &fe->flows, list) {
-		if (flow->learned && flow->input == data->input &&
+	list_for_each_entry(flow, &fe->bridge_flows, bridge_list) {
+		if (flow->input == data->input &&
 		    flow->output == data->output &&
 		    flow->ethernet_protocol == packet->input.protocol &&
 		    flow->ingress_session == packet->input.session &&
@@ -454,6 +454,7 @@ static int rtl_fe_bridge_learn(struct rtl_fe_bridge *bridge,
 	flow->bridge_tags = in->tags;
 	flow->bridge_ppp_protocol = in->ppp_protocol;
 	memcpy(flow->bridge_tag, in->tag, sizeof(flow->bridge_tag));
+	list_add_tail(&flow->bridge_list, &fe->bridge_flows);
 	return 0;
 }
 
@@ -501,9 +502,7 @@ static void rtl_fe_bridge_work(struct work_struct *work)
 
 	rtnl_lock();
 	mutex_lock(&fe->lock);
-	list_for_each_entry_safe(flow, next, &fe->flows, list) {
-		if (!flow->learned)
-			continue;
+	list_for_each_entry_safe(flow, next, &fe->bridge_flows, bridge_list) {
 		if (flow->deleting || flow->input->retired || flow->output->retired)
 			rtl_fe_delete(fe, flow);
 		else
@@ -526,8 +525,8 @@ static void rtl_fe_bridge_work(struct work_struct *work)
 		put_net(packet.net);
 	}
 
-	list_for_each_entry(flow, &fe->flows, list) {
-		if (flow->learned && flow->published) {
+	list_for_each_entry(flow, &fe->bridge_flows, bridge_list) {
+		if (flow->published) {
 			active = true;
 			break;
 		}

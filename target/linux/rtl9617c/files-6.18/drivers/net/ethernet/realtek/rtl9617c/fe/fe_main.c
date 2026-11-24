@@ -11,6 +11,7 @@
 #include <linux/ipv6.h>
 #include <linux/kstrtox.h>
 #include <linux/ppp_defs.h>
+#include <linux/rcupdate.h>
 #include <linux/rhashtable.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -651,40 +652,49 @@ static int rtl_fe_destination_get(struct rtl_fe *fe, struct rtl_fe_flow *flow,
 				  const u8 *address)
 {
 	u32 words[RTL_FE_FDB_WORDS], result;
-	struct rtl_fe_flow *other;
+	struct rtl_fe_dest_mac *dm;
 	int ret;
 
 	ether_addr_copy(flow->destination, address);
-	list_for_each_entry(other, &fe->flows, list) {
-		if (other == flow || !other->destination_owned ||
-		    !ether_addr_equal(other->destination, address))
+	list_for_each_entry(dm, &fe->dest_macs, list) {
+		if (!ether_addr_equal(dm->address, address))
 			continue;
-		flow->destination_index = other->destination_index;
-		memcpy(flow->destination_saved, other->destination_saved,
-		       sizeof(flow->destination_saved));
-		flow->destination_created = other->destination_created;
-		flow->destination_owned = true;
+		if (!dm->ready)
+			return -EAGAIN;
+		dm->users++;
+		flow->dest_mac = dm;
+		flow->destination_index = dm->index;
 		return 0;
 	}
+
+	dm = kzalloc(sizeof(*dm), GFP_KERNEL);
+	if (!dm)
+		return -ENOMEM;
+	ether_addr_copy(dm->address, address);
 
 	rtl_fe_fdb_key(words, address);
 	ret = rtl_fe_fdb_command(fe, FE_FDB_LOOKUP, words, &result);
 	if (ret)
-		return ret;
-	flow->destination_created = (result & 15) != FE_FDB_FOUND;
-	if (!flow->destination_created)
-		memcpy(flow->destination_saved, words, sizeof(words));
+		goto err_free;
+	dm->created = (result & 15) != FE_FDB_FOUND;
+	if (!dm->created)
+		memcpy(dm->saved, words, sizeof(words));
 
-	if (flow->destination_created)
+	if (dm->created)
 		rtl_fe_fdb_key(words, address);
 	else
 		words[0] |= FE_FDB_STATIC;
 	ret = rtl_fe_fdb_command(fe, FE_FDB_ADD, words, &result);
 	if (ret)
-		return ret;
-	if ((result & 15) != FE_FDB_FOUND)
-		return -ENOSPC;
-	flow->destination_owned = true;
+		goto err_free;
+	if ((result & 15) != FE_FDB_FOUND) {
+		ret = -ENOSPC;
+		goto err_free;
+	}
+
+	dm->users = 1;
+	list_add_tail(&dm->list, &fe->dest_macs);
+	flow->dest_mac = dm;
 
 	rtl_fe_fdb_key(words, address);
 	ret = rtl_fe_fdb_command(fe, FE_FDB_LOOKUP, words, &result);
@@ -692,26 +702,44 @@ static int rtl_fe_destination_get(struct rtl_fe *fe, struct rtl_fe_flow *flow,
 		return ret;
 	if ((result & 15) != FE_FDB_FOUND)
 		return -EIO;
-	flow->destination_index = FIELD_GET(FE_FDB_INDEX, result);
+	dm->index = FIELD_GET(FE_FDB_INDEX, result);
+	dm->ready = true;
+	flow->destination_index = dm->index;
 	return 0;
+
+err_free:
+	kfree(dm);
+	return ret;
 }
 
 static int rtl_fe_destination_put(struct rtl_fe *fe, struct rtl_fe_flow *flow)
 {
+	struct rtl_fe_dest_mac *dm = flow->dest_mac;
 	u32 words[RTL_FE_FDB_WORDS], result;
-	struct rtl_fe_flow *other;
+	int ret;
 
-	list_for_each_entry(other, &fe->flows, list)
-		if (other != flow && other->destination_owned &&
-		    ether_addr_equal(other->destination, flow->destination))
-			return 0;
-
-	if (flow->destination_created) {
-		rtl_fe_fdb_key(words, flow->destination);
-		return rtl_fe_fdb_command(fe, FE_FDB_DELETE, words, &result);
+	if (!dm)
+		return 0;
+	if (dm->users > 1) {
+		dm->users--;
+		flow->dest_mac = NULL;
+		return 0;
 	}
-	memcpy(words, flow->destination_saved, sizeof(words));
-	return rtl_fe_fdb_command(fe, FE_FDB_ADD, words, &result);
+
+	if (dm->created) {
+		rtl_fe_fdb_key(words, dm->address);
+		ret = rtl_fe_fdb_command(fe, FE_FDB_DELETE, words, &result);
+	} else {
+		memcpy(words, dm->saved, sizeof(words));
+		ret = rtl_fe_fdb_command(fe, FE_FDB_ADD, words, &result);
+	}
+	if (ret)
+		return ret;
+
+	list_del(&dm->list);
+	kfree(dm);
+	flow->dest_mac = NULL;
+	return 0;
 }
 
 int rtl_fe_vlan_tpid(__be16 protocol)
@@ -1697,11 +1725,10 @@ int rtl_fe_delete(struct rtl_fe *fe, struct rtl_fe_flow *flow)
 		if (ret)
 			goto retry;
 	}
-	if (flow->destination_owned) {
+	if (flow->dest_mac) {
 		ret = rtl_fe_destination_put(fe, flow);
 		if (ret)
 			goto retry;
-		flow->destination_owned = false;
 	}
 	if (flow->source_owned) {
 		ret = rtl_fe_smac_put(fe, flow->source_mac);
@@ -1732,13 +1759,17 @@ int rtl_fe_delete(struct rtl_fe *fe, struct rtl_fe_flow *flow)
 		rtl_fe_bridge_flow_removed(fe);
 	if (flow->hashed)
 		rhashtable_remove_fast(&fe->cookies, &flow->node, rtl_fe_flow_params);
+	list_del_init(&flow->retry);
+	list_del_init(&flow->bridge_list);
 	list_del(&flow->list);
 	if (flow->installed)
 		fe->deletes++;
-	kfree(flow);
+	kfree_rcu(flow, rcu);
 	return 0;
 
 retry:
+	if (list_empty(&flow->retry))
+		list_add_tail(&flow->retry, &fe->retries);
 	mod_delayed_work(system_wq, &fe->cleanup_work, HZ);
 	return ret;
 }
@@ -1750,9 +1781,8 @@ static void rtl_fe_cleanup_work(struct work_struct *work)
 	struct rtl_fe_flow *flow, *next;
 
 	mutex_lock(&fe->lock);
-	list_for_each_entry_safe(flow, next, &fe->flows, list)
-		if (flow->deleting)
-			rtl_fe_delete(fe, flow);
+	list_for_each_entry_safe(flow, next, &fe->retries, retry)
+		rtl_fe_delete(fe, flow);
 	rtl_fe_collect_ports(fe);
 	mutex_unlock(&fe->lock);
 }
@@ -2124,6 +2154,8 @@ int rtl_fe_install(struct rtl_fe_port *port, struct rtl_fe_rule *data,
 	flow = kzalloc(sizeof(*flow), GFP_KERNEL);
 	if (!flow)
 		return -ENOMEM;
+	INIT_LIST_HEAD(&flow->retry);
+	INIT_LIST_HEAD(&flow->bridge_list);
 	flow->cookie = cookie ?: (unsigned long)flow;
 	flow->hash_index = index;
 	flow->crc16 = crc16;
@@ -2313,10 +2345,35 @@ static int rtl_fe_block_cb(enum tc_setup_type type, void *type_data, void *priv)
 	if (type != TC_SETUP_CLSFLOWER || cls->common.chain_index)
 		return -EOPNOTSUPP;
 
+	/* Filter non-matching ports before taking fe->lock: nf_flow_table
+	 * broadcasts every tuple command across all bound flowtable ports.
+	 */
+	if (cls->command == FLOW_CLS_REPLACE) {
+		struct flow_rule *rule = flow_cls_offload_flow_rule(cls);
+		struct flow_match_meta meta;
+
+		if (!flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_META))
+			return -EOPNOTSUPP;
+		flow_rule_match_meta(rule, &meta);
+		if (meta.key->ingress_ifindex != port->netdev->ifindex)
+			return -EOPNOTSUPP;
+	} else if (cls->command == FLOW_CLS_DESTROY ||
+		   cls->command == FLOW_CLS_STATS) {
+		bool owned;
+
+		rcu_read_lock();
+		flow = rhashtable_lookup(&fe->cookies, &cls->cookie,
+					 rtl_fe_flow_params);
+		owned = flow && READ_ONCE(flow->input) == port;
+		rcu_read_unlock();
+		if (!owned)
+			return -ENOENT;
+	} else {
+		return -EOPNOTSUPP;
+	}
+
 	mutex_lock(&fe->lock);
-	list_for_each_entry_safe(flow, next, &fe->flows, list) {
-		if (flow->installed && !flow->deleting)
-			continue;
+	list_for_each_entry_safe(flow, next, &fe->retries, retry) {
 		ret = rtl_fe_delete(fe, flow);
 		if (ret)
 			goto unlock;
@@ -3027,6 +3084,9 @@ struct rtl_fe *rtl_fe_create(struct device *dev, struct regmap *regs,
 	INIT_DELAYED_WORK(&fe->cleanup_work, rtl_fe_cleanup_work);
 	INIT_LIST_HEAD(&fe->ports);
 	INIT_LIST_HEAD(&fe->flows);
+	INIT_LIST_HEAD(&fe->retries);
+	INIT_LIST_HEAD(&fe->bridge_flows);
+	INIT_LIST_HEAD(&fe->dest_macs);
 	INIT_LIST_HEAD(&fe->blocks);
 
 	fe->saved = kcalloc(ARRAY_SIZE(rtl_fe_saved_regs), sizeof(*fe->saved),
@@ -3099,6 +3159,7 @@ free_fe:
 
 void rtl_fe_destroy(struct rtl_fe *fe)
 {
+	struct rtl_fe_dest_mac *dm, *dm_next;
 	struct rtl_fe_flow *flow, *flow_next;
 	struct rtl_fe_port *port, *next;
 
@@ -3126,10 +3187,17 @@ void rtl_fe_destroy(struct rtl_fe *fe)
 	rtl_fe_napt6_exit(fe);
 	cancel_delayed_work_sync(&fe->cleanup_work);
 	list_for_each_entry_safe(flow, flow_next, &fe->flows, list) {
+		list_del_init(&flow->retry);
+		list_del_init(&flow->bridge_list);
 		list_del(&flow->list);
 		kfree(flow);
 	}
+	list_for_each_entry_safe(dm, dm_next, &fe->dest_macs, list) {
+		list_del(&dm->list);
+		kfree(dm);
+	}
 	rhashtable_destroy(&fe->cookies);
+	rcu_barrier();
 	list_for_each_entry_safe(port, next, &fe->ports, list) {
 		list_del(&port->list);
 		kfree(port);

@@ -2588,12 +2588,20 @@ static int rtl_fe_enable_locked(struct rtl_fe *fe)
 			   RTL_NI_PORT_RX_CTRL_BYP_DPID,
 			   FIELD_PREP(RTL_NI_PORT_RX_CTRL_BYP_DPID, 25));
 	list_for_each_entry(port, &fe->ports, list) {
-		if (port->source != FE_SOURCE_P6)
+		if (port->retired)
 			continue;
-		rtl_fe_rmw(fe, RTL_NI_XGE_BYPASS_CFG, RTL_NI_XGE_BYPASS_FIELDS,
-			   (fe->xge_saved & RTL_NI_XGE_BYPASS_EN) |
-			   FIELD_PREP(RTL_NI_XGE_BYPASS_DPID, 25));
-		break;
+		if (port->source < FE_LAN_PORTS) {
+			rtl_fe_rmw(fe, RTL_NI_PORT_RX_CTRL(port->source),
+				   RTL_NI_PORT_RX_CTRL_BYP_EN |
+				   RTL_NI_PORT_RX_CTRL_BYP_DPID,
+				   RTL_NI_PORT_RX_CTRL_BYP_EN |
+				   FIELD_PREP(RTL_NI_PORT_RX_CTRL_BYP_DPID, 25));
+		} else if (port->source == FE_SOURCE_P6) {
+			rtl_fe_rmw(fe, RTL_NI_XGE_BYPASS_CFG,
+				   RTL_NI_XGE_BYPASS_FIELDS,
+				   RTL_NI_XGE_BYPASS_EN |
+				   FIELD_PREP(RTL_NI_XGE_BYPASS_DPID, 25));
+		}
 	}
 	WRITE_ONCE(fe->enabled, true);
 	return 0;

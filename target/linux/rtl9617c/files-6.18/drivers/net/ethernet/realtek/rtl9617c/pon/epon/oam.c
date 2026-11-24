@@ -15,8 +15,9 @@
 #include "pon/pon_debug.h"
 #include "pon/epon/epon.h"
 
-unsigned int rtl_data_queue;
-module_param_named(data_queue, rtl_data_queue, uint, 0644);
+int rtl_data_queue = -1;
+module_param_named(data_queue, rtl_data_queue, int, 0644);
+MODULE_PARM_DESC(data_queue, "EPON TX VoQ override (-1=skb->priority, 0..7=fixed)");
 
 struct rtl_oam_nl_frame {
 	u16 type;
@@ -133,7 +134,8 @@ netdev_tx_t rtl_oam_transmit(struct sk_buff *skb, struct net_device *dev)
 	 * fabric. The fixed, non-tunable encoding replaces the old trial matrix. */
 	struct rtl9617c_ni_frame frame = {
 		.header_high = RTL_NI_HEADER_HIGH_OAM,
-		.header_low = rtl9617c_ni_header_low(RTL_NI_HDR_OAM_LDPID, 0),
+		.header_low = rtl9617c_ni_header_low(RTL_NI_HDR_OAM_LDPID,
+						     RTL_NI_HDR_OAM_COS),
 		.prefix = prefix,
 		.prefix_length = RTL_OAM_PREFIX_BYTES,
 		.oam = true,
@@ -148,7 +150,7 @@ netdev_tx_t rtl_oam_transmit(struct sk_buff *skb, struct net_device *dev)
 		return NETDEV_TX_OK;
 	}
 	rtl_oam_prefix(prefix, llid);
-	pon_event(pon, PON_EV_OAM_TX, llid, skb->len, 0);
+	pon_event(pon, PON_EV_OAM_TX, llid, skb->len, RTL_NI_HDR_OAM_COS);
 	pon_dbg("oam tx: llid=%u len=%u\n", llid, skb->len);
 	return rtl9617c_ni_transmit(pon->ni_dev, dev, skb, &frame);
 }

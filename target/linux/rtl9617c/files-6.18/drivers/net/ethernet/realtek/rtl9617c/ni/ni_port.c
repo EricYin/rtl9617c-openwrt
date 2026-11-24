@@ -375,7 +375,7 @@ static netdev_tx_t rtl_ni_start_xmit(struct sk_buff *skb, struct net_device *dev
 	unsigned int egress = rtl_ni_is_ge(port->id) ? port->id : RTL_NI_PORT_P6;
 	const struct rtl9617c_ni_frame frame = {
 		.header_high = TX_HDR_HIGH,
-		.header_low = TX_HDR_LOW(egress),
+		.header_low = TX_HDR_LOW(egress) | (skb->priority & 7U),
 	};
 
 	/*

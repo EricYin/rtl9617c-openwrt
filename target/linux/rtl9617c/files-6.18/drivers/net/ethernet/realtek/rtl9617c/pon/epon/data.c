@@ -11,8 +11,22 @@
 #include "pon/epon/epon.h"
 #include "pon/pon_debug.h"
 
-extern unsigned int rtl_data_queue;
+extern int rtl_data_queue;
 
+static unsigned int rtl_epon_tx_queue(const struct sk_buff *skb,
+				      unsigned int queues)
+{
+	int forced = READ_ONCE(rtl_data_queue);
+	unsigned int cos;
+
+	if (forced >= 0)
+		return (unsigned int)forced & (queues - 1);
+
+	cos = skb->priority & RTL_NI_HDR_COS_MASK;
+	if (queues < RTL_EPON_QUEUES_LOW_LLID)
+		return cos >> 1;
+	return cos;
+}
 
 static netdev_tx_t rtl_data_transmit(struct sk_buff *skb, struct net_device *dev)
 {
@@ -20,7 +34,7 @@ static netdev_tx_t rtl_data_transmit(struct sk_buff *skb, struct net_device *dev
 	struct rtl9617c_pon *pon = port->pon;
 	unsigned int queues = READ_ONCE(pon->llid_count) > RTL_EPON_QUEUE_SPLIT_LLIDS ?
 			      RTL_EPON_QUEUES_HIGH_LLID : RTL_EPON_QUEUES_LOW_LLID;
-	unsigned int queue = rtl_data_queue & (queues - 1);
+	unsigned int queue = rtl_epon_tx_queue(skb, queues);
 	/* rtl9617c_ni_fe_add_port() registers this netdev as
 	 * (source 7, destination 32 + llid, id llid), so a frame for it must
 	 * carry ldpid = 32 + llid; putting the bare LLID there leaves the

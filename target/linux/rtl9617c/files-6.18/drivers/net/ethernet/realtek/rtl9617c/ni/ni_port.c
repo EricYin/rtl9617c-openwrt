@@ -348,12 +348,14 @@ static int rtl_ni_stop(struct net_device *dev)
 	struct rtl9617c_ni *ni = port->ni;
 
 	netif_tx_stop_all_queues(dev);
+	rtl_fe_flush_port(ni->fe, dev);
 	phylink_stop(port->phylink);
 	if (rtl_ni_is_ge(port->id)) {
+		if (ni->qm.lan_dq_bufs)
+			usleep_range(1000, 2000);
 		rtl_ni_rmw(ni, RTL_NI_PORT_RX(port->id), PORT_ENABLE, 0);
 		rtl_ni_rmw(ni, RTL_NI_PORT_TX(port->id), PORT_ENABLE, 0);
 	}
-	rtl_fe_flush_port(ni->fe, dev);
 	rtl_ni_engine_put(ni);
 	return 0;
 }

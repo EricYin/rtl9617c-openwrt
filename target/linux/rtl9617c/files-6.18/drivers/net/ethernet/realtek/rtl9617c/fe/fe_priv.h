@@ -283,6 +283,11 @@ static inline bool rtl_fe_has_bindings(struct rtl_fe *fe)
 	return READ_ONCE(fe->bindings);
 }
 
+static inline bool rtl_fe_is_lan_dest(unsigned int dest)
+{
+	return dest < FE_LAN_PORTS || dest == FE_SOURCE_P6;
+}
+
 static inline bool rtl_fe_use_deep_queue(const struct rtl_fe *fe,
 					 const struct rtl_fe_port *in,
 					 const struct rtl_fe_port *out)
@@ -290,7 +295,7 @@ static inline bool rtl_fe_use_deep_queue(const struct rtl_fe *fe,
 	if (out->destination >= FE_DEEPQ_DEST)
 		return true;
 	return fe->lan_deepq && in->source == FE_SOURCE_PON &&
-	       out->destination == FE_SOURCE_P6;
+	       rtl_fe_is_lan_dest(out->destination);
 }
 
 struct rtl_fe_port *rtl_fe_port_find(struct rtl_fe *fe, struct net_device *netdev);

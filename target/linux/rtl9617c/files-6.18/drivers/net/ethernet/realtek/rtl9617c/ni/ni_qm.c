@@ -123,7 +123,7 @@ int rtl_ni_qm_rss_apply(struct rtl9617c_ni *ni)
 #define QM_DQ_EQ_PRIVATE		1
 #define QM_DQ_EQ_SHARED			2
 #define QM_DQ_BID_BASE			512
-#define QM_LAN_DQ_PORT			(8 + RTL_NI_PORT_P6)
+#define QM_LAN_DQ_PORT(p)		(8 + (p))
 #define QM_LAN_DQ_EQ_PROFILE		0
 #define QM_LAN_DQ_CREDIT_PROFILE	2
 #define QM_LAN_DQ_VOQ_PROFILE		5
@@ -342,6 +342,7 @@ static int rtl_ni_qm_cpu_ingress(struct rtl9617c_ni *ni)
 
 	rtl_ni_rmw(ni, RTL_NI_GLB_NIRX_L3FE_DEMUX_CFG1, GENMASK(15, 0), 0);
 	rtl_ni_rmw(ni, RTL_NI_GLB_NIRX_L3FE_DPQ_DEMUX_CFG1, GENMASK(15, 0), 0);
+	rtl_ni_rmw(ni, RTL_NI_GLB_NIRX_L3FE_DPQ_DEMUX_CFG0, GENMASK(13, 0), 0);
 	rtl_ni_rmw(ni, RTL_L2FE_PLC_DPID_FWD_CTRL, 0,
 		   RTL_L2FE_PLC_VID_FFF_FWD | RTL_L2FE_PLC_UNKVLAN_FWD);
 	return 0;
@@ -448,13 +449,21 @@ static void rtl_ni_qm_eq_cfg(struct rtl9617c_ni *ni, unsigned int eq,
 	rtl_ni_write(ni, base, cfg0);
 }
 
+static bool rtl_ni_qm_is_lan_dq_port(const struct rtl9617c_ni *ni,
+				     unsigned int id)
+{
+	return id < RTL_NI_PORTS && ni->ports[id] &&
+	       (rtl_ni_is_ge(id) || id == RTL_NI_PORT_P6);
+}
+
 /**
- * rtl_ni_qm_lan_deepq - Initialize dedicated EQ0/EQ8 deep queue for 2.5G LAN1.
+ * rtl_ni_qm_lan_deepq - Initialize shared EQ0/EQ8 deep queue for all LAN ports.
  * @ni: Network interface state.
  *
- * High-rate 10G PON -> 2.5G XGE6 microbursts overflow L2TM's shared SRAM
- * buffer pool (~3651 cells). Offloading that flow onto L3QM port 14 backed
- * by private SRAM (EQ0) + reserved DDR (EQ8) absorbs bursts without tail drop.
+ * High-rate 10G PON -> LAN (1G GE and 2.5G) microbursts overflow L2TM's shared
+ * SRAM buffer pool (~3651 cells). Offloading PON -> LAN flows onto L3QM ports
+ * (8 + id) backed by private SRAM (EQ0) + reserved DDR (EQ8) absorbs bursts
+ * without tail drop.
  */
 static int rtl_ni_qm_lan_deepq(struct rtl9617c_ni *ni)
 {
@@ -463,9 +472,7 @@ static int rtl_ni_qm_lan_deepq(struct rtl9617c_ni *ni)
 	unsigned int low = count / 3;
 	unsigned int high = (count * 2) / 3;
 	unsigned int mid = count / 2;
-	unsigned int voq_start = QM_LAN_DQ_PORT * RTL_NI_QM_VOQS;
-	unsigned int shift = QM_LAN_DQ_PORT * 2;
-	unsigned int voq;
+	unsigned int id, voq;
 	int ret;
 
 	if (!count)
@@ -489,29 +496,12 @@ static int rtl_ni_qm_lan_deepq(struct rtl9617c_ni *ni)
 	rtl_ni_write(ni, RTL_QM_EQ_PROFILE(QM_LAN_DQ_EQ_PROFILE),
 		     FIELD_PREP(RTL_QM_EQ_PROF_EQP0, QM_LAN_DQ_EQ_PRIVATE) |
 		     FIELD_PREP(RTL_QM_EQ_PROF_EQP1, QM_LAN_DQ_EQ_SHARED));
-	rtl_ni_write(ni, RTL_QM_DEST_PORT_EQ_CFG(QM_LAN_DQ_PORT),
-		     QM_LAN_DQ_EQ_PROFILE);
-	rtl_ni_write(ni, RTL_QM_SCH_CFG(QM_LAN_DQ_PORT), RTL_QM_SCH_VOQ_EN);
-	rtl_ni_write(ni, RTL_QM_VOQ3_0_WEIGHT_RATIO_CFG(QM_LAN_DQ_PORT), 0);
-	rtl_ni_write(ni, RTL_QM_VOQ3_0_WEIGHT_RATIO_CFG(QM_LAN_DQ_PORT) + 4, 0);
 
 	rtl_ni_write(ni, RTL_TE_CB_PORT_THRSH_PROFILE(QM_LAN_DQ_CREDIT_PROFILE),
 		     FIELD_PREP(RTL_TE_CB_PORT_LTH, low) |
 		     FIELD_PREP(RTL_TE_CB_PORT_HTH, high));
 	rtl_ni_write(ni, RTL_TE_CB_PORT_GRPTHRSH_PROFILE(QM_LAN_DQ_CREDIT_PROFILE),
 		     QM_CPU_BURST_UNLIMITED);
-	rtl_ni_rmw(ni, RTL_TE_CB_PORT_THRSH_SELECT0, GENMASK(1, 0) << shift,
-		   QM_LAN_DQ_CREDIT_PROFILE << shift);
-
-	rtl_ni_write(ni, RTL_TE_CB_PORT_FREECNT_DATA,
-		     FIELD_PREP(RTL_TE_CB_FREECNT_CNT0, QM_LAN_DQ_SRAM_BUFS) |
-		     RTL_TE_CB_FREECNT_CNT0_MSB |
-		     FIELD_PREP(RTL_TE_CB_FREECNT_CNT1, count) |
-		     RTL_TE_CB_FREECNT_CNT1_MSB);
-	ret = rtl_ni_qm_table_write(ni, RTL_TE_CB_PORT_FREECNT_ACCESS,
-				    QM_LAN_DQ_PORT);
-	if (ret)
-		return ret;
 
 	rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_DATA2, 0);
 	rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_PROFILE_DATA1,
@@ -525,14 +515,45 @@ static int rtl_ni_qm_lan_deepq(struct rtl9617c_ni *ni)
 	if (ret)
 		return ret;
 
-	for (voq = voq_start; voq < voq_start + RTL_NI_QM_VOQS; voq++) {
-		rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_SELECT_DATA,
-			     QM_LAN_DQ_VOQ_PROFILE);
-		ret = rtl_ni_qm_table_write(ni,
-					    RTL_TE_CB_VOQ_THRSH_SELECT_ACCESS,
-					    voq);
+	for (id = 0; id < RTL_NI_PORTS; id++) {
+		unsigned int qm_port, voq_start, shift;
+
+		if (!rtl_ni_qm_is_lan_dq_port(ni, id))
+			continue;
+
+		qm_port = QM_LAN_DQ_PORT(id);
+		voq_start = qm_port * RTL_NI_QM_VOQS;
+		shift = qm_port * 2;
+
+		rtl_ni_write(ni, RTL_QM_DEST_PORT_EQ_CFG(qm_port),
+			     QM_LAN_DQ_EQ_PROFILE);
+		rtl_ni_write(ni, RTL_QM_SCH_CFG(qm_port), RTL_QM_SCH_VOQ_EN);
+		rtl_ni_write(ni, RTL_QM_VOQ3_0_WEIGHT_RATIO_CFG(qm_port), 0);
+		rtl_ni_write(ni, RTL_QM_VOQ3_0_WEIGHT_RATIO_CFG(qm_port) + 4, 0);
+
+		rtl_ni_rmw(ni, RTL_TE_CB_PORT_THRSH_SELECT0,
+			   GENMASK(1, 0) << shift,
+			   QM_LAN_DQ_CREDIT_PROFILE << shift);
+
+		rtl_ni_write(ni, RTL_TE_CB_PORT_FREECNT_DATA,
+			     FIELD_PREP(RTL_TE_CB_FREECNT_CNT0, QM_LAN_DQ_SRAM_BUFS) |
+			     RTL_TE_CB_FREECNT_CNT0_MSB |
+			     FIELD_PREP(RTL_TE_CB_FREECNT_CNT1, count) |
+			     RTL_TE_CB_FREECNT_CNT1_MSB);
+		ret = rtl_ni_qm_table_write(ni, RTL_TE_CB_PORT_FREECNT_ACCESS,
+					    qm_port);
 		if (ret)
 			return ret;
+
+		for (voq = voq_start; voq < voq_start + RTL_NI_QM_VOQS; voq++) {
+			rtl_ni_write(ni, RTL_TE_CB_VOQ_THRSH_SELECT_DATA,
+				     QM_LAN_DQ_VOQ_PROFILE);
+			ret = rtl_ni_qm_table_write(ni,
+						    RTL_TE_CB_VOQ_THRSH_SELECT_ACCESS,
+						    voq);
+			if (ret)
+				return ret;
+		}
 	}
 	return 0;
 }
@@ -697,7 +718,7 @@ static int rtl_ni_qm_cpu_credits(struct rtl9617c_ni *ni)
 }
 
 /**
- * rtl_ni_qm_lan_dq_alloc - Claim reserved DDR pool for XGE6 (LAN1) deep queue.
+ * rtl_ni_qm_lan_dq_alloc - Claim reserved DDR pool for LAN deep queues.
  * @ni: Network interface state.
  *
  * Looks up optional "memory-region" on the NI device-tree node. When absent,
@@ -951,13 +972,26 @@ static int rtl_ni_qm_lan_dq_wait_flush(struct rtl9617c_ni *ni)
 					  ni->qm.lan_dq_bufs);
 }
 
+static u32 rtl_ni_qm_lan_dq_demux_mask(const struct rtl9617c_ni *ni)
+{
+	unsigned int id;
+	u32 mask = 0;
+
+	for (id = 0; id < RTL_NI_PORTS; id++)
+		if (rtl_ni_qm_is_lan_dq_port(ni, id))
+			mask |= RTL_NI_L3QMRX_DEMUX_PORT(id);
+	return mask;
+}
+
 static void rtl_ni_qm_lan_dq_enable(struct rtl9617c_ni *ni, bool enable)
 {
+	u32 demux = rtl_ni_qm_lan_dq_demux_mask(ni);
+
 	rtl_ni_rmw(ni, RTL_NI_GLB_INTERNAL_PORT_ID_CFG,
 		   RTL_NI_GLB_L3QMRX_TO_LAN,
 		   enable ? RTL_NI_GLB_L3QMRX_TO_LAN : 0);
-	rtl_ni_rmw(ni, RTL_NI_L3QMRX_DEMUX_CFG0, RTL_NI_L3QMRX_DEMUX_P6,
-		   enable ? RTL_NI_L3QMRX_DEMUX_P6 : 0);
+	rtl_ni_rmw(ni, RTL_NI_L3QMRX_DEMUX_CFG0, demux,
+		   enable ? demux : 0);
 	rtl_ni_rmw(ni, RTL_QM_ES_CTRL2, RTL_QM_ES_CTRL2_LAN_EN,
 		   enable ? RTL_QM_ES_CTRL2_LAN_EN : 0);
 }

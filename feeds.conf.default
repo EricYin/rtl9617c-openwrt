@@ -4,6 +4,7 @@ src-git routing https://git.openwrt.org/feed/routing.git
 src-git telephony https://git.openwrt.org/feed/telephony.git
 src-git video https://github.com/openwrt/video.git
 src-git kenzok8 https://github.com/kenzok8/openwrt-packages.git^17d58810c2a827c51a97e5858d1b1e0559bae63d
+src-git rtl9617c https://github.com/crysister/rtl9617c-packages.git
 #src-git targets https://github.com/openwrt/targets.git
 #src-git oldpackages http://git.openwrt.org/packages.git
 #src-link custom /usr/src/openwrt/custom-feed

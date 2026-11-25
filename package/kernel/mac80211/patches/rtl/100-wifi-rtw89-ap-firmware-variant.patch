@@ -1,0 +1,1470 @@
+From: lyq1996 <lyq123233@163.com>
+Subject: [PATCH] wifi: rtw89: support access point firmware variants
+
+Add a chip variant flag for access point firmware (selected by the
+realtek,ap-firmware devicetree property), supporting per-RFE BB/RF/power
+table sets, AP PLE/HFC quota overrides, eFEM RX gain parsing, RFE GPIO
+routing, DFS radar detection widths for 20/40/80/160 MHz AP mode, SWSI
+write readback verification, and skipping client-only scan offload,
+PHY capability queries, and Bluetooth coexistence.
+
+Let mac80211 compute the BIP MIC in software, since the access point
+firmware has no management frame protection offload.
+
+Apply the devicetree ieee80211-freq-limit property, and drop the 6 GHz
+band when it leaves no usable 6 GHz channel, so that boards without a
+6 GHz front-end do not register the band.
+
+Signed-off-by: lyq1996 <lyq123233@163.com>
+---
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/cam.c
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/cam.c
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/cam.c
+@@ -515,6 +515,7 @@ int rtw89_cam_sec_key_add(struct rtw89_d
+ 		break;
+ 	case WLAN_CIPHER_SUITE_AES_CMAC:
+ 		hw_key_type = RTW89_SEC_KEY_TYPE_BIP_CCMP128;
++		key->flags |= IEEE80211_KEY_FLAG_GENERATE_MMIE;
+ 		break;
+ 	default:
+ 		return -EOPNOTSUPP;
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/core.c
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/core.c
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/core.c
+@@ -204,6 +204,23 @@ static const struct ieee80211_iface_comb
+ 	},
+ };
+ 
++static const struct ieee80211_iface_combination rtw89_iface_combs_ap[] = {
++	{
++		.limits = rtw89_iface_limits,
++		.n_limits = ARRAY_SIZE(rtw89_iface_limits),
++		.max_interfaces = RTW89_MAX_INTERFACE_NUM,
++		.num_different_channels = 1,
++		.radar_detect_widths = BIT(NL80211_CHAN_WIDTH_20_NOHT) |
++				       BIT(NL80211_CHAN_WIDTH_20) |
++				       BIT(NL80211_CHAN_WIDTH_40) |
++				       BIT(NL80211_CHAN_WIDTH_80) |
++				       BIT(NL80211_CHAN_WIDTH_160),
++		.radar_detect_regions = BIT(NL80211_DFS_FCC) |
++					BIT(NL80211_DFS_ETSI) |
++					BIT(NL80211_DFS_JP),
++	},
++};
++
+ static const u8 rtw89_ext_capa_sta[] = {
+ 	[0] = WLAN_EXT_CAPA1_EXT_CHANNEL_SWITCHING,
+ 	[2] = WLAN_EXT_CAPA3_MULTI_BSSID_SUPPORT,
+@@ -685,6 +702,8 @@ rtw89_core_tx_update_sec_key(struct rtw8
+ 	case WLAN_CIPHER_SUITE_GCMP_256:
+ 		sec_type = RTW89_SEC_KEY_TYPE_GCMP256;
+ 		break;
++	case WLAN_CIPHER_SUITE_AES_CMAC:
++		return;
+ 	default:
+ 		rtw89_warn(rtwdev, "key cipher not supported %d\n", key->cipher);
+ 		return;
+@@ -1170,6 +1189,7 @@ rtw89_core_tx_wake(struct rtw89_dev *rtw
+ 			goto notify;
+ 		break;
+ 	case RTL8852C:
++	case RTL8192XB:
+ 		if (test_bit(RTW89_FLAG_LOW_POWER_MODE, rtwdev->flags))
+ 			goto notify;
+ 		break;
+@@ -4071,7 +4091,6 @@ void rtw89_core_query_rxdesc(struct rtw8
+ 			     struct rtw89_rx_desc_info *desc_info,
+ 			     u8 *data, u32 data_offset)
+ {
+-	const struct rtw89_chip_info *chip = rtwdev->chip;
+ 	struct rtw89_rxdesc_short *rxd_s;
+ 	struct rtw89_rxdesc_long *rxd_l;
+ 	u8 shift_len, drv_info_len;
+@@ -4082,7 +4101,7 @@ void rtw89_core_query_rxdesc(struct rtw8
+ 	desc_info->long_rxdesc = le32_get_bits(rxd_s->dword0,  AX_RXD_LONG_RXD);
+ 	desc_info->pkt_type = le32_get_bits(rxd_s->dword0,  AX_RXD_RPKT_TYPE_MASK);
+ 	desc_info->mac_info_valid = le32_get_bits(rxd_s->dword0, AX_RXD_MAC_INFO_VLD);
+-	if (chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		desc_info->bw = le32_get_bits(rxd_s->dword1, AX_RXD_BW_v1_MASK);
+ 	else
+ 		desc_info->bw = le32_get_bits(rxd_s->dword1, AX_RXD_BW_MASK);
+@@ -5788,7 +5807,7 @@ static bool rtw89_sta_link_can_er(struct
+ 	    bss_conf->he_oper.params & IEEE80211_HE_OPERATION_ER_SU_DISABLE)
+ 		return false;
+ 
+-	if (rtwdev->chip->chip_id == RTL8852C &&
++	if (rtw89_is_rtl8852c_mac(rtwdev) &&
+ 	    rtw89_sta_link_has_su_mu_4xhe08(link_sta) &&
+ 	    !rtw89_sta_link_has_er_su_4xhe08(link_sta))
+ 		return false;
+@@ -7091,10 +7110,16 @@ static void rtw89_core_setup_rfe_parms(s
+ {
+ 	const struct rtw89_chip_info *chip = rtwdev->chip;
+ 	const struct rtw89_rfe_parms_conf *conf = chip->rfe_parms_conf;
++	const struct rtw89_phy_rfe_table_set *set = rtw89_phy_find_rfe_tables(rtwdev);
+ 	struct rtw89_efuse *efuse = &rtwdev->efuse;
+ 	const struct rtw89_rfe_parms *sel;
+ 	u8 rfe_type = efuse->rfe_type;
+ 
++	if (set && set->rfe_parms) {
++		sel = set->rfe_parms;
++		goto out;
++	}
++
+ 	if (!conf) {
+ 		sel = chip->dflt_parms;
+ 		goto out;
+@@ -7467,6 +7492,8 @@ static int rtw89_core_register_hw(struct
+ 		return ret;
+ 	}
+ 
++	wiphy_read_of_freq_limits(hw->wiphy);
++
+ 	ret = rtw89_regd_setup(rtwdev);
+ 	if (ret) {
+ 		rtw89_err(rtwdev, "failed to set up regd\n");
+@@ -7547,6 +7574,10 @@ struct rtw89_dev *rtw89_alloc_ieee80211_
+ 	bool support_mlo;
+ 	bool no_chanctx;
+ 
++	if (!variant && chip->ap_variant &&
++	    device_property_read_bool(device, "realtek,ap-firmware"))
++		variant = chip->ap_variant;
++
+ 	firmware = rtw89_early_fw_feature_recognize(device, chip, variant,
+ 						    &early_fw, &fw_format);
+ 
+@@ -7585,12 +7616,17 @@ struct rtw89_dev *rtw89_alloc_ieee80211_
+ 		      RTW89_CHK_FW_FEATURE(NOTIFY_AP_INFO, &early_fw) &&
+ 		      RTW89_MLD_NON_STA_LINK_NUM == 1;
+ 
+-	hw->wiphy->iface_combinations = rtw89_iface_combs;
++	if (variant && variant->ap_fw) {
++		hw->wiphy->iface_combinations = rtw89_iface_combs_ap;
++		hw->wiphy->n_iface_combinations = ARRAY_SIZE(rtw89_iface_combs_ap);
++	} else {
++		hw->wiphy->iface_combinations = rtw89_iface_combs;
+ 
+-	if (no_chanctx || chip->support_chanctx_num == 1)
+-		hw->wiphy->n_iface_combinations = 1;
+-	else
+-		hw->wiphy->n_iface_combinations = ARRAY_SIZE(rtw89_iface_combs);
++		if (no_chanctx || chip->support_chanctx_num == 1)
++			hw->wiphy->n_iface_combinations = 1;
++		else
++			hw->wiphy->n_iface_combinations = ARRAY_SIZE(rtw89_iface_combs);
++	}
+ 
+ 	rtwdev = hw->priv;
+ 	rtwdev->hw = hw;
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/core.h
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/core.h
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/core.h
+@@ -175,6 +175,7 @@ enum rtw89_core_chip_id {
+ 	RTL8851B,
+ 	RTL8922A,
+ 	RTL8922D,
++	RTL8192XB,
+ };
+ 
+ enum rtw89_core_chip_cid {
+@@ -4646,6 +4647,8 @@ struct rtw89_chanctx_listener {
+ #define RTW89_NHM_TH_NUM 11
+ #define RTW89_NHM_RPT_NUM 12
+ 
++struct rtw89_chip_variant;
++
+ struct rtw89_chip_info {
+ 	enum rtw89_core_chip_id chip_id;
+ 	enum rtw89_chip_gen chip_gen;
+@@ -4657,6 +4660,7 @@ struct rtw89_chip_info {
+ 	u8 bbmcu_nr;
+ 	u32 needed_fw_elms;
+ 	const struct rtw89_fw_blacklist *fw_blacklist;
++	const struct rtw89_chip_variant *ap_variant;
+ 	u32 fifo_size;
+ 	bool small_fifo_size;
+ 	u32 dle_scc_rsvd_size;
+@@ -4792,11 +4796,23 @@ struct rtw89_chip_info {
+ 	unsigned long default_quirks; /* bitmap of rtw89_quirks */
+ };
+ 
++struct rtw89_phy_rfe_table_set {
++	u8 rfe_type;
++	const struct rtw89_phy_table *bb_table;
++	const struct rtw89_phy_table *bb_gain_table;
++	const struct rtw89_phy_table *rf_table[RF_PATH_MAX];
++	const struct rtw89_rfe_parms *rfe_parms;
++	const struct rtw89_txpwr_track_cfg *trk_cfg;
++};
++
+ struct rtw89_chip_variant {
+ 	bool no_mcs_12_13: 1;
++	bool ap_fw: 1;
+ 	u32 fw_min_ver_code;
+ 	const struct rtw89_fw_def *fw_def_override;
+ 	const struct rtw89_qta_def *qta_def_override;
++	const struct rtw89_phy_rfe_table_set *rfe_tables;
++	u8 n_rfe_tables;
+ };
+ 
+ union rtw89_bus_info {
+@@ -5703,6 +5719,7 @@ struct rtw89_agc_gaincode_set {
+ #define FA_TH_NUM 4
+ #define TIA_LNA_OP1DB_NUM 8
+ #define LNA_GAIN_NUM 7
++#define WB_GIDX_LNA_TIA_NUM 16
+ #define TIA_GAIN_NUM 2
+ struct rtw89_dig_info {
+ 	struct rtw89_agc_gaincode_set cur_gaincode;
+@@ -6133,6 +6150,11 @@ struct rtw89_phy_bb_gain_info {
+ 	s8 lna_op1db[RTW89_BB_GAIN_BAND_NR][RF_PATH_MAX][LNA_GAIN_NUM];
+ 	s8 tia_lna_op1db[RTW89_BB_GAIN_BAND_NR][RF_PATH_MAX]
+ 			[LNA_GAIN_NUM + 1]; /* TIA0_LNA0~6 + TIA1_LNA6 */
++	u32 wb_gidx_elna[RTW89_BB_GAIN_BAND_NR][RF_PATH_MAX];
++	u8 wb_gidx_lna_tia[RTW89_BB_GAIN_BAND_NR][RF_PATH_MAX]
++			  [WB_GIDX_LNA_TIA_NUM];
++	u32 gs_idx[RTW89_BB_GAIN_BAND_NR][RF_PATH_MAX][2];
++	u8 g_elna[RTW89_BB_GAIN_BAND_NR][RF_PATH_MAX][2];
+ 	s8 rpl_ofst_20[RTW89_BB_GAIN_BAND_NR][RF_PATH_MAX];
+ 	s8 rpl_ofst_40[RTW89_BB_GAIN_BAND_NR][RF_PATH_MAX]
+ 		      [RTW89_BB_RXSC_NUM_40];
+@@ -6419,6 +6441,8 @@ struct rtw89_io_ops {
+ 			 u32 addr, u32 mask, u32 data);
+ };
+ 
++struct rtw89_factory_cal;
++
+ struct rtw89_dev {
+ 	struct ieee80211_hw *hw;
+ 	struct device *dev;
+@@ -6431,6 +6455,7 @@ struct rtw89_dev {
+ 	struct rtw89_hw_scan_info scan_info;
+ 	const struct rtw89_chip_info *chip;
+ 	const struct rtw89_chip_variant *variant;
++	struct rtw89_factory_cal *factory_cal;
+ 	const struct rtw89_pci_info *pci_info;
+ 	const struct rtw89_rfe_parms *rfe_parms;
+ 	struct rtw89_hal hal;
+@@ -8041,6 +8066,18 @@ struct rtw89_bb_ctx *rtw89_get_bb_ctx(st
+ 	return &rtwdev->bbs[phy_idx];
+ }
+ 
++static inline bool rtw89_is_rtl8852c_mac(struct rtw89_dev *rtwdev)
++{
++	enum rtw89_core_chip_id chip_id = rtwdev->chip->chip_id;
++
++	return chip_id == RTL8852C || chip_id == RTL8192XB;
++}
++
++static inline bool rtw89_is_ap_fw(struct rtw89_dev *rtwdev)
++{
++	return rtwdev->variant && rtwdev->variant->ap_fw;
++}
++
+ static inline bool rtw89_is_rtl885xb(struct rtw89_dev *rtwdev)
+ {
+ 	enum rtw89_core_chip_id chip_id = rtwdev->chip->chip_id;
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/efuse.c
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/efuse.c
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/efuse.c
+@@ -137,6 +137,13 @@ static int rtw89_dump_physical_efuse_map
+ 	return 0;
+ }
+ 
++int rtw89_efuse_read_phys_ddv(struct rtw89_dev *rtwdev, u8 *map,
++			      u32 addr, u32 size)
++{
++	return rtw89_dump_physical_efuse_map_ddv(rtwdev, map, addr, size);
++}
++EXPORT_SYMBOL(rtw89_efuse_read_phys_ddv);
++
+ int rtw89_cnv_efuse_state_ax(struct rtw89_dev *rtwdev, bool idle)
+ {
+ 	return 0;
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/efuse.h
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/efuse.h
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/efuse.h
+@@ -23,6 +23,8 @@ struct rtw89_efuse_block_cfg {
+ 
+ int rtw89_parse_efuse_map_ax(struct rtw89_dev *rtwdev);
+ int rtw89_parse_phycap_map_ax(struct rtw89_dev *rtwdev);
++int rtw89_efuse_read_phys_ddv(struct rtw89_dev *rtwdev, u8 *map,
++			      u32 addr, u32 size);
+ int rtw89_cnv_efuse_state_ax(struct rtw89_dev *rtwdev, bool idle);
+ int rtw89_parse_efuse_map_be(struct rtw89_dev *rtwdev);
+ int rtw89_parse_phycap_map_be(struct rtw89_dev *rtwdev);
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/fw.c
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/fw.c
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/fw.c
+@@ -905,6 +905,17 @@ static const struct __fw_feat_cfg fw_fea
+ 	__CFG_FW_FEAT(RTL8852C, ge, 0, 27, 129, 1, BEACON_TRACKING),
+ 	__CFG_FW_FEAT(RTL8852C, ge, 0, 29, 94, 0, SER_L1_BY_EVENT),
+ 	__CFG_FW_FEAT(RTL8852C, ge, 0, 29, 130, 0, SIM_SER_L0L1_BY_HALT_H2C),
++	__CFG_FW_FEAT(RTL8192XB, le, 0, 27, 33, 0, NO_DEEP_PS),
++	__CFG_FW_FEAT(RTL8192XB, ge, 0, 0, 0, 0, RFK_NTFY_MCC_V0),
++	__CFG_FW_FEAT(RTL8192XB, ge, 0, 27, 34, 0, TX_WAKE),
++	__CFG_FW_FEAT(RTL8192XB, ge, 0, 27, 36, 0, SCAN_OFFLOAD),
++	__CFG_FW_FEAT(RTL8192XB, ge, 0, 27, 40, 0, CRASH_TRIGGER_TYPE_0),
++	__CFG_FW_FEAT(RTL8192XB, ge, 0, 27, 56, 10, BEACON_FILTER),
++	__CFG_FW_FEAT(RTL8192XB, ge, 0, 27, 80, 0, WOW_REASON_V1),
++	__CFG_FW_FEAT(RTL8192XB, ge, 0, 27, 128, 0, BEACON_LOSS_COUNT_V1),
++	__CFG_FW_FEAT(RTL8192XB, ge, 0, 27, 128, 0, LPS_DACK_BY_C2H_REG),
++	__CFG_FW_FEAT(RTL8192XB, ge, 0, 27, 128, 0, CRASH_TRIGGER_TYPE_1),
++	__CFG_FW_FEAT(RTL8192XB, ge, 0, 27, 129, 1, BEACON_TRACKING),
+ 	__CFG_FW_FEAT(RTL8922A, ge, 0, 0, 0, 0, RFK_PRE_NOTIFY_V0),
+ 	__CFG_FW_FEAT(RTL8922A, ge, 0, 34, 11, 0, MACID_PAUSE_SLEEP),
+ 	__CFG_FW_FEAT(RTL8922A, ge, 0, 34, 30, 0, CRASH_TRIGGER_TYPE_0),
+@@ -937,6 +948,7 @@ static const struct __fw_feat_cfg fw_fea
+ 
+ static void rtw89_fw_iterate_feature_cfg(struct rtw89_fw_info *fw,
+ 					 const struct rtw89_chip_info *chip,
++					 const struct rtw89_chip_variant *variant,
+ 					 u32 ver_code)
+ {
+ 	int i;
+@@ -947,6 +959,10 @@ static void rtw89_fw_iterate_feature_cfg
+ 		if (chip->chip_id != ent->chip_id)
+ 			continue;
+ 
++		if (variant && variant->ap_fw &&
++		    ent->feature == RTW89_FW_FEATURE_SCAN_OFFLOAD)
++			continue;
++
+ 		if (!ent->cond(ver_code, ent->ver_code))
+ 			continue;
+ 
+@@ -969,7 +985,8 @@ static void rtw89_fw_recognize_features(
+ 	fw_suit = rtw89_fw_suit_get(rtwdev, RTW89_FW_NORMAL);
+ 	suit_ver_code = RTW89_FW_SUIT_VER_CODE(fw_suit);
+ 
+-	rtw89_fw_iterate_feature_cfg(&rtwdev->fw, chip, suit_ver_code);
++	rtw89_fw_iterate_feature_cfg(&rtwdev->fw, chip, rtwdev->variant,
++				     suit_ver_code);
+ }
+ 
+ const struct firmware *
+@@ -1008,7 +1025,7 @@ rtw89_early_fw_feature_recognize(struct
+ 	if (!ver_code)
+ 		goto out;
+ 
+-	rtw89_fw_iterate_feature_cfg(early_fw, chip, ver_code);
++	rtw89_fw_iterate_feature_cfg(early_fw, chip, variant, ver_code);
+ 
+ out:
+ 	return firmware;
+@@ -3563,6 +3580,15 @@ static void __rtw89_fw_h2c_set_tx_path(s
+ 	SET_CMC_TBL_PATH_MAP_D(skb->data, 0);
+ }
+ 
++static u8 rtw89_fw_h2c_cctl_func_id(struct rtw89_dev *rtwdev)
++{
++	if (rtw89_is_ap_fw(rtwdev) &&
++	    rtwdev->chip->h2c_cctl_func_id == H2C_FUNC_MAC_CCTLINFO_UD_V1)
++		return H2C_FUNC_MAC_CCTLINFO_UD;
++
++	return rtwdev->chip->h2c_cctl_func_id;
++}
++
+ #define H2C_CMC_TBL_LEN 68
+ int rtw89_fw_h2c_default_cmac_tbl(struct rtw89_dev *rtwdev,
+ 				  struct rtw89_vif_link *rtwvif_link,
+@@ -3597,7 +3623,7 @@ int rtw89_fw_h2c_default_cmac_tbl(struct
+ 
+ 	rtw89_h2c_pkt_set_hdr(rtwdev, skb, FWCMD_TYPE_H2C,
+ 			      H2C_CAT_MAC, H2C_CL_MAC_FR_EXCHG,
+-			      chip->h2c_cctl_func_id, 0, 1,
++			      rtw89_fw_h2c_cctl_func_id(rtwdev), 0, 1,
+ 			      H2C_CMC_TBL_LEN);
+ 
+ 	ret = rtw89_h2c_tx(rtwdev, skb, false);
+@@ -3912,7 +3938,7 @@ int rtw89_fw_h2c_assoc_cmac_tbl(struct r
+ 
+ 	rtw89_h2c_pkt_set_hdr(rtwdev, skb, FWCMD_TYPE_H2C,
+ 			      H2C_CAT_MAC, H2C_CL_MAC_FR_EXCHG,
+-			      chip->h2c_cctl_func_id, 0, 1,
++			      rtw89_fw_h2c_cctl_func_id(rtwdev), 0, 1,
+ 			      H2C_CMC_TBL_LEN);
+ 
+ 	ret = rtw89_h2c_tx(rtwdev, skb, false);
+@@ -4378,7 +4404,6 @@ EXPORT_SYMBOL(rtw89_fw_h2c_ampdu_cmac_tb
+ int rtw89_fw_h2c_txtime_cmac_tbl(struct rtw89_dev *rtwdev,
+ 				 struct rtw89_sta_link *rtwsta_link)
+ {
+-	const struct rtw89_chip_info *chip = rtwdev->chip;
+ 	struct sk_buff *skb;
+ 	int ret;
+ 
+@@ -4401,7 +4426,7 @@ int rtw89_fw_h2c_txtime_cmac_tbl(struct
+ 
+ 	rtw89_h2c_pkt_set_hdr(rtwdev, skb, FWCMD_TYPE_H2C,
+ 			      H2C_CAT_MAC, H2C_CL_MAC_FR_EXCHG,
+-			      chip->h2c_cctl_func_id, 0, 1,
++			      rtw89_fw_h2c_cctl_func_id(rtwdev), 0, 1,
+ 			      H2C_CMC_TBL_LEN);
+ 
+ 	ret = rtw89_h2c_tx(rtwdev, skb, false);
+@@ -4689,7 +4714,7 @@ int rtw89_fw_h2c_update_beacon(struct rt
+ 		skb_put_data(skb_beacon, noa_data, noa_len);
+ 	}
+ 
+-	hdr = (struct ieee80211_hdr *)skb_beacon;
++	hdr = (struct ieee80211_hdr *)skb_beacon->data;
+ 	tim_offset -= ieee80211_hdrlen(hdr->frame_control);
+ 
+ 	bcn_total_len = len + skb_beacon->len;
+@@ -5007,6 +5032,11 @@ int rtw89_fw_h2c_join_info(struct rtw89_
+ 	u8 net_type = rtwvif_link->net_type;
+ 	struct rtw89_h2c_join_v1 *h2c_v1;
+ 	struct rtw89_h2c_join *h2c;
++	u8 trigger = rtwvif_link->trigger;
++	u8 is_hesta = 0;
++	u8 dl_bw = 0;
++	u8 tf_mac_pad = 0;
++	u8 dl_t_pe = 0;
+ 	u32 len = sizeof(*h2c);
+ 	bool format_v1 = false;
+ 	struct sk_buff *skb;
+@@ -5024,6 +5054,36 @@ int rtw89_fw_h2c_join_info(struct rtw89_
+ 		net_type = dis_conn ? RTW89_NET_TYPE_NO_LINK : net_type;
+ 	}
+ 
++	if (rtw89_is_ap_fw(rtwdev) && !format_v1) {
++		if (rtwsta_link && !dis_conn) {
++			const struct rtw89_chan *chan =
++				rtw89_chan_get(rtwdev, rtwvif_link->chanctx_idx);
++			struct ieee80211_link_sta *link_sta;
++			u8 pads[RTW89_PPE_BW_NUM] = {};
++
++			rcu_read_lock();
++			link_sta = rtw89_sta_rcu_dereference_link(rtwsta_link, true);
++			dl_bw = min_t(u8, chan->band_width,
++				      min_t(u8, link_sta->bandwidth,
++					    RTW89_CHANNEL_WIDTH_160));
++			if (link_sta->he_cap.has_he) {
++				__get_sta_he_pkt_padding(rtwdev, link_sta, pads);
++				is_hesta = 1;
++				trigger = 1;
++				tf_mac_pad = u8_get_bits(link_sta->he_cap.he_cap_elem.mac_cap_info[1],
++							 IEEE80211_HE_MAC_CAP1_TF_MAC_PAD_DUR_MASK);
++				dl_t_pe = pads[RTW89_CHANNEL_WIDTH_80];
++			} else {
++				dl_t_pe = 1;
++			}
++			rcu_read_unlock();
++		} else if (!rtwsta_link && net_type == RTW89_NET_TYPE_AP_MODE) {
++			dl_bw = rtwdev->chip->support_bandwidths & BIT(NL80211_CHAN_WIDTH_160) ?
++				RTW89_CHANNEL_WIDTH_160 : RTW89_CHANNEL_WIDTH_40;
++			dl_t_pe = 1;
++		}
++	}
++
+ 	skb = rtw89_fw_h2c_alloc_skb_with_hdr(rtwdev, len);
+ 	if (!skb) {
+ 		rtw89_err(rtwdev, "failed to alloc skb for h2c join\n");
+@@ -5036,11 +5096,11 @@ int rtw89_fw_h2c_join_info(struct rtw89_
+ 		  le32_encode_bits(dis_conn, RTW89_H2C_JOININFO_W0_OP) |
+ 		  le32_encode_bits(rtwvif_link->mac_idx, RTW89_H2C_JOININFO_W0_BAND) |
+ 		  le32_encode_bits(rtwvif_link->wmm, RTW89_H2C_JOININFO_W0_WMM) |
+-		  le32_encode_bits(rtwvif_link->trigger, RTW89_H2C_JOININFO_W0_TGR) |
+-		  le32_encode_bits(0, RTW89_H2C_JOININFO_W0_ISHESTA) |
+-		  le32_encode_bits(0, RTW89_H2C_JOININFO_W0_DLBW) |
+-		  le32_encode_bits(0, RTW89_H2C_JOININFO_W0_TF_MAC_PAD) |
+-		  le32_encode_bits(0, RTW89_H2C_JOININFO_W0_DL_T_PE) |
++		  le32_encode_bits(trigger, RTW89_H2C_JOININFO_W0_TGR) |
++		  le32_encode_bits(is_hesta, RTW89_H2C_JOININFO_W0_ISHESTA) |
++		  le32_encode_bits(dl_bw, RTW89_H2C_JOININFO_W0_DLBW) |
++		  le32_encode_bits(tf_mac_pad, RTW89_H2C_JOININFO_W0_TF_MAC_PAD) |
++		  le32_encode_bits(dl_t_pe, RTW89_H2C_JOININFO_W0_DL_T_PE) |
+ 		  le32_encode_bits(rtwvif_link->port, RTW89_H2C_JOININFO_W0_PORT_ID) |
+ 		  le32_encode_bits(net_type, RTW89_H2C_JOININFO_W0_NET_TYPE) |
+ 		  le32_encode_bits(rtwvif_link->wifi_role,
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/mac.c
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/mac.c
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/mac.c
+@@ -342,7 +342,7 @@ void rtw89_mac_dump_dmac_err_status(stru
+ 			   rtw89_read32(rtwdev, R_AX_WDE_ERR_FLAG_CFG_NUM1));
+ 		rtw89_info(rtwdev, "R_AX_PLE_ERR_FLAG_CFG=0x%08x\n",
+ 			   rtw89_read32(rtwdev, R_AX_PLE_ERR_FLAG_CFG_NUM1));
+-		if (chip->chip_id == RTL8852C) {
++		if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 			rtw89_info(rtwdev, "R_AX_PLE_ERRFLAG_MSG=0x%08x\n",
+ 				   rtw89_read32(rtwdev, R_AX_PLE_ERRFLAG_MSG));
+ 			rtw89_info(rtwdev, "R_AX_WDE_ERRFLAG_MSG=0x%08x\n",
+@@ -359,7 +359,7 @@ void rtw89_mac_dump_dmac_err_status(stru
+ 			   rtw89_read32(rtwdev, R_AX_WDRLS_ERR_IMR));
+ 		rtw89_info(rtwdev, "R_AX_WDRLS_ERR_ISR=0x%08x\n",
+ 			   rtw89_read32(rtwdev, R_AX_WDRLS_ERR_ISR));
+-		if (chip->chip_id == RTL8852C)
++		if (rtw89_is_rtl8852c_mac(rtwdev))
+ 			rtw89_info(rtwdev, "R_AX_RPQ_RXBD_IDX=0x%08x\n",
+ 				   rtw89_read32(rtwdev, R_AX_RPQ_RXBD_IDX_V1));
+ 		else
+@@ -368,7 +368,7 @@ void rtw89_mac_dump_dmac_err_status(stru
+ 	}
+ 
+ 	if (dmac_err & B_AX_WSEC_ERR_FLAG) {
+-		if (chip->chip_id == RTL8852C) {
++		if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 			rtw89_info(rtwdev, "R_AX_SEC_ERR_IMR=0x%08x\n",
+ 				   rtw89_read32(rtwdev, R_AX_SEC_ERROR_FLAG_IMR));
+ 			rtw89_info(rtwdev, "R_AX_SEC_ERR_ISR=0x%08x\n",
+@@ -476,7 +476,7 @@ void rtw89_mac_dump_dmac_err_status(stru
+ 	}
+ 
+ 	if (dmac_err & B_AX_TXPKTCTRL_ERR_FLAG) {
+-		if (chip->chip_id == RTL8852C || chip->chip_id == RTL8922A) {
++		if (rtw89_is_rtl8852c_mac(rtwdev) || chip->chip_id == RTL8922A) {
+ 			rtw89_info(rtwdev, "R_AX_TXPKTCTL_B0_ERRFLAG_IMR=0x%08x\n",
+ 				   rtw89_read32(rtwdev, R_AX_TXPKTCTL_B0_ERRFLAG_IMR));
+ 			rtw89_info(rtwdev, "R_AX_TXPKTCTL_B0_ERRFLAG_ISR=0x%08x\n",
+@@ -528,7 +528,7 @@ void rtw89_mac_dump_dmac_err_status(stru
+ 				   rtw89_read32(rtwdev, R_AX_WD_CPUQ_OP_STATUS));
+ 			rtw89_info(rtwdev, "R_AX_PL_CPUQ_OP_STATUS=0x%08x\n",
+ 				   rtw89_read32(rtwdev, R_AX_PL_CPUQ_OP_STATUS));
+-			if (chip->chip_id == RTL8852C) {
++			if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 				rtw89_info(rtwdev, "R_AX_RX_CTRL0=0x%08x\n",
+ 					   rtw89_read32(rtwdev, R_AX_RX_CTRL0));
+ 				rtw89_info(rtwdev, "R_AX_RX_CTRL1=0x%08x\n",
+@@ -584,7 +584,7 @@ void rtw89_mac_dump_dmac_err_status(stru
+ 	}
+ 
+ 	if (dmac_err & B_AX_BBRPT_ERR_FLAG) {
+-		if (chip->chip_id == RTL8852C || chip->chip_id == RTL8922A) {
++		if (rtw89_is_rtl8852c_mac(rtwdev) || chip->chip_id == RTL8922A) {
+ 			rtw89_info(rtwdev, "R_AX_BBRPT_COM_ERR_IMR=0x%08x\n",
+ 				   rtw89_read32(rtwdev, R_AX_BBRPT_COM_ERR_IMR));
+ 			rtw89_info(rtwdev, "R_AX_BBRPT_COM_ERR_ISR=0x%08x\n",
+@@ -623,7 +623,7 @@ void rtw89_mac_dump_dmac_err_status(stru
+ 				   rtw89_read32(rtwdev, R_BE_HAXI_IDCT_MSK));
+ 			rtw89_info(rtwdev, "R_BE_HAXI_IDCT=0x%08x\n",
+ 				   rtw89_read32(rtwdev, R_BE_HAXI_IDCT));
+-		} else if (chip->chip_id == RTL8852C) {
++		} else if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 			rtw89_info(rtwdev, "R_AX_HAXIDMA_ERR_IMR=0x%08x\n",
+ 				   rtw89_read32(rtwdev, R_AX_HAXI_IDCT_MSK));
+ 			rtw89_info(rtwdev, "R_AX_HAXIDMA_ERR_ISR=0x%08x\n",
+@@ -658,7 +658,6 @@ void rtw89_mac_dump_dmac_err_status(stru
+ static void rtw89_mac_dump_cmac_err_status_ax(struct rtw89_dev *rtwdev,
+ 					      u8 band)
+ {
+-	const struct rtw89_chip_info *chip = rtwdev->chip;
+ 	u32 offset = 0;
+ 	u32 cmac_err;
+ 	int ret;
+@@ -698,7 +697,7 @@ static void rtw89_mac_dump_cmac_err_stat
+ 	}
+ 
+ 	if (cmac_err & B_AX_DMA_TOP_ERR_IND) {
+-		if (chip->chip_id == RTL8852C) {
++		if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 			rtw89_info(rtwdev, "R_AX_RX_ERR_FLAG [%d]=0x%08x\n", band,
+ 				   rtw89_read32(rtwdev, R_AX_RX_ERR_FLAG + offset));
+ 			rtw89_info(rtwdev, "R_AX_RX_ERR_FLAG_IMR [%d]=0x%08x\n", band,
+@@ -710,7 +709,7 @@ static void rtw89_mac_dump_cmac_err_stat
+ 	}
+ 
+ 	if (cmac_err & B_AX_DMA_TOP_ERR_IND || cmac_err & B_AX_WMAC_RX_ERR_IND) {
+-		if (chip->chip_id == RTL8852C) {
++		if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 			rtw89_info(rtwdev, "R_AX_PHYINFO_ERR_ISR [%d]=0x%08x\n", band,
+ 				   rtw89_read32(rtwdev, R_AX_PHYINFO_ERR_ISR + offset));
+ 			rtw89_info(rtwdev, "R_AX_PHYINFO_ERR_IMR [%d]=0x%08x\n", band,
+@@ -729,7 +728,7 @@ static void rtw89_mac_dump_cmac_err_stat
+ 	}
+ 
+ 	if (cmac_err & B_AX_WMAC_TX_ERR_IND) {
+-		if (chip->chip_id == RTL8852C) {
++		if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 			rtw89_info(rtwdev, "R_AX_TRXPTCL_ERROR_INDICA [%d]=0x%08x\n", band,
+ 				   rtw89_read32(rtwdev, R_AX_TRXPTCL_ERROR_INDICA + offset));
+ 			rtw89_info(rtwdev, "R_AX_TRXPTCL_ERROR_INDICA_MASK [%d]=0x%08x\n", band,
+@@ -784,7 +783,7 @@ static bool rtw89_mac_suppress_log(struc
+ 	u32 dmac_err, imr, isr;
+ 	int ret;
+ 
+-	if (rtwdev->chip->chip_id == RTL8852C) {
++	if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 		ret = rtw89_mac_check_mac_en(rtwdev, 0, RTW89_DMAC_SEL);
+ 		if (ret)
+ 			return true;
+@@ -1654,7 +1653,7 @@ static int dmac_func_en_ax(struct rtw89_
+ 	enum rtw89_core_chip_id chip_id = rtwdev->chip->chip_id;
+ 	u32 val32;
+ 
+-	if (chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		val32 = (B_AX_MAC_FUNC_EN | B_AX_DMAC_FUNC_EN |
+ 			 B_AX_MAC_SEC_EN | B_AX_DISPATCHER_EN |
+ 			 B_AX_DLE_CPUIO_EN | B_AX_PKT_IN_EN |
+@@ -2207,7 +2206,7 @@ static void ple_quota_cfg_ax(struct rtw8
+ 	SET_QUOTA(bb_rpt, PLE, 8);
+ 	SET_QUOTA(wd_rel, PLE, 9);
+ 	SET_QUOTA(cpu_io, PLE, 10);
+-	if (rtwdev->chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		SET_QUOTA(tx_rpt, PLE, 11);
+ }
+ 
+@@ -2217,7 +2216,7 @@ int rtw89_mac_resize_ple_rx_quota(struct
+ 	const struct rtw89_dle_mem *cfg;
+ 	u32 val;
+ 
+-	if (rtwdev->chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		return 0;
+ 
+ 	if (rtwdev->mac.qta_mode != RTW89_QTA_SCC) {
+@@ -2245,14 +2244,13 @@ int rtw89_mac_resize_ple_rx_quota(struct
+ 
+ void rtw89_mac_hw_mgnt_sec(struct rtw89_dev *rtwdev, bool enable)
+ {
+-	const struct rtw89_chip_info *chip = rtwdev->chip;
+ 	u32 msk32 = B_AX_UC_MGNT_DEC | B_AX_BMC_MGNT_DEC;
+ 
+ 	if (rtwdev->chip->chip_gen != RTW89_CHIP_AX)
+ 		return;
+ 
+ 	/* 8852C enable B_AX_UC_MGNT_DEC by default */
+-	if (chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		msk32 = B_AX_BMC_MGNT_DEC;
+ 
+ 	if (enable)
+@@ -2494,7 +2492,7 @@ static int sec_eng_init_ax(struct rtw89_
+ 	/* init TX encryption */
+ 	val |= (B_AX_SEC_TX_ENC | B_AX_SEC_RX_DEC);
+ 	val |= (B_AX_MC_DEC | B_AX_BC_DEC);
+-	if (chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		val |= B_AX_UC_MGNT_DEC;
+ 	if (chip->chip_id == RTL8852A || chip->chip_id == RTL8852B ||
+ 	    chip->chip_id == RTL8851B ||
+@@ -2509,7 +2507,7 @@ static int sec_eng_init_ax(struct rtw89_
+ 	/* option init */
+ 	rtw89_write32(rtwdev, R_AX_SEC_MPDU_PROC, val);
+ 
+-	if (chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		rtw89_write32_mask(rtwdev, R_AX_SEC_DEBUG1,
+ 				   B_AX_TX_TIMEOUT_SEL_MASK, AX_TX_TO_VAL);
+ 
+@@ -2601,7 +2599,7 @@ static int scheduler_init_ax(struct rtw8
+ 	rtw89_io_pack(rtwdev);
+ 
+ 	reg = rtw89_mac_reg_by_idx(rtwdev, R_AX_PREBKF_CFG_1, mac_idx);
+-	if (rtwdev->chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		rtw89_write32_mask(rtwdev, reg, B_AX_SIFS_MACTXEN_T1_MASK,
+ 				   SIFS_MACTXEN_T1_V1);
+ 	else
+@@ -2617,7 +2615,7 @@ static int scheduler_init_ax(struct rtw8
+ 	rtw89_write32_clr(rtwdev, reg, B_AX_BTCCA_EN);
+ 
+ 	reg = rtw89_mac_reg_by_idx(rtwdev, R_AX_PREBKF_CFG_0, mac_idx);
+-	if (rtwdev->chip->chip_id == RTL8852C) {
++	if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 		val = rtw89_read32_mask(rtwdev, R_AX_SEC_ENG_CTRL,
+ 					B_AX_TX_PARTIAL_MODE);
+ 		if (!val)
+@@ -3319,11 +3317,31 @@ static int rtw89_mac_setup_phycap_part1(
+ 	return 0;
+ }
+ 
++static void rtw89_mac_setup_phycap_default(struct rtw89_dev *rtwdev)
++{
++	const struct rtw89_chip_info *chip = rtwdev->chip;
++	struct rtw89_hal *hal = &rtwdev->hal;
++
++	hal->tx_nss = chip->tx_nss;
++	hal->rx_nss = chip->rx_nss;
++	hal->no_eht = chip->chip_gen == RTW89_CHIP_AX;
++
++	if (chip->rf_path_num == 1) {
++		hal->antenna_tx = RF_A;
++		hal->antenna_rx = RF_A;
++	}
++}
++
+ int rtw89_mac_setup_phycap(struct rtw89_dev *rtwdev)
+ {
+ 	const struct rtw89_chip_info *chip = rtwdev->chip;
+ 	int ret;
+ 
++	if (rtw89_is_ap_fw(rtwdev)) {
++		rtw89_mac_setup_phycap_default(rtwdev);
++		return 0;
++	}
++
+ 	ret = rtw89_mac_setup_phycap_part0(rtwdev);
+ 	if (ret)
+ 		return ret;
+@@ -3753,7 +3771,6 @@ static void rtw89_wsec_imr_enable(struct
+ 
+ static void rtw89_mpdu_trx_imr_enable(struct rtw89_dev *rtwdev)
+ {
+-	enum rtw89_core_chip_id chip_id = rtwdev->chip->chip_id;
+ 	const struct rtw89_imr_info *imr = rtwdev->chip->imr_info;
+ 
+ 	rtw89_write32_clr(rtwdev, R_AX_MPDU_TX_ERR_IMR,
+@@ -3762,7 +3779,7 @@ static void rtw89_mpdu_trx_imr_enable(st
+ 			  B_AX_TX_MPDU_SIZE_ZERO_INT_EN |
+ 			  B_AX_TX_OFFSET_ERR_INT_EN |
+ 			  B_AX_TX_HDR3_SIZE_ERR_INT_EN);
+-	if (chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		rtw89_write32_clr(rtwdev, R_AX_MPDU_TX_ERR_IMR,
+ 				  B_AX_TX_ETH_TYPE_ERR_EN |
+ 				  B_AX_TX_LLC_PRE_ERR_EN |
+@@ -3889,14 +3906,13 @@ static void rtw89_ptcl_imr_enable(struct
+ static void rtw89_cdma_imr_enable(struct rtw89_dev *rtwdev, u8 mac_idx)
+ {
+ 	const struct rtw89_imr_info *imr = rtwdev->chip->imr_info;
+-	enum rtw89_core_chip_id chip_id = rtwdev->chip->chip_id;
+ 	u32 reg;
+ 
+ 	reg = rtw89_mac_reg_by_idx(rtwdev, imr->cdma_imr_0_reg, mac_idx);
+ 	rtw89_write32_clr(rtwdev, reg, imr->cdma_imr_0_clr);
+ 	rtw89_write32_set(rtwdev, reg, imr->cdma_imr_0_set);
+ 
+-	if (chip_id == RTL8852C) {
++	if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 		reg = rtw89_mac_reg_by_idx(rtwdev, imr->cdma_imr_1_reg, mac_idx);
+ 		rtw89_write32_clr(rtwdev, reg, imr->cdma_imr_1_clr);
+ 		rtw89_write32_set(rtwdev, reg, imr->cdma_imr_1_set);
+@@ -4028,7 +4044,6 @@ static int set_host_rpr_ax(struct rtw89_
+ 
+ static int trx_init_ax(struct rtw89_dev *rtwdev)
+ {
+-	enum rtw89_core_chip_id chip_id = rtwdev->chip->chip_id;
+ 	enum rtw89_qta_mode qta_mode = rtwdev->mac.qta_mode;
+ 	int ret;
+ 
+@@ -4072,7 +4087,7 @@ static int trx_init_ax(struct rtw89_dev
+ 		return ret;
+ 	}
+ 
+-	if (chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		rtw89_write32_clr(rtwdev, R_AX_RSP_CHK_SIG,
+ 				  B_AX_RSP_STATIC_RTS_CHK_SERV_BW_EN);
+ 
+@@ -4207,10 +4222,9 @@ static int rtw89_mac_enable_cpu_ax(struc
+ 
+ static void rtw89_mac_hci_func_en_ax(struct rtw89_dev *rtwdev)
+ {
+-	enum rtw89_core_chip_id chip_id = rtwdev->chip->chip_id;
+ 	u32 val;
+ 
+-	if (chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		val = B_AX_MAC_FUNC_EN | B_AX_DMAC_FUNC_EN | B_AX_DISPATCHER_EN |
+ 		      B_AX_PKT_BUF_EN | B_AX_H_AXIDMA_EN;
+ 	else
+@@ -4230,7 +4244,7 @@ static void rtw89_mac_dmac_func_pre_en_a
+ 		val = B_AX_DISPATCHER_CLK_EN;
+ 	rtw89_write32(rtwdev, R_AX_DMAC_CLK_EN, val);
+ 
+-	if (chip_id != RTL8852C)
++	if (!rtw89_is_rtl8852c_mac(rtwdev))
+ 		return;
+ 
+ 	val = rtw89_read32(rtwdev, R_AX_HAXI_INIT_CFG1);
+@@ -6665,7 +6679,7 @@ bool rtw89_mac_get_ctrl_path(struct rtw8
+ 	const struct rtw89_chip_info *chip = rtwdev->chip;
+ 	u8 val = 0;
+ 
+-	if (chip->chip_id == RTL8852C || chip->chip_id == RTL8922A)
++	if (rtw89_is_rtl8852c_mac(rtwdev) || chip->chip_id == RTL8922A)
+ 		return false;
+ 	else if (chip->chip_id == RTL8852A || rtw89_is_rtl885xb(rtwdev))
+ 		val = rtw89_read8_mask(rtwdev, R_AX_SYS_SDIO_CTRL + 3,
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/pci.c
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/pci.c
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/pci.c
+@@ -2562,7 +2562,7 @@ static int rtw89_pci_deglitch_setting(st
+ 					     PCIE_PHY_GEN2);
+ 		if (ret)
+ 			return ret;
+-	} else if (chip_id == RTL8852C) {
++	} else if (chip_id == RTL8852C || chip_id == RTL8192XB) {
+ 		rtw89_write16_clr(rtwdev, R_RAC_DIRECT_OFFSET_G1 + RAC_ANA24 * 2,
+ 				  B_AX_DEGLITCH);
+ 		rtw89_write16_clr(rtwdev, R_RAC_DIRECT_OFFSET_G2 + RAC_ANA24 * 2,
+@@ -2582,7 +2582,7 @@ static void rtw89_pci_disable_eq_ax(stru
+ 	int ret;
+ 	u8 gen;
+ 
+-	if (rtwdev->chip->chip_id != RTL8852C)
++	if (!rtw89_is_rtl8852c_mac(rtwdev))
+ 		return;
+ 
+ 	g1_oobs = rtw89_read16_mask(rtwdev, R_RAC_DIRECT_OFFSET_G1 +
+@@ -2715,7 +2715,8 @@ static void rtw89_pci_hci_ldo(struct rtw
+ 				  B_AX_PCIE_DIS_L2_CTRL_LDO_HCI);
+ 		rtw89_write32_clr(rtwdev, R_AX_SYS_SDIO_CTRL,
+ 				  B_AX_PCIE_DIS_WLSUS_AFT_PDN);
+-	} else if (rtwdev->chip->chip_id == RTL8852C) {
++	} else if (rtwdev->chip->chip_id == RTL8852C ||
++		   rtwdev->chip->chip_id == RTL8192XB) {
+ 		rtw89_write32_clr(rtwdev, R_AX_SYS_SDIO_CTRL,
+ 				  B_AX_PCIE_DIS_L2_CTRL_LDO_HCI);
+ 	}
+@@ -2740,7 +2741,7 @@ static void rtw89_pci_power_wake_ax(stru
+ 
+ static void rtw89_pci_autoload_hang(struct rtw89_dev *rtwdev)
+ {
+-	if (rtwdev->chip->chip_id != RTL8852C)
++	if (!rtw89_is_rtl8852c_mac(rtwdev))
+ 		return;
+ 
+ 	rtw89_write32_set(rtwdev, R_AX_PCIE_BG_CLR, B_AX_BG_CLR_ASYNC_M3);
+@@ -2769,7 +2770,7 @@ static void rtw89_pci_gen2_force_ib(stru
+ 
+ static void rtw89_pci_l1_ent_lat(struct rtw89_dev *rtwdev)
+ {
+-	if (rtwdev->chip->chip_id != RTL8852C)
++	if (!rtw89_is_rtl8852c_mac(rtwdev))
+ 		return;
+ 
+ 	rtw89_write32_clr(rtwdev, R_AX_PCIE_PS_CTRL_V1, B_AX_SEL_REQ_ENTR_L1);
+@@ -2777,7 +2778,7 @@ static void rtw89_pci_l1_ent_lat(struct
+ 
+ static void rtw89_pci_wd_exit_l1(struct rtw89_dev *rtwdev)
+ {
+-	if (rtwdev->chip->chip_id != RTL8852C)
++	if (!rtw89_is_rtl8852c_mac(rtwdev))
+ 		return;
+ 
+ 	rtw89_write32_set(rtwdev, R_AX_PCIE_PS_CTRL_V1, B_AX_DMAC0_EXIT_L1_EN);
+@@ -2785,7 +2786,7 @@ static void rtw89_pci_wd_exit_l1(struct
+ 
+ static void rtw89_pci_set_sic(struct rtw89_dev *rtwdev)
+ {
+-	if (rtwdev->chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		return;
+ 
+ 	rtw89_write32_clr(rtwdev, R_AX_PCIE_EXP_CTRL,
+@@ -2797,7 +2798,7 @@ static void rtw89_pci_set_lbc(struct rtw
+ 	const struct rtw89_pci_info *info = rtwdev->pci_info;
+ 	u32 lbc;
+ 
+-	if (rtwdev->chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		return;
+ 
+ 	lbc = rtw89_read32(rtwdev, R_AX_LBC_WATCHDOG);
+@@ -2816,7 +2817,8 @@ static void rtw89_pci_set_io_rcy(struct
+ 	const struct rtw89_pci_info *info = rtwdev->pci_info;
+ 	u32 val32;
+ 
+-	if (rtwdev->chip->chip_id != RTL8852C)
++	if (rtwdev->chip->chip_id != RTL8852C &&
++	    rtwdev->chip->chip_id != RTL8192XB)
+ 		return;
+ 
+ 	if (info->io_rcy_en == MAC_AX_PCIE_ENABLE) {
+@@ -2840,7 +2842,7 @@ static void rtw89_pci_set_io_rcy(struct
+ 
+ static void rtw89_pci_set_dbg(struct rtw89_dev *rtwdev)
+ {
+-	if (rtwdev->chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		return;
+ 
+ 	rtw89_write32_set(rtwdev, R_AX_PCIE_DBG_CTRL,
+@@ -2857,7 +2859,7 @@ static void rtw89_pci_set_dbg(struct rtw
+ 
+ static void rtw89_pci_set_keep_reg(struct rtw89_dev *rtwdev)
+ {
+-	if (rtwdev->chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		return;
+ 
+ 	rtw89_write32_set(rtwdev, R_AX_PCIE_INIT_CFG1,
+@@ -2874,12 +2876,14 @@ static void rtw89_pci_clr_idx_all_ax(str
+ 	u32 rxbd_rwptr_clr = info->rxbd_rwptr_clr_reg;
+ 	u32 txbd_rwptr_clr2 = info->txbd_rwptr_clr2_reg;
+ 
+-	if (chip_id == RTL8852A || chip_id == RTL8852C)
++	if (chip_id == RTL8852A || chip_id == RTL8852C ||
++	    chip_id == RTL8192XB)
+ 		val |= B_AX_CLR_ACH4_IDX | B_AX_CLR_ACH5_IDX |
+ 		       B_AX_CLR_ACH6_IDX | B_AX_CLR_ACH7_IDX;
+ 	/* clear DMA indexes */
+ 	rtw89_write32_set(rtwdev, R_AX_TXBD_RWPTR_CLR1, val);
+-	if (chip_id == RTL8852A || chip_id == RTL8852C)
++	if (chip_id == RTL8852A || chip_id == RTL8852C ||
++	    chip_id == RTL8192XB)
+ 		rtw89_write32_set(rtwdev, txbd_rwptr_clr2,
+ 				  B_AX_CLR_CH10_IDX | B_AX_CLR_CH11_IDX);
+ 	rtw89_write32_set(rtwdev, rxbd_rwptr_clr,
+@@ -2994,7 +2998,7 @@ static int rtw89_pci_mode_op(struct rtw8
+ 	if (chip_id == RTL8852A || rtw89_is_rtl885xb(rtwdev)) {
+ 		rtw89_write32_mask(rtwdev, R_AX_PCIE_INIT_CFG1, B_AX_PCIE_MAX_TXDMA_MASK, tx_burst);
+ 		rtw89_write32_mask(rtwdev, R_AX_PCIE_INIT_CFG1, B_AX_PCIE_MAX_RXDMA_MASK, rx_burst);
+-	} else if (chip_id == RTL8852C) {
++	} else if (chip_id == RTL8852C || chip_id == RTL8192XB) {
+ 		rtw89_write32_mask(rtwdev, R_AX_HAXI_INIT_CFG1, B_AX_HAXI_MAX_TXDMA_MASK, tx_burst);
+ 		rtw89_write32_mask(rtwdev, R_AX_HAXI_INIT_CFG1, B_AX_HAXI_MAX_RXDMA_MASK, rx_burst);
+ 	}
+@@ -3019,7 +3023,7 @@ static int rtw89_pci_mode_op(struct rtw8
+ 				   wd_dma_idle_intvl);
+ 		rtw89_write32_mask(rtwdev, R_AX_PCIE_INIT_CFG2, B_AX_WD_ITVL_ACT,
+ 				   wd_dma_act_intvl);
+-	} else if (chip_id == RTL8852C) {
++	} else if (chip_id == RTL8852C || chip_id == RTL8192XB) {
+ 		rtw89_write32_mask(rtwdev, R_AX_HAXI_INIT_CFG1, B_AX_WD_ITVL_IDLE_V1_MASK,
+ 				   wd_dma_idle_intvl);
+ 		rtw89_write32_mask(rtwdev, R_AX_HAXI_INIT_CFG1, B_AX_WD_ITVL_ACT_V1_MASK,
+@@ -4112,7 +4116,7 @@ static int rtw89_pci_filter_out(struct r
+ 	u32 val, phy_offset;
+ 	int ret;
+ 
+-	if (rtwdev->chip->chip_id != RTL8852C)
++	if (!rtw89_is_rtl8852c_mac(rtwdev))
+ 		return 0;
+ 
+ 	val = rtw89_read32_mask(rtwdev, R_AX_PCIE_MIX_CFG_V1, B_AX_ASPM_CTRL_MASK);
+@@ -4192,7 +4196,7 @@ static void rtw89_pci_clkreq_set_ax(stru
+ 		if (ret)
+ 			rtw89_err(rtwdev, "failed to %s CLKREQ_L1, ret=%d",
+ 				  enable ? "set" : "unset", ret);
+-	} else if (chip_id == RTL8852C) {
++	} else if (chip_id == RTL8852C || chip_id == RTL8192XB) {
+ 		rtw89_write32_set(rtwdev, R_AX_PCIE_LAT_CTRL,
+ 				  B_AX_CLK_REQ_SEL_OPT | B_AX_CLK_REQ_SEL);
+ 		if (enable)
+@@ -4241,7 +4245,7 @@ static void rtw89_pci_aspm_set_ax(struct
+ 			ret = rtw89_pci_config_byte_clr(rtwdev,
+ 							RTW89_PCIE_L1_CTRL,
+ 							RTW89_PCIE_BIT_L1);
+-	} else if (chip_id == RTL8852C) {
++	} else if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 		if (enable)
+ 			rtw89_write32_set(rtwdev, R_AX_PCIE_MIX_CFG_V1,
+ 					  B_AX_ASPM_CTRL_L1);
+@@ -4343,7 +4347,7 @@ static void rtw89_pci_l1ss_set_ax(struct
+ 		if (ret)
+ 			rtw89_err(rtwdev, "failed to %s L1SS, ret=%d",
+ 				  enable ? "set" : "unset", ret);
+-	} else if (chip_id == RTL8852C) {
++	} else if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 		ret = rtw89_pci_config_byte_clr(rtwdev, RTW89_PCIE_L1SS_STS_V1,
+ 						RTW89_PCIE_BIT_ASPM_L11 |
+ 						RTW89_PCIE_BIT_PCI_L11);
+@@ -4418,7 +4422,7 @@ static int rtw89_pci_lv1rst_stop_dma_ax(
+ 	u32 val;
+ 	int ret;
+ 
+-	if (rtwdev->chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		return 0;
+ 
+ 	rtw89_pci_ctrl_dma_all(rtwdev, false);
+@@ -4447,7 +4451,7 @@ static int rtw89_pci_lv1rst_start_dma_ax
+ {
+ 	int ret;
+ 
+-	if (rtwdev->chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		return 0;
+ 
+ 	rtw89_mac_ctrl_hci_dma_trx(rtwdev, false);
+@@ -4495,7 +4499,7 @@ static void rtw89_pci_ops_dump_err_statu
+ 	if (rtwdev->chip->chip_gen == RTW89_CHIP_BE)
+ 		return;
+ 
+-	if (rtwdev->chip->chip_id == RTL8852C) {
++	if (rtw89_is_rtl8852c_mac(rtwdev)) {
+ 		rtw89_info(rtwdev, "R_AX_DBG_ERR_FLAG=0x%08x\n",
+ 			   rtw89_read32(rtwdev, R_AX_DBG_ERR_FLAG_V1));
+ 		rtw89_info(rtwdev, "R_AX_LBC_WATCHDOG=0x%08x\n",
+@@ -4592,7 +4596,7 @@ static int __maybe_unused rtw89_pci_susp
+ 
+ static void rtw89_pci_l2_hci_ldo(struct rtw89_dev *rtwdev)
+ {
+-	if (rtwdev->chip->chip_id == RTL8852C)
++	if (rtw89_is_rtl8852c_mac(rtwdev))
+ 		return;
+ 
+ 	/* Hardware need write the reg twice to ensure the setting work */
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/phy.c
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/phy.c
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/phy.c
+@@ -1183,6 +1183,18 @@ static bool rtw89_phy_write_rf_a(struct
+ 	      FIELD_PREP(B_SWSI_DATA_VAL_V1, data);
+ 
+ 	rtw89_phy_write32_mask(rtwdev, R_SWSI_DATA_V1, MASKDWORD, val);
++	if (rtw89_is_ap_fw(rtwdev)) {
++		u32 retry = 500;
++
++		udelay(5);
++		while (rtw89_phy_read32(rtwdev, R_SWSI_DATA_V1) != val &&
++		       retry--) {
++			rtw89_phy_write32_mask(rtwdev, R_SWSI_DATA_V1,
++					       MASKDWORD, val);
++			udelay(5);
++		}
++		udelay(5);
++	}
+ 
+ 	return true;
+ }
+@@ -1540,6 +1552,46 @@ rtw89_phy_cfg_bb_gain_bypass(struct rtw8
+ }
+ 
+ static void
++rtw89_phy_cfg_bb_gain_efem(struct rtw89_dev *rtwdev,
++			   union rtw89_phy_bb_gain_arg arg, u32 data)
++{
++	struct rtw89_phy_bb_gain_info *gain = &rtwdev->bb_gain.ax;
++	u8 type = arg.type;
++	u8 path = arg.path;
++	u8 gband = arg.gain_band;
++	int i;
++
++	switch (type) {
++	case 0:
++		gain->wb_gidx_elna[gband][path] = data;
++		break;
++	case 1:
++		for (i = 0; i < 8; i++, data >>= 4)
++			gain->wb_gidx_lna_tia[gband][path][i] = data & 0x7;
++		break;
++	case 2:
++		for (i = 8; i < WB_GIDX_LNA_TIA_NUM; i++, data >>= 4)
++			gain->wb_gidx_lna_tia[gband][path][i] = data & 0x7;
++		break;
++	case 3:
++		gain->gs_idx[gband][path][0] = data;
++		break;
++	case 4:
++		gain->gs_idx[gband][path][1] = data;
++		break;
++	case 5:
++		for (i = 0; i < 2; i++, data >>= 8)
++			gain->g_elna[gband][path][i] = data & 0xff;
++		break;
++	default:
++		rtw89_warn(rtwdev,
++			   "bb gain efem {0x%x:0x%x} with unknown type: %d\n",
++			   arg.addr, data, type);
++		break;
++	}
++}
++
++static void
+ rtw89_phy_cfg_bb_gain_op1db(struct rtw89_dev *rtwdev,
+ 			    union rtw89_phy_bb_gain_arg arg, u32 data)
+ {
+@@ -1581,7 +1633,6 @@ static void rtw89_phy_config_bb_gain_ax(
+ {
+ 	const struct rtw89_chip_info *chip = rtwdev->chip;
+ 	union rtw89_phy_bb_gain_arg arg = { .addr = reg->addr };
+-	struct rtw89_efuse *efuse = &rtwdev->efuse;
+ 
+ 	if (arg.gain_band >= RTW89_BB_GAIN_BAND_NR)
+ 		return;
+@@ -1608,10 +1659,8 @@ static void rtw89_phy_config_bb_gain_ax(
+ 		rtw89_phy_cfg_bb_gain_op1db(rtwdev, arg, reg->data);
+ 		break;
+ 	case 4:
+-		/* This cfg_type is only used by rfe_type >= 50 with eFEM */
+-		if (efuse->rfe_type < 50)
+-			break;
+-		fallthrough;
++		rtw89_phy_cfg_bb_gain_efem(rtwdev, arg, reg->data);
++		break;
+ 	default:
+ 		rtw89_warn(rtwdev,
+ 			   "bb gain {0x%x:0x%x} with unknown cfg type: %d\n",
+@@ -1715,7 +1764,7 @@ void rtw89_phy_config_rf_reg_v1(struct r
+ 				enum rtw89_rf_path rf_path,
+ 				void *extra_data)
+ {
+-	if (reg->addr == 0xfe) {
++	if (!rtw89_is_ap_fw(rtwdev) && reg->addr == 0xfe) {
+ 		rtw89_io_mdelay(rtwdev, 50);
+ 		return;
+ 	}
+@@ -1882,14 +1931,38 @@ static void rtw89_phy_init_reg(struct rt
+ 	}
+ }
+ 
++const struct rtw89_phy_rfe_table_set *
++rtw89_phy_find_rfe_tables(struct rtw89_dev *rtwdev)
++{
++	const struct rtw89_chip_variant *variant = rtwdev->variant;
++	u8 rfe_type = rtwdev->efuse.rfe_type;
++	u8 i;
++
++	if (!variant || !variant->rfe_tables)
++		return NULL;
++
++	for (i = 0; i < variant->n_rfe_tables; i++)
++		if (variant->rfe_tables[i].rfe_type == rfe_type)
++			return &variant->rfe_tables[i];
++
++	rtw89_warn(rtwdev, "no PHY tables for rfe_type %d, using defaults\n",
++		   rfe_type);
++
++	return NULL;
++}
++EXPORT_SYMBOL(rtw89_phy_find_rfe_tables);
++
+ void rtw89_phy_init_bb_reg(struct rtw89_dev *rtwdev)
+ {
+ 	struct rtw89_fw_elm_info *elm_info = &rtwdev->fw.elm_info;
+ 	const struct rtw89_chip_info *chip = rtwdev->chip;
++	const struct rtw89_phy_rfe_table_set *set = rtw89_phy_find_rfe_tables(rtwdev);
+ 	const struct rtw89_phy_table *bb_table;
+ 	const struct rtw89_phy_table *bb_gain_table;
+ 
+-	bb_table = elm_info->bb_tbl ? elm_info->bb_tbl : chip->bb_table;
++	bb_table = set ? set->bb_table : chip->bb_table;
++	if (elm_info->bb_tbl)
++		bb_table = elm_info->bb_tbl;
+ 
+ 	rtw89_io_pack(rtwdev);
+ 
+@@ -1902,7 +1975,9 @@ void rtw89_phy_init_bb_reg(struct rtw89_
+ 
+ 	rtw89_chip_init_txpwr_unit(rtwdev);
+ 
+-	bb_gain_table = elm_info->bb_gain ? elm_info->bb_gain : chip->bb_gain_table;
++	bb_gain_table = set ? set->bb_gain_table : chip->bb_gain_table;
++	if (elm_info->bb_gain)
++		bb_gain_table = elm_info->bb_gain;
+ 	if (bb_gain_table)
+ 		rtw89_phy_init_reg(rtwdev, bb_gain_table, false,
+ 				   chip->phy_def->config_bb_gain, NULL);
+@@ -2010,6 +2085,7 @@ void rtw89_phy_init_rf_reg(struct rtw89_
+ 	const struct rtw89_chip_info *chip = rtwdev->chip;
+ 	const struct rtw89_phy_table *rf_table;
+ 	struct rtw89_fw_h2c_rf_reg_info *rf_reg_info;
++	const struct rtw89_phy_rfe_table_set *set = rtw89_phy_find_rfe_tables(rtwdev);
+ 	bool by_acv = chip->chip_id == RTL8922D;
+ 	u8 path;
+ 
+@@ -2018,8 +2094,9 @@ void rtw89_phy_init_rf_reg(struct rtw89_
+ 		return;
+ 
+ 	for (path = RF_PATH_A; path < chip->rf_path_num; path++) {
+-		rf_table = elm_info->rf_radio[path] ?
+-			   elm_info->rf_radio[path] : chip->rf_table[path];
++		rf_table = set ? set->rf_table[path] : chip->rf_table[path];
++		if (elm_info->rf_radio[path])
++			rf_table = elm_info->rf_radio[path];
+ 		rf_reg_info->rf_path = rf_table->rf_path;
+ 		if (noio)
+ 			config = rtw89_phy_config_rf_reg_noio;
+@@ -2618,6 +2695,8 @@ s8 rtw89_phy_read_txpwr_limit(struct rtw
+ 		lmt = (*rule_5ghz->lmt)[bw][ntx][rs][bf][RTW89_WW][ch_idx];
+ 		break;
+ 	case RTW89_BAND_6G:
++		if (!rule_6ghz->lmt)
++			return 0;
+ 		if (has_ant_gain)
+ 			da_lmt = (*rule_da_6ghz->lmt)[bw][ntx][rs][bf][regd][reg6][ch_idx];
+ 
+@@ -2898,6 +2977,8 @@ s8 rtw89_phy_read_txpwr_limit_ru(struct
+ 		lmt_ru = (*rule_5ghz->lmt_ru)[ru][ntx][RTW89_WW][ch_idx];
+ 		break;
+ 	case RTW89_BAND_6G:
++		if (!rule_6ghz->lmt_ru)
++			return 0;
+ 		if (has_ant_gain)
+ 			da_lmt_ru = (*rule_da_6ghz->lmt_ru)[ru][ntx][regd][reg6][ch_idx];
+ 
+@@ -6008,7 +6089,7 @@ static void rtw89_phy_pmac_stat_ofdm(str
+ 	pmac->cnt_ampdu_crc_error = field_get(regs->ampdu_crc_err_mask, val);
+ 
+ 	val = rtw89_phy_read32_idx(rtwdev, regs->brk.addr, regs->brk.mask, bb->phy_idx);
+-	if (chip->chip_id == RTL8852C &&
++	if (rtw89_is_rtl8852c_mac(rtwdev) &&
+ 	    rtw89_phy_read32_idx(rtwdev, regs->brk_option.addr,
+ 				 regs->brk_option.mask, bb->phy_idx) == 1) {
+ 		u32 tmp = pmac->ofdm_phy_txon + pmac->cck_phy_txon;
+@@ -6578,7 +6659,7 @@ static u8 rtw89_nhm_weighted_avg(struct
+ 	}
+ 
+ 	if (rtwdev->chip->chip_id == RTL8852A || rtwdev->chip->chip_id == RTL8852B ||
+-	    rtwdev->chip->chip_id == RTL8852C) {
++	    rtw89_is_rtl8852c_mac(rtwdev)) {
+ 		if (env->nhm_th[RTW89_NHM_TH_NUM - 1] == RTW89_NHM_WA_TH) {
+ 			nhm_weight[RTW89_NHM_RPT_NUM - 1] =
+ 				env->nhm_th[RTW89_NHM_TH_NUM - 2] +
+@@ -6813,7 +6894,7 @@ static void rtw89_phy_nhm_th_update(stru
+ 		env->nhm_th[i] = nhm_th_11k[i] << RTW89_NHM_TH_FACTOR;
+ 
+ 	if (chip->chip_id == RTL8852A || chip->chip_id == RTL8852B ||
+-	    chip->chip_id == RTL8852C)
++	    rtw89_is_rtl8852c_mac(rtwdev))
+ 		env->nhm_th[RTW89_NHM_TH_NUM - 1] = RTW89_NHM_WA_TH;
+ 
+ 	for (i = 0; i < RTW89_NHM_TH_NUM; i++) {
+@@ -8160,6 +8241,31 @@ static void rtw89_phy_edcca_init(struct
+ 		__rtw89_phy_edcca_init(rtwdev, bb);
+ }
+ 
++void rtw89_phy_route_rfe_gpio(struct rtw89_dev *rtwdev, enum rtw89_rf_path path,
++			      u8 gpio_idx, bool inv, u8 src_sel)
++{
++	u32 path_ofst = path == RF_PATH_A ? 0 : 0x2000;
++	u32 addr, mask;
++
++	if (gpio_idx >= 32)
++		return;
++
++	addr = R_RFE_SEL0_A2 + (gpio_idx / 16) * sizeof(u32);
++	mask = B_RFE_SEL0_MASK << (gpio_idx % 16) * 2;
++	rtw89_phy_write32_mask(rtwdev, addr, mask, path);
++
++	rtw89_phy_write32_mask(rtwdev, R_RFE_INV0 + path_ofst, BIT(gpio_idx), inv);
++
++	addr = R_RFE_SEL0_BASE + path_ofst + (gpio_idx / 8) * sizeof(u32);
++	mask = B_RFE_SEL0_SRC_MASK << (gpio_idx % 8) * 4;
++	rtw89_phy_write32_mask(rtwdev, addr, mask, src_sel);
++
++	addr = R_AX_GPIO0_7_FUNC_SEL + gpio_idx / 2;
++	mask = GENMASK(3, 0) << (gpio_idx % 2) * 4;
++	rtw89_write8_mask(rtwdev, addr, mask, BIT(3));
++}
++EXPORT_SYMBOL(rtw89_phy_route_rfe_gpio);
++
+ void rtw89_phy_dm_init(struct rtw89_dev *rtwdev)
+ {
+ 	rtw89_phy_stat_init(rtwdev);
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/phy.h
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/phy.h
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/phy.h
+@@ -1009,6 +1009,10 @@ void rtw89_phy_config_rf_reg_v1(struct r
+ 				enum rtw89_rf_path rf_path,
+ 				void *extra_data);
+ void rtw89_phy_dm_init(struct rtw89_dev *rtwdev);
++const struct rtw89_phy_rfe_table_set *
++rtw89_phy_find_rfe_tables(struct rtw89_dev *rtwdev);
++void rtw89_phy_route_rfe_gpio(struct rtw89_dev *rtwdev, enum rtw89_rf_path path,
++			      u8 gpio_idx, bool inv, u8 src_sel);
+ void rtw89_phy_dm_reinit(struct rtw89_dev *rtwdev);
+ void rtw89_phy_dm_init_data(struct rtw89_dev *rtwdev);
+ void rtw89_physts_parsing_init(struct rtw89_dev *rtwdev);
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/reg.h
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/reg.h
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/reg.h
+@@ -9868,6 +9868,10 @@
+ #define R_RFE_SEL0_BASE 0x5880
+ #define B_RFE_SEL0_SRC_MASK GENMASK(3, 0)
+ #define R_RFE_SEL32_BASE 0x5884
++#define RFE_SEL0_SRC_PAPE_RFM 0
++#define RFE_SEL0_SRC_LNAON_RFM 3
++#define RFE_SEL0_SRC_TRSW_RFM 4
++#define RFE_SEL0_SRC_ZERO 7
+ #define RFE_SEL0_SRC_ANTSEL_0 8
+ #define R_RFE_INV0 0x5890
+ #define R_P0_RFM 0x5894
+@@ -9875,6 +9879,8 @@
+ #define B_P0_RFM_TX_OPT BIT(6)
+ #define B_P0_RFM_BT_EN BIT(5)
+ #define B_P0_RFM_OUT GENMASK(4, 0)
++#define B_P0_RFM_TRSW_SEL BIT(24)
++#define B_P0_RFM_PAPE_SEL BIT(25)
+ #define R_P0_PATH_RST 0x58AC
+ #define B_P0_PATH_RST BIT(27)
+ #define R_P0_TXDPD 0x58D4
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/regd.c
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/regd.c
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/regd.c
+@@ -586,6 +586,17 @@ bottom:
+ 	kfree(ptr);
+ }
+ 
++static bool rtw89_regd_sband_has_enabled_chan(const struct ieee80211_supported_band *sband)
++{
++	int i;
++
++	for (i = 0; i < sband->n_channels; i++)
++		if (!(sband->channels[i].flags & IEEE80211_CHAN_DISABLED))
++			return true;
++
++	return false;
++}
++
+ static void rtw89_regd_setup_6ghz(struct rtw89_dev *rtwdev, struct wiphy *wiphy)
+ {
+ 	const struct rtw89_chip_info *chip = rtwdev->chip;
+@@ -600,6 +611,12 @@ static void rtw89_regd_setup_6ghz(struct
+ 	if (!chip_support_6ghz)
+ 		goto bottom;
+ 
++	sband = wiphy->bands[NL80211_BAND_6GHZ];
++	if (sband && !rtw89_regd_sband_has_enabled_chan(sband)) {
++		regd_allow_6ghz = false;
++		goto bottom;
++	}
++
+ 	if (skip_acpi_dsm)
+ 		goto bottom;
+ 
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/coex.c
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/coex.c
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/coex.c
+@@ -7693,6 +7693,9 @@ void rtw89_btc_ntfy_poweron(struct rtw89
+ {
+ 	struct rtw89_btc *btc = &rtwdev->btc;
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	rtw89_debug(rtwdev, RTW89_DBG_BTC, "[BTC], %s(): !!\n", __func__);
+ 	btc->dm.cnt_notify[BTC_NCNT_POWER_ON]++;
+ }
+@@ -7702,6 +7705,9 @@ void rtw89_btc_ntfy_poweroff(struct rtw8
+ 	struct rtw89_btc *btc = &rtwdev->btc;
+ 	struct rtw89_btc_wl_info *wl = &btc->cx.wl;
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	rtw89_debug(rtwdev, RTW89_DBG_BTC, "[BTC], %s(): !!\n", __func__);
+ 	btc->dm.cnt_notify[BTC_NCNT_POWER_OFF]++;
+ 
+@@ -7751,6 +7757,11 @@ void rtw89_btc_ntfy_init(struct rtw89_de
+ 	const struct rtw89_chip_info *chip = rtwdev->chip;
+ 	const struct rtw89_btc_ver *ver = btc->ver;
+ 
++	if (rtw89_is_ap_fw(rtwdev)) {
++		rtw89_write32(rtwdev, R_AX_GNT_SW_CTRL, 0);
++		return;
++	}
++
+ 	_reset_btc_var(rtwdev, BTC_RESET_ALL);
+ 	btc->dm.run_reason = BTC_RSN_NONE;
+ 	btc->dm.run_action = BTC_ACT_NONE;
+@@ -7804,6 +7815,9 @@ void rtw89_btc_ntfy_scan_start(struct rt
+ 	struct rtw89_btc *btc = &rtwdev->btc;
+ 	struct rtw89_btc_wl_info *wl = &btc->cx.wl;
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	rtw89_debug(rtwdev, RTW89_DBG_BTC,
+ 		    "[BTC], %s(): phy_idx=%d, band=%d\n",
+ 		    __func__, phy_idx, band);
+@@ -7831,6 +7845,9 @@ void rtw89_btc_ntfy_scan_finish(struct r
+ 	struct rtw89_btc *btc = &rtwdev->btc;
+ 	struct rtw89_btc_wl_info *wl = &btc->cx.wl;
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	rtw89_debug(rtwdev, RTW89_DBG_BTC,
+ 		    "[BTC], %s(): phy_idx=%d\n", __func__, phy_idx);
+ 	btc->dm.cnt_notify[BTC_NCNT_SCAN_FINISH]++;
+@@ -7854,6 +7871,9 @@ void rtw89_btc_ntfy_switch_band(struct r
+ 	struct rtw89_btc *btc = &rtwdev->btc;
+ 	struct rtw89_btc_wl_info *wl = &btc->cx.wl;
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	rtw89_debug(rtwdev, RTW89_DBG_BTC,
+ 		    "[BTC], %s(): phy_idx=%d, band=%d\n",
+ 		    __func__, phy_idx, band);
+@@ -7884,6 +7904,9 @@ void rtw89_btc_ntfy_specific_packet(stru
+ 	u32 delay = RTW89_COEX_ACT1_WORK_PERIOD;
+ 	bool delay_work = false;
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	switch (pkt_type) {
+ 	case PACKET_DHCP:
+ 		cnt = ++cx->cnt_wl[BTC_WCNT_DHCP];
+@@ -8179,6 +8202,9 @@ void rtw89_btc_ntfy_role_info(struct rtw
+ 	struct rtw89_btc_wl_link_info *wlinfo = NULL;
+ 	u8 mode = 0, rlink_id, link_mode_ori, pta_req_mac_ori, wa_type;
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	rcu_read_lock();
+ 
+ 	bss_conf = rtw89_vif_rcu_dereference_link(rtwvif_link, false);
+@@ -8308,6 +8334,9 @@ void rtw89_btc_ntfy_radio_state(struct r
+ 	struct rtw89_btc_wl_info *wl = &btc->cx.wl;
+ 	u32 val;
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	rtw89_debug(rtwdev, RTW89_DBG_BTC, "[BTC], %s(): rf_state = %d\n",
+ 		    __func__, rf_state);
+ 	btc->dm.cnt_notify[BTC_NCNT_RADIO_STATE]++;
+@@ -8441,6 +8470,9 @@ void rtw89_btc_ntfy_wl_rfk(struct rtw89_
+ 
+ 	lockdep_assert_wiphy(rtwdev->hw->wiphy);
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	band = FIELD_GET(BTC_RFK_BAND_MAP, phy_map);
+ 
+ 	rtw89_debug(rtwdev, RTW89_DBG_RFK,
+@@ -8641,6 +8673,9 @@ void rtw89_btc_ntfy_wl_sta(struct rtw89_
+ 	struct rtw89_btc_wl_sta_iter_data data = {.rtwdev = rtwdev};
+ 	u8 i;
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	ieee80211_iterate_stations_atomic(rtwdev->hw,
+ 					  rtw89_btc_ntfy_wl_sta_iter,
+ 					  &data);
+@@ -8745,6 +8780,9 @@ void rtw89_btc_c2h_handle(struct rtw89_d
+ 	struct rtw89_btc_btf_fwinfo *pfwinfo = &btc->fwinfo;
+ 	u8 *buf = &skb->data[RTW89_C2H_HEADER_LEN];
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	len -= RTW89_C2H_HEADER_LEN;
+ 
+ 	rtw89_debug(rtwdev, RTW89_DBG_BTC,
+@@ -11889,6 +11927,9 @@ void rtw89_btc_ntfy_preserve_bt_time(str
+ 	struct rtw89_btc_bt_link_info *bt_linfo = &rtwdev->btc.cx.bt.link_info;
+ 	struct rtw89_btc_bt_a2dp_desc a2dp = bt_linfo->a2dp_desc;
+ 
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	if (test_bit(RTW89_FLAG_SER_HANDLING, rtwdev->flags))
+ 		return;
+ 
+@@ -11901,6 +11942,9 @@ EXPORT_SYMBOL(rtw89_btc_ntfy_preserve_bt
+ 
+ void rtw89_btc_ntfy_conn_rfk(struct rtw89_dev *rtwdev, bool state)
+ {
++	if (rtw89_is_ap_fw(rtwdev))
++		return;
++
+ 	rtwdev->btc.cx.wl.rfk_info.con_rfk = state;
+ }
+ EXPORT_SYMBOL(rtw89_btc_ntfy_conn_rfk);

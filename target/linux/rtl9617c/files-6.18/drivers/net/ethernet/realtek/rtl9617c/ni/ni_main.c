@@ -225,6 +225,14 @@ netdev_tx_t rtl_ni_xmit_frame(struct rtl9617c_ni *ni, struct net_device *dev,
 	unsigned int q;
 	int ret;
 
+	if (rtl_ni_try_tx_hook(dev, skb, frame) == 0) {
+		if (dev) {
+			DEV_STATS_INC(dev, tx_packets);
+			DEV_STATS_ADD(dev, tx_bytes, len);
+		}
+		return NETDEV_TX_OK;
+	}
+
 	if (frame->oam || frame->raw_payload || frame->prefix_length > 0 ||
 	    num_rings <= 1)
 		q = 0;
@@ -291,6 +299,8 @@ void rtl_ni_tx_restart(struct rtl9617c_ni *ni)
 	rtl_ni_tx_rings_unlock(ni, flags);
 	if (ret)
 		dev_err(ni->dev, "TX DMA restart failed: %d\n", ret);
+	else
+		rtl_ni_notify_dma_reset();
 }
 
 static int rtl_ni_poll(struct napi_struct *napi, int budget)
@@ -505,14 +515,19 @@ static void rtl_ni_engine_stop(struct rtl9617c_ni *ni)
 
 int rtl_ni_engine_get(struct rtl9617c_ni *ni)
 {
+	bool started = false;
 	int ret = 0;
 
 	mutex_lock(&ni->lock);
-	if (!ni->users)
+	if (!ni->users) {
 		ret = rtl_ni_engine_start(ni);
+		started = !ret;
+	}
 	if (!ret)
 		ni->users++;
 	mutex_unlock(&ni->lock);
+	if (started)
+		rtl_ni_notify_dma_reset();
 	return ret;
 }
 

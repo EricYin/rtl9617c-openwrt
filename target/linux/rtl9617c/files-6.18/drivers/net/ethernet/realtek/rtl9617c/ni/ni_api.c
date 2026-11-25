@@ -11,6 +11,70 @@
 #define NI_OAM_MAP_DEST			12
 #define NI_OAM_ES_SPEED_10G		6
 
+static DEFINE_MUTEX(rtl_ni_tx_hook_lock);
+static rtl9617c_ni_tx_hook_t __rcu rtl_ni_tx_hook;
+static rtl9617c_ni_dma_reset_cb_t __rcu rtl_ni_dma_reset_cb;
+
+int rtl9617c_ni_register_tx_hook(rtl9617c_ni_tx_hook_t fn,
+				 rtl9617c_ni_dma_reset_cb_t on_dma_reset)
+{
+	if (!fn)
+		return -EINVAL;
+	mutex_lock(&rtl_ni_tx_hook_lock);
+	if (rcu_dereference_protected(rtl_ni_tx_hook,
+				      lockdep_is_held(&rtl_ni_tx_hook_lock))) {
+		mutex_unlock(&rtl_ni_tx_hook_lock);
+		return -EBUSY;
+	}
+	rcu_assign_pointer(rtl_ni_dma_reset_cb, on_dma_reset);
+	rcu_assign_pointer(rtl_ni_tx_hook, fn);
+	mutex_unlock(&rtl_ni_tx_hook_lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_register_tx_hook);
+
+void rtl9617c_ni_unregister_tx_hook(rtl9617c_ni_tx_hook_t fn)
+{
+	mutex_lock(&rtl_ni_tx_hook_lock);
+	if (rcu_dereference_protected(rtl_ni_tx_hook,
+				      lockdep_is_held(&rtl_ni_tx_hook_lock)) == fn) {
+		RCU_INIT_POINTER(rtl_ni_tx_hook, NULL);
+		RCU_INIT_POINTER(rtl_ni_dma_reset_cb, NULL);
+	}
+	mutex_unlock(&rtl_ni_tx_hook_lock);
+	synchronize_net();
+}
+EXPORT_SYMBOL_GPL(rtl9617c_ni_unregister_tx_hook);
+
+int rtl_ni_try_tx_hook(struct net_device *dev, struct sk_buff *skb,
+		       const struct rtl9617c_ni_frame *frame)
+{
+	rtl9617c_ni_tx_hook_t fn;
+	int ret = -ENOENT;
+
+	if (frame->raw_payload)
+		return -ENOENT;
+	rcu_read_lock();
+	fn = rcu_dereference(rtl_ni_tx_hook);
+	if (unlikely(fn))
+		ret = fn(dev, skb, frame->header_high, frame->header_low,
+			 frame->prefix, frame->prefix_length, frame->oam);
+	rcu_read_unlock();
+	return ret;
+}
+
+void rtl_ni_notify_dma_reset(void)
+{
+	rtl9617c_ni_dma_reset_cb_t cb;
+
+	mutex_lock(&rtl_ni_tx_hook_lock);
+	cb = rcu_dereference_protected(rtl_ni_dma_reset_cb,
+				       lockdep_is_held(&rtl_ni_tx_hook_lock));
+	if (cb)
+		cb();
+	mutex_unlock(&rtl_ni_tx_hook_lock);
+}
+
 static struct rtl9617c_ni *rtl_ni_from_dev(struct device *dev)
 {
 	return dev_get_drvdata(dev);

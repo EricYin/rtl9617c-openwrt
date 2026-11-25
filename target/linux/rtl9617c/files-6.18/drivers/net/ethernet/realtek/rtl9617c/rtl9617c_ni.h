@@ -31,6 +31,24 @@ struct rtl9617c_ni_frame {
 	bool oam;
 };
 
+/*
+ * Optional out-of-tree TX offload hook (e.g. PE coprocessor scheduler).
+ * Scalar signature avoids struct-layout coupling across out-of-tree modules.
+ * Return 0 when the hook consumes skb and takes ownership of hardware TX;
+ * return negative to pass through to native NI DMA TX unchanged.
+ */
+typedef int (*rtl9617c_ni_tx_hook_t)(struct net_device *owner,
+				     struct sk_buff *skb,
+				     u32 header_high, u32 header_low,
+				     const u8 *prefix,
+				     unsigned int prefix_len,
+				     bool oam);
+typedef void (*rtl9617c_ni_dma_reset_cb_t)(void);
+
+int rtl9617c_ni_register_tx_hook(rtl9617c_ni_tx_hook_t fn,
+				 rtl9617c_ni_dma_reset_cb_t on_dma_reset);
+void rtl9617c_ni_unregister_tx_hook(rtl9617c_ni_tx_hook_t fn);
+
 int rtl9617c_ni_open(struct device *dev);
 void rtl9617c_ni_close(struct device *dev, struct net_device *owner);
 netdev_tx_t rtl9617c_ni_transmit(struct device *dev, struct net_device *owner,

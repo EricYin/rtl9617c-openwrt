@@ -341,6 +341,9 @@ netdev_tx_t rtl_ni_xmit_frame(struct rtl9617c_ni *ni, struct net_device *dev,
 			      const struct rtl9617c_ni_frame *frame);
 void rtl_ni_tx_restart(struct rtl9617c_ni *ni);
 void rtl_ni_notify_pon_features(struct rtl9617c_ni *ni);
+int rtl_ni_try_tx_hook(struct net_device *dev, struct sk_buff *skb,
+		       const struct rtl9617c_ni_frame *frame);
+void rtl_ni_notify_dma_reset(void);
 
 int rtl_ni_dma_alloc(struct rtl9617c_ni *ni);
 int rtl_ni_dma_start(struct rtl_ni_dma *dma);

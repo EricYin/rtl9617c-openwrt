@@ -349,6 +349,11 @@ static int rtl_ni_stop(struct net_device *dev)
 
 	netif_tx_stop_all_queues(dev);
 	rtl_fe_flush_port(ni->fe, dev);
+	if ((dev->features & NETIF_F_LOOPBACK) && dev->phydev &&
+	    dev->phydev->loopback_enabled) {
+		phy_loopback(dev->phydev, false, 0);
+		dev->features &= ~NETIF_F_LOOPBACK;
+	}
 	phylink_stop(port->phylink);
 	if (rtl_ni_is_ge(port->id)) {
 		if (ni->qm.lan_dq_bufs)
@@ -520,6 +525,25 @@ static netdev_features_t rtl_ni_fix_features(struct net_device *dev,
 	       (features & rtl9617c_ni_tx_offload_features());
 }
 
+static int rtl_ni_set_features(struct net_device *dev,
+			       netdev_features_t features)
+{
+	netdev_features_t changed = dev->features ^ features;
+
+	if (changed & NETIF_F_LOOPBACK) {
+		bool enable = !!(features & NETIF_F_LOOPBACK);
+		int speed = 0;
+
+		if (!dev->phydev)
+			return -EOPNOTSUPP;
+		if (enable && !dev->phydev->link)
+			speed = SPEED_1000;
+		return phy_loopback(dev->phydev, enable, speed);
+	}
+
+	return 0;
+}
+
 /*
  * Linux's skb_gso_ok() checks gso_type/fraglist/nr_frags but not skb->len against
  * dev->tso_max_size. Force software GSO segmentation (or linearize) whenever an
@@ -544,6 +568,7 @@ static const struct net_device_ops rtl_ni_netdev_ops = {
 	.ndo_stop = rtl_ni_stop,
 	.ndo_start_xmit = rtl_ni_port_xmit,
 	.ndo_fix_features = rtl_ni_fix_features,
+	.ndo_set_features = rtl_ni_set_features,
 	.ndo_features_check = rtl_ni_features_check,
 	.ndo_set_mac_address = rtl_ni_set_mac_address,
 	.ndo_validate_addr = eth_validate_addr,
@@ -770,6 +795,8 @@ static int rtl_ni_port_create(struct rtl9617c_ni *ni, struct device_node *np)
 	dev->ethtool_ops = &rtl_ni_ethtool_ops;
 	dev->max_mtu = RTL_NI_PORT_MAX_MTU;
 	dev->hw_features |= NETIF_F_RXCSUM;
+	if (rtl_ni_is_ge(id))
+		dev->hw_features |= NETIF_F_LOOPBACK;
 	dev->features |= NETIF_F_RXCSUM;
 	rtl_ni_port_offload(dev);
 	ret = rtl_ni_port_mac_probe(port);

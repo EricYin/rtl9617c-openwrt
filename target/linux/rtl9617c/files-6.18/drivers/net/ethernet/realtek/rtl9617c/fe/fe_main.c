@@ -2230,6 +2230,7 @@ int rtl_fe_install(struct rtl_fe_port *port, struct rtl_fe_rule *data,
 	/* Host Policing fallback for L3 flows without an explicit police action. */
 	if (!flow->pol_owned && fe->te && data->kind != RTL_FE_RULE_BRIDGE)
 		rtl_fe_resolve_hostpol_source(data);
+	ether_addr_copy(flow->hostpol_source, data->source);
 	ret = rtl_fe_police_bind(fe, data, flow);
 	if (ret)
 		goto rollback;
@@ -2694,6 +2695,82 @@ int rtl_fe_pon_attach(struct rtl_fe *fe, bool attach)
 		fe->error = ret;
 	mutex_unlock(&fe->lock);
 	return ret;
+}
+
+static int rtl_fe_hostpol_rebind_flow(struct rtl_fe *fe,
+				      struct rtl_fe_flow *flow)
+{
+	u32 words[RTL_FE_ACTION_MAX_WORDS];
+	bool want_bound = false, want_host = false;
+	u8 want_slot = 0;
+	__le32 *slot;
+	int ret;
+
+	if (!flow->published || flow->deleting ||
+	    flow->kind == RTL_FE_RULE_BRIDGE || flow->pol_owned || !fe->te)
+		return 0;
+
+	ret = rtl_fe_hostpol_lookup(fe, flow->hostpol_source,
+				    RTL_TE_HOSTPOL_DIR_INGRESS, &want_slot);
+	if (ret == -ENOENT)
+		ret = rtl_fe_hostpol_lookup(fe, flow->destination,
+					    RTL_TE_HOSTPOL_DIR_EGRESS,
+					    &want_slot);
+	if (ret && ret != -ENOENT)
+		return ret;
+	if (!ret) {
+		want_bound = true;
+		want_host = true;
+	} else {
+		want_slot = 0;
+	}
+
+	if (flow->pol_bound == want_bound && flow->pol_host == want_host &&
+	    flow->pol_slot == want_slot)
+		return 0;
+
+	slot = (__le32 *)(fe->memory + RTL_FE_ACTION_OFFSET +
+			  flow->hash_index * RTL_FE_ACTION_BYTES);
+	memcpy(words, slot, sizeof(words));
+	rtl_fe_action_set_mode(words, RTL_FE_POL_VLD, want_bound,
+			       fe->napt6_active);
+	rtl_fe_action_set_mode(words, RTL_FE_POL_EN, want_bound,
+			       fe->napt6_active);
+	rtl_fe_action_set_mode(words, RTL_FE_POL_ID, want_slot,
+			       fe->napt6_active);
+	memcpy(slot, words, sizeof(words));
+	dma_wmb();
+
+	flow->pol_bound = want_bound;
+	flow->pol_host = want_host;
+	flow->pol_slot = want_slot;
+
+	ret = rtl_fe_cache_command(fe, flow->hash_index, flow->crc16, 1);
+	if (ret)
+		return ret;
+	return rtl_fe_age_write(fe, flow->hash_index, 1);
+}
+
+void rtl_fe_hostpol_sync(struct rtl_fe *fe)
+{
+	struct rtl_fe_flow *flow;
+	int ret;
+
+	if (!fe)
+		return;
+
+	mutex_lock(&fe->lock);
+	if (!fe->enabled)
+		goto unlock;
+	list_for_each_entry(flow, &fe->flows, list) {
+		ret = rtl_fe_hostpol_rebind_flow(fe, flow);
+		if (ret) {
+			fe->error = ret;
+			break;
+		}
+	}
+unlock:
+	mutex_unlock(&fe->lock);
 }
 
 void rtl_fe_start(struct rtl_fe *fe)

@@ -577,6 +577,11 @@ static void rtl_ni_irq_affinity_clear(void *data)
 	irq_update_affinity_hint(rxq->irq, NULL);
 }
 
+static void rtl_ni_hostpol_sync(void *data)
+{
+	rtl_fe_hostpol_sync(data);
+}
+
 static int rtl_ni_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -764,6 +769,8 @@ static int rtl_ni_probe(struct platform_device *pdev)
 	ret = rtl_te_flow_init(ni);
 	if (ret)
 		dev_warn(dev, "rtl_te_flow_init failed: %d\n", ret);
+	else if (ni->fe)
+		rtl_te_flow_set_sync(&ni->te, rtl_ni_hostpol_sync, ni->fe);
 
 	dev_info(dev, "rtl_ni_probe succeeded (rxq=%u, txq=%u)\n",
 		 ni->qm.num_rxq, ni->dma.num_rings);
@@ -802,6 +809,7 @@ static void rtl_ni_remove(struct platform_device *pdev)
 	struct rtl9617c_ni *ni = platform_get_drvdata(pdev);
 
 	rtl_ni_mib_exit(ni);
+	rtl_te_flow_set_sync(&ni->te, NULL, NULL);
 	rtl_ni_ports_unregister(ni);
 	rtl_fe_destroy(ni->fe);
 	WRITE_ONCE(ni->tx_closing, true);

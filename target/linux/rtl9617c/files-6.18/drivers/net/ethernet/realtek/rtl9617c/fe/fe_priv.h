@@ -120,6 +120,7 @@ struct rtl_fe_flow {
 	u8 cos;
 	u8 protocol;
 	u8 ethernet_source[ETH_ALEN];
+	u8 hostpol_source[ETH_ALEN];
 	u8 destination[ETH_ALEN];
 	u64 bytes;
 	u32 packets;

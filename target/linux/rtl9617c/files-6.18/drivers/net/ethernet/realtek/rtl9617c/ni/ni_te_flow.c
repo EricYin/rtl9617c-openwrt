@@ -300,6 +300,43 @@ static int te_bank_cfg_set(struct rtl_te_flow *te, u32 cfg_reg, u32 acc,
 	return 0;
 }
 
+/*
+ * Enable the L3TE global policer gate (NE 0x9004 bit0) together with the two
+ * SoC policer control registers programmed by OEM fc_8277c.ko
+ * rtk_8277c_policer_init (@0xcb780): NE 0x9180[5:0]/[13:8]=0x1f and
+ * NE 0x30ac |= BIT(8)|BIT(9).  Done lazily on the first policer activation
+ * rather than unconditionally at probe so boot defaults stay intact when no
+ * policers are used.
+ */
+static int te_policer_ready(struct rtl_te_flow *te)
+{
+	u32 val;
+
+	if (te->policer_ready)
+		return 0;
+
+	val = te_read(te, L3TE_TE_GLB_CTRL);
+	if (!(val & L3TE_TE_GLB_POLICER_EN)) {
+		te_write(te, L3TE_TE_GLB_CTRL, val | L3TE_TE_GLB_POLICER_EN);
+		val = te_read(te, L3TE_TE_GLB_CTRL);
+		if (!(val & L3TE_TE_GLB_POLICER_EN))
+			return -EIO;
+	}
+
+	val = te_read(te, L3TE_POL_GLB_CFG);
+	if ((val & L3TE_POL_GLB_CFG_MASK) != L3TE_POL_GLB_CFG_VAL)
+		te_write(te, L3TE_POL_GLB_CFG,
+			 (val & ~L3TE_POL_GLB_CFG_MASK) |
+			 L3TE_POL_GLB_CFG_VAL);
+
+	val = te_read(te, L3TE_FE_POL_GLB_CFG);
+	if ((val & L3TE_FE_POL_GLB_EN) != L3TE_FE_POL_GLB_EN)
+		te_write(te, L3TE_FE_POL_GLB_CFG, val | L3TE_FE_POL_GLB_EN);
+
+	te->policer_ready = true;
+	return 0;
+}
+
 static int te_flow_alloc_locked(struct rtl_te_flow *te, u64 cir_bps,
 				u64 pir_bps, u32 cbs, u32 pbs,
 				unsigned int *slot)
@@ -321,6 +358,10 @@ static int te_flow_alloc_locked(struct rtl_te_flow *te, u64 cir_bps,
 	idx = find_first_zero_bit(te->flow_slots, RTL_TE_FLOW_SLOT_COUNT);
 	if (idx >= RTL_TE_FLOW_SLOT_COUNT)
 		return -ENOSPC;
+
+	ret = te_policer_ready(te);
+	if (ret)
+		return ret;
 
 	ret = te_pol_profile_write(te, L3TE_POL_FLOW_ACC,
 				   L3TE_POL_FLOW_IDX_BITS, idx, words);
@@ -429,6 +470,9 @@ static int te_group_alloc_locked(struct rtl_te_flow *te, u64 cir_bps,
 	int ret;
 
 	ret = te_group_depth_ready(te);
+	if (ret)
+		return ret;
+	ret = te_policer_ready(te);
 	if (ret)
 		return ret;
 
@@ -1238,6 +1282,9 @@ static int te_hostpol_add_locked(struct rtl_te_flow *te,
 	for (d = 0; d < RTL_TE_HOSTPOL_DIRS; d++)
 		h->kbps[d] = kbps[d];
 	te_hostpol_resolve(h, entry);
+	ret = te_policer_ready(te);
+	if (ret)
+		goto fail;
 	te_hostpol_pm_ready(te);
 
 	for (d = 0; d < RTL_TE_HOSTPOL_DIRS; d++) {
@@ -1942,11 +1989,27 @@ int rtl_te_dos_set(struct rtl_te_flow *te, bool enable)
 	return 0;
 }
 
+void rtl_te_flow_set_sync(struct rtl_te_flow *te, void (*sync)(void *data),
+			  void *data)
+{
+	unsigned long flags;
+
+	if (!te)
+		return;
+
+	spin_lock_irqsave(&te->lock, flags);
+	te->hostpol_sync = sync;
+	te->hostpol_sync_data = data;
+	spin_unlock_irqrestore(&te->lock, flags);
+}
+
 int rtl_te_hostpol_add_vmeter(struct rtl_te_flow *te,
 			      const u8 mac[RTL_TE_HOSTPOL_ALEN],
 			      u32 ingress_kbps, u32 egress_kbps,
 			      u8 ingress_vmeter, u8 egress_vmeter)
 {
+	void (*sync_cb)(void *data);
+	void *sync_data;
 	unsigned long flags;
 	int ret;
 
@@ -1956,7 +2019,11 @@ int rtl_te_hostpol_add_vmeter(struct rtl_te_flow *te,
 	spin_lock_irqsave(&te->lock, flags);
 	ret = te_hostpol_add_locked(te, mac, ingress_kbps, egress_kbps,
 				    ingress_vmeter, egress_vmeter);
+	sync_cb = te->hostpol_sync;
+	sync_data = te->hostpol_sync_data;
 	spin_unlock_irqrestore(&te->lock, flags);
+	if (!ret && sync_cb)
+		sync_cb(sync_data);
 	return ret;
 }
 
@@ -1972,6 +2039,8 @@ int rtl_te_hostpol_add(struct rtl_te_flow *te,
 int rtl_te_hostpol_del(struct rtl_te_flow *te,
 		       const u8 mac[RTL_TE_HOSTPOL_ALEN])
 {
+	void (*sync_cb)(void *data);
+	void *sync_data;
 	unsigned long flags;
 	int ret;
 
@@ -1980,7 +2049,11 @@ int rtl_te_hostpol_del(struct rtl_te_flow *te,
 
 	spin_lock_irqsave(&te->lock, flags);
 	ret = te_hostpol_del_locked(te, mac);
+	sync_cb = te->hostpol_sync;
+	sync_data = te->hostpol_sync_data;
 	spin_unlock_irqrestore(&te->lock, flags);
+	if (!ret && sync_cb)
+		sync_cb(sync_data);
 	return ret;
 }
 
@@ -2427,10 +2500,16 @@ static void te_dump_slots(struct seq_file *s, struct rtl_te_flow *te)
 	seq_puts(s, "\n");
 	{
 		u32 glb = te_read(te, L3TE_TE_GLB_CTRL);
+		u32 pol_cfg = te_read(te, L3TE_POL_GLB_CFG);
+		u32 fe_pol_cfg = te_read(te, L3TE_FE_POL_GLB_CFG);
 
 		seq_printf(s, "l3_glb_ctrl=0x%08x (wred_en=%u ecn=%u)\n",
 			   glb, !!(glb & L3TE_GLB_CTRL_WRED_EN),
 			   !!(glb & L3TE_GLB_CTRL_WRED_ECN_EN));
+		seq_printf(s,
+			   "policer_en=%u policer_ready=%u pol_cfg_9180=0x%08x fe_pol_cfg_30ac=0x%08x\n",
+			   !!(glb & L3TE_TE_GLB_POLICER_EN), te->policer_ready,
+			   pol_cfg, fe_pol_cfg);
 	}
 }
 
@@ -3192,6 +3271,11 @@ int rtl_te_flow_init(struct rtl9617c_ni *ni)
 	 */
 	glb = te_read(te, L3TE_TE_GLB_CTRL);
 	te->group64_ready = !!(glb & L3TE_TE_GLB_POL_GRP_64);
+	te->policer_ready = (glb & L3TE_TE_GLB_POLICER_EN) &&
+		((te_read(te, L3TE_POL_GLB_CFG) & L3TE_POL_GLB_CFG_MASK) ==
+		 L3TE_POL_GLB_CFG_VAL) &&
+		((te_read(te, L3TE_FE_POL_GLB_CFG) & L3TE_FE_POL_GLB_EN) ==
+		 L3TE_FE_POL_GLB_EN);
 	dev_dbg(te->dev, "L3TE group policer table depth is %u slots\n",
 		te->group64_ready ? 64 : 8);
 

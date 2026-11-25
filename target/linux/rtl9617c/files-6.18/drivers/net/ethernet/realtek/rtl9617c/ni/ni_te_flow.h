@@ -92,9 +92,21 @@ struct dentry;
 /* sections 2.6 / 2.3 TE global and rate encoding                             */
 /* ------------------------------------------------------------------ */
 #define L3TE_TE_GLB_CTRL		0x9004u
+#define L3TE_TE_GLB_POLICER_EN		BIT(0)
 #define L3TE_GLB_CTRL_WRED_EN		BIT(3)
 #define L3TE_GLB_CTRL_WRED_ECN_EN	BIT(6)
 #define L3TE_TE_GLB_POL_GRP_64		BIT(25)
+
+/*
+ * OEM fc_8277c.ko rtk_8277c_policer_init (@0xcb780) programs NE 0x9180 and
+ * NE 0x30ac alongside L3TE_TE_GLB_CTRL when bringing up L3TE policing.
+ */
+#define L3TE_POL_GLB_CFG		0x9180u
+#define L3TE_POL_GLB_CFG_MASK		(GENMASK(5, 0) | GENMASK(13, 8))
+#define L3TE_POL_GLB_CFG_VAL		((0x1fu << 8) | 0x1fu)
+/* NE 0x30ac lives in the L3FE register window alongside RTL_FE_TABLE_CFG0/1. */
+#define L3TE_FE_POL_GLB_CFG		0x30acu
+#define L3TE_FE_POL_GLB_EN		(BIT(8) | BIT(9))
 
 /*
  * Rate fields hold kbps split as rate = 500 * hi + lo (spec section 2.3:
@@ -437,10 +449,19 @@ struct rtl_te_flow {
 	 * without writing anything.
 	 */
 	bool group64_ready;
+	/* Cached L3TE policer global enable state (NE 0x9004 bit0, 0x9180,
+	 * 0x30ac): enabled lazily on the first flow/group/host policer add.
+	 */
+	bool policer_ready;
 	/* Cached TE_PM_CTRL (0x9700) state: false until the first host policing
 	 * add or MIB read lazily clears mem_disable and sets auto_clr/cnt sels.
 	 */
 	bool pm_ready;
+	/* Optional FE callback invoked after hostpol rules change (outside
+	 * ->lock) so already-offloaded FE flows refresh their POL_VLD/EN/ID.
+	 */
+	void (*hostpol_sync)(void *data);
+	void *hostpol_sync_data;
 	/* Host policing table, guarded by ->lock together with the bitmaps
 	 * above because both allocate from the same 256 slot POL1 table.
 	 */
@@ -449,6 +470,8 @@ struct rtl_te_flow {
 
 int rtl_te_flow_init(struct rtl9617c_ni *ni);
 void rtl_te_flow_exit(struct rtl9617c_ni *ni);
+void rtl_te_flow_set_sync(struct rtl_te_flow *te, void (*sync)(void *data),
+			  void *data);
 
 int rtl_te_policer_alloc(struct rtl_te_flow *te, u64 cir_bps, u64 pir_bps,
 			 u32 cbs_bytes, u32 pbs_bytes, u8 *slot);

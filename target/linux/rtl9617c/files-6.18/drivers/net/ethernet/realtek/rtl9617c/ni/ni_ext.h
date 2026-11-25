@@ -35,6 +35,9 @@ void rtl_ni_eee_sync_link(struct rtl9617c_ni_port *port);
 /* QoS / Traffic Engine offload (implemented in ni_qos.c) */
 int rtl_ni_qos_setup_tc(struct rtl9617c_ni_port *port, enum tc_setup_type type,
 			void *type_data);
+struct tc_ets_qopt_offload;
+int rtl_ni_qos_ets_to_weights(const struct tc_ets_qopt_offload *qopt,
+			      u8 weights[8]);
 
 /* IEEE 1588 PTP PHC & hardware timestamping (implemented in ni_ptp.c) */
 void rtl_ni_ptp_init_dev(struct rtl9617c_ni *ni, struct device *dev);

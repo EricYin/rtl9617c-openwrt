@@ -159,6 +159,7 @@ static int taurus_qspi_data(struct taurus_qspi *qspi,
 		writel(access, qspi->base + TAURUS_QSPI_SF_ACCESS);
 	}
 	writel(0, qspi->base + TAURUS_QSPI_SF_ACCESS);
+	writel(0, qspi->base + TAURUS_QSPI_SF_EXT_ACCESS);
 
 	return ret;
 }
@@ -190,6 +191,7 @@ static int taurus_qspi_exec_op(struct spi_mem *mem,
 	if (!ret)
 		usleep_range(10, 20);
 	writel(0, qspi->base + TAURUS_QSPI_SF_ACCESS);
+	writel(0, qspi->base + TAURUS_QSPI_SF_EXT_ACCESS);
 
 	return ret;
 }
@@ -256,8 +258,37 @@ static int taurus_qspi_probe(struct platform_device *pdev)
 	ctlr->bits_per_word_mask = SPI_BPW_MASK(8);
 	ctlr->mem_ops = &taurus_qspi_mem_ops;
 	ctlr->dev.of_node = pdev->dev.of_node;
+	platform_set_drvdata(pdev, ctlr);
 
 	return devm_spi_register_controller(&pdev->dev, ctlr);
+}
+
+static void taurus_qspi_shutdown(struct platform_device *pdev)
+{
+	struct spi_controller *ctlr = platform_get_drvdata(pdev);
+	struct taurus_qspi *qspi;
+	u32 type;
+
+	if (!ctlr)
+		return;
+
+	spi_controller_suspend(ctlr);
+	qspi = spi_controller_get_devdata(ctlr);
+	taurus_qspi_wait(qspi);
+	writel(0, qspi->base + TAURUS_QSPI_SF_ACCESS);
+	writel(0, qspi->base + TAURUS_QSPI_SF_EXT_ACCESS);
+
+	/* Restore default 3-byte addressing and reset SPI-NAND (0xff) so
+	 * BootROM/U-Boot always sees the flash in its power-on state.
+	 */
+	type = readl(qspi->base + TAURUS_QSPI_TYPE) &
+	       ~TAURUS_QSPI_TYPE_SIZE_MASK;
+	writel(type, qspi->base + TAURUS_QSPI_TYPE);
+	writel(0xff | TAURUS_QSPI_ACC_CMD, qspi->base + TAURUS_QSPI_SF_ACCESS);
+	taurus_qspi_kick(qspi, false);
+	writel(0, qspi->base + TAURUS_QSPI_SF_ACCESS);
+	writel(0, qspi->base + TAURUS_QSPI_SF_EXT_ACCESS);
+	udelay(1000);
 }
 
 static const struct of_device_id taurus_qspi_of_match[] = {
@@ -268,6 +299,7 @@ MODULE_DEVICE_TABLE(of, taurus_qspi_of_match);
 
 static struct platform_driver taurus_qspi_driver = {
 	.probe = taurus_qspi_probe,
+	.shutdown = taurus_qspi_shutdown,
 	.driver = {
 		.name = "taurus-qspi",
 		.of_match_table = taurus_qspi_of_match,

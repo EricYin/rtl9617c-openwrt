@@ -129,76 +129,167 @@ void rtl_fe_bits_set(u32 *words, unsigned int bit, unsigned int width, u32 val)
 				  (val >> (32 - shift));
 }
 
-void rtl_fe_action_set(u32 words[RTL_FE_ACTION_WORDS],
-		       enum rtl_fe_action_field field, u32 val)
+void rtl_fe_action_set_mode(u32 *words, enum rtl_fe_action_field field,
+			    u32 val, bool napt6)
 {
 	const struct rtl_fe_field_layout *f = &rtl_fe_action_fields[field];
 
-	rtl_fe_bits_set(words, f->bit, f->width, val);
+	rtl_fe_bits_set(words, f->bit + (napt6 ? RTL_FE_ACTION_NAPT6_SHIFT : 0),
+			f->width, val);
 }
 
-void rtl_fe_action_build(u32 words[RTL_FE_ACTION_WORDS],
-			 const struct rtl_fe_action *action)
+void rtl_fe_action_set(u32 words[RTL_FE_ACTION_WORDS],
+		       enum rtl_fe_action_field field, u32 val)
+{
+	rtl_fe_action_set_mode(words, field, val, false);
+}
+
+static void rtl_fe_action_pack(u32 *words, unsigned int word_count,
+			       const struct rtl_fe_action *action, bool napt6)
 {
 	bool l3 = !action->bridge;
 	unsigned int i;
 
-	memset(words, 0, RTL_FE_ACTION_WORDS * sizeof(*words));
-	rtl_fe_action_set(words, RTL_FE_DPID_VLD, 1);
-	rtl_fe_action_set(words, RTL_FE_DPID_PRI, 1);
-	rtl_fe_action_set(words, RTL_FE_PERMIT, 1);
-	rtl_fe_action_set(words, RTL_FE_DEEPQ, action->deep_queue);
-	rtl_fe_action_set(words, RTL_FE_MCGID, action->destination);
-	rtl_fe_action_set(words, RTL_FE_L3_IF_VLD, l3);
-	rtl_fe_action_set(words, RTL_FE_SMAC_TRANS, action->bridge);
-	rtl_fe_action_set(words, RTL_FE_IGR_L3_IF_IDX, action->ingress_interface);
-	rtl_fe_action_set(words, RTL_FE_EGR_L3_IF_IDX, action->egress_interface);
-	rtl_fe_action_set(words, RTL_FE_IP_TTL_DEC, l3);
-	rtl_fe_action_set(words, RTL_FE_IP_TTL_ZERO_DISCARD_EN, l3);
-	rtl_fe_action_set(words, RTL_FE_MAC_DA_IDX_VLD, l3);
-	rtl_fe_action_set(words, RTL_FE_MAC_DA_IDX, action->mac_da_index);
-	rtl_fe_action_set(words, RTL_FE_CHK_MSK_PTR, action->check_mask);
-	rtl_fe_action_set(words, RTL_FE_CACHE_CTRL, 1);
-	rtl_fe_action_set(words, RTL_FE_COS_UPDATE_EN, 1);
-	rtl_fe_action_set(words, RTL_FE_COS, action->cos);
-	rtl_fe_action_set(words, RTL_FE_IP_ADDR_VLD, action->translate);
-	rtl_fe_action_set(words, RTL_FE_IP_TYPE, action->translate_destination);
-	rtl_fe_action_set(words, RTL_FE_IP_ADDR, action->address);
-	rtl_fe_action_set(words, RTL_FE_L4_PORT, action->port);
-	rtl_fe_action_set(words, RTL_FE_PPPOE_SET, action->pppoe_pop);
-	rtl_fe_action_set(words, RTL_FE_PPPOE_VLD, 0);
-	rtl_fe_action_set(words, RTL_FE_IP_MTU_ENC_VLD, action->mtu_set);
-	rtl_fe_action_set(words, RTL_FE_IP_MTU_ENC, action->mtu_index);
+	memset(words, 0, word_count * sizeof(*words));
+	rtl_fe_action_set_mode(words, RTL_FE_DPID_VLD, 1, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_DPID_PRI, 1, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_PERMIT, 1, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_DEEPQ, action->deep_queue, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_MCGID, action->destination, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_L3_IF_VLD, l3, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_SMAC_TRANS, action->bridge, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_IGR_L3_IF_IDX,
+			       action->ingress_interface, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_EGR_L3_IF_IDX,
+			       action->egress_interface, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_IP_TTL_DEC, l3, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_IP_TTL_ZERO_DISCARD_EN, l3, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_MAC_DA_IDX_VLD, l3, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_MAC_DA_IDX, action->mac_da_index,
+			       napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_CHK_MSK_PTR, action->check_mask,
+			       napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_CACHE_CTRL, 1, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_COS_UPDATE_EN, 1, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_COS, action->cos, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_IP_ADDR_VLD, action->translate,
+			       napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_IP_TYPE,
+			       action->translate_destination, napt6);
+	if (napt6 && action->translate && action->translate_ipv6) {
+		rtl_fe_action_set_mode(words, RTL_FE_IP_ADDR,
+				       action->address6[3], true);
+		rtl_fe_action_set_mode(words, RTL_FE_IP_ADDR_NAPT6, 1, true);
+		rtl_fe_bits_set(words, RTL_FE_IP_ADDR_H_96_VLD_BIT, 1, 1);
+		rtl_fe_bits_set(words, RTL_FE_IP_ADDR_H_96_1_BIT,
+				RTL_FE_IP_ADDR_H_96_WIDTH, action->address6[2]);
+		rtl_fe_bits_set(words, RTL_FE_IP_ADDR_H_96_2_BIT,
+				RTL_FE_IP_ADDR_H_96_WIDTH, action->address6[1]);
+		rtl_fe_bits_set(words, RTL_FE_IP_ADDR_H_96_3_BIT,
+				RTL_FE_IP_ADDR_H_96_WIDTH, action->address6[0]);
+	} else {
+		rtl_fe_action_set_mode(words, RTL_FE_IP_ADDR, action->address,
+				       napt6);
+	}
+	rtl_fe_action_set_mode(words, RTL_FE_L4_PORT, action->port, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_PPPOE_SET, action->pppoe_pop,
+			       napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_PPPOE_VLD, 0, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_IP_MTU_ENC_VLD, action->mtu_set,
+			       napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_IP_MTU_ENC, action->mtu_index,
+			       napt6);
 
 	if (action->gem_set) {
-		rtl_fe_action_set(words, RTL_FE_MCGID, action->gem_index);
-		rtl_fe_action_set(words, RTL_FE_MC, 1);
-		rtl_fe_action_set(words, RTL_FE_DEEPQ, 1);
-		rtl_fe_action_set(words, RTL_FE_POP_L3_VLD, 1);
-		rtl_fe_action_set(words, RTL_FE_T2_CTRL, action->destination & 15);
-		rtl_fe_action_set(words, RTL_FE_LDPID_OFFSET_MSB,
-				  (action->destination >> 4) & 1);
+		rtl_fe_action_set_mode(words, RTL_FE_MCGID, action->gem_index,
+				       napt6);
+		rtl_fe_action_set_mode(words, RTL_FE_MC, 1, napt6);
+		rtl_fe_action_set_mode(words, RTL_FE_DEEPQ, 1, napt6);
+		rtl_fe_action_set_mode(words, RTL_FE_POP_L3_VLD, 1, napt6);
+		rtl_fe_action_set_mode(words, RTL_FE_T2_CTRL,
+				       action->destination & 15, napt6);
+		rtl_fe_action_set_mode(words, RTL_FE_LDPID_OFFSET_MSB,
+				       (action->destination >> 4) & 1, napt6);
+	}
+
+	if (action->dscp_set) {
+		rtl_fe_action_set_mode(words, RTL_FE_IP_DSCP_UPDATE_EN, 1,
+				       napt6);
+		rtl_fe_action_set_mode(words, RTL_FE_IP_DSCP, action->dscp,
+				       napt6);
+	}
+
+	/*
+	 * MRR_VLD/MRR_EN only mark the entry as mirror-eligible; the mirror
+	 * destination and the copy length live in the global L3PE mirror
+	 * registers programmed by rtl_fe_mirror_apply().
+	 */
+	if (action->mirror) {
+		rtl_fe_action_set_mode(words, RTL_FE_MRR_VLD, 1, napt6);
+		rtl_fe_action_set_mode(words, RTL_FE_MRR_EN, 1, napt6);
 	}
 
 	if (!action->vlan_set)
 		return;
 
-	rtl_fe_action_set(words, RTL_FE_VLAN_VLD, 1);
-	rtl_fe_action_set(words, RTL_FE_VLAN_CNT, action->vlan_count);
+	rtl_fe_action_set_mode(words, RTL_FE_VLAN_VLD, 1, napt6);
+	rtl_fe_action_set_mode(words, RTL_FE_VLAN_CNT, action->vlan_count,
+			       napt6);
 	for (i = 0; i < action->vlan_count; i++) {
 		const struct rtl_fe_vlan *vlan = &action->vlan[i];
 
-		rtl_fe_action_set(words, i ? RTL_FE_INNER_VID : RTL_FE_TOP_VID,
-				  vlan->vid);
-		rtl_fe_action_set(words, i ? RTL_FE_INNER_TPID_ENC :
-				  RTL_FE_TOP_TPID_ENC, vlan->tpid);
-		rtl_fe_action_set(words, i ? RTL_FE_INNER_8021P : RTL_FE_TOP_8021P,
-				  vlan->priority);
-		rtl_fe_action_set(words, i ? RTL_FE_INNER_8021P_UPDATE_EN :
-				  RTL_FE_TOP_8021P_UPDATE_EN, 1);
-		rtl_fe_action_set(words, i ? RTL_FE_INNER_DEI : RTL_FE_TOP_DEI,
-				  vlan->dei);
+		rtl_fe_action_set_mode(words,
+				       i ? RTL_FE_INNER_VID : RTL_FE_TOP_VID,
+				       vlan->vid, napt6);
+		rtl_fe_action_set_mode(words, i ? RTL_FE_INNER_TPID_ENC :
+				       RTL_FE_TOP_TPID_ENC, vlan->tpid, napt6);
+		rtl_fe_action_set_mode(words, i ? RTL_FE_INNER_8021P :
+				       RTL_FE_TOP_8021P, vlan->priority, napt6);
+		rtl_fe_action_set_mode(words, i ? RTL_FE_INNER_8021P_UPDATE_EN :
+				       RTL_FE_TOP_8021P_UPDATE_EN, 1, napt6);
+		rtl_fe_action_set_mode(words,
+				       i ? RTL_FE_INNER_DEI : RTL_FE_TOP_DEI,
+				       vlan->dei, napt6);
 	}
+}
+
+void rtl_fe_action_build_mode(u32 words[RTL_FE_ACTION_MAX_WORDS],
+			      const struct rtl_fe_action *action, bool napt6)
+{
+	rtl_fe_action_pack(words, RTL_FE_ACTION_MAX_WORDS, action, napt6);
+}
+
+void rtl_fe_action_build(u32 words[RTL_FE_ACTION_WORDS],
+			 const struct rtl_fe_action *action)
+{
+	rtl_fe_action_pack(words, RTL_FE_ACTION_WORDS, action, false);
+}
+
+/* Program the global L3PE flow-mirror register pair.
+ *
+ * The OEM setter keeps the three bit fields in one word and the copy length
+ * in a second one (see fe_hw.h).  Both are always written together so that a
+ * disabled mirror leaves no stale destination or length behind; the field
+ * meanings are still the open question recorded in fe_hw.h, so the caller
+ * passes them verbatim.
+ */
+void rtl_fe_mirror_apply(struct rtl_fe *fe, bool enable,
+			 unsigned int arg0, unsigned int arg1,
+			 unsigned int arg2, unsigned int len)
+{
+	u32 ctrl = 0;
+
+	if (enable)
+		ctrl = ((arg0 & RTL_FE_MIRROR_ARG0_MAX) <<
+			RTL_FE_MIRROR_ARG0_SHIFT) |
+		       ((arg1 & RTL_FE_MIRROR_ARG1_MAX) <<
+			RTL_FE_MIRROR_ARG1_SHIFT) |
+		       ((arg2 & RTL_FE_MIRROR_ARG2_MAX) <<
+			RTL_FE_MIRROR_ARG2_SHIFT);
+
+	rtl_fe_write(fe, RTL_FE_MIRROR_LEN,
+		     enable ? len & RTL_FE_MIRROR_LEN_MAX : 0);
+	rtl_fe_write(fe, RTL_FE_MIRROR_CTRL, ctrl);
 }
 
 void rtl_fe_key_set(u32 words[RTL_FE_KEY_WORDS], enum rtl_fe_key_field field,
@@ -462,9 +553,13 @@ void rtl_fe_dma_tables(struct rtl_fe *fe, u32 address, u32 address_high)
 	rtl_fe_write(fe, RTL_FE_DEFAULT_BASE_HIGH, address_high);
 	rtl_fe_write(fe, RTL_FE_DEFAULT_BASE_LOW, address + RTL_FE_DEFAULT_OFFSET);
 	rtl_fe_rmw(fe, RTL_FE_BUCKET_CFG, 0x300ff, 3 | (7 << 2) | (4 << 5));
-	rtl_fe_write(fe, RTL_FE_ACTION_SLOT_CFG, 4);
+	rtl_fe_write(fe, RTL_FE_ACTION_SLOT_CFG, RTL_FE_ACTION_WIDTH_384);
 	rtl_fe_write(fe, RTL_FE_DEFAULT_SLOT_CFG, 1);
-	rtl_fe_write(fe, RTL_FE_HASH_CFG, BIT(18) | BIT(16) | (3 << 8) | 4);
+	rtl_fe_write(fe, RTL_FE_HASH_CFG,
+		     BIT(18) | BIT(16) |
+		     (fe->napt6_active ? RTL_FE_HASH_CACHE_HALF : 0) |
+		     ((fe->napt6_active ? RTL_FE_ACTION_WIDTH_384 :
+		       RTL_FE_ACTION_WIDTH_256) << RTL_FE_CACHE_WIDTH_SHIFT) | 4);
 }
 
 void rtl_fe_cache_start(struct rtl_fe *fe)
@@ -580,6 +675,78 @@ int rtl_fe_cam_protocol_put(struct rtl_fe *fe, struct rtl_fe_cam_protocol *cam)
 	return ret;
 }
 
+#define RTL_FE_CLS_LOW_MASK(bits)		((u32)(~0ULL >> (64 - (bits))))
+
+#define RTL_FE_CLS_DUAL_FIB_BASE		4
+#define RTL_FE_CLS_KEY_PRI_BIT			338
+#define RTL_FE_CLS_KEY_PRI_WIDTH		4
+#define RTL_FE_CLS_KEY_RSLT_BIT			342
+#define RTL_FE_CLS_KEY_RSLT_WIDTH		2
+#define RTL_FE_CLS_KEY_TYPE_BIT			344
+#define RTL_FE_CLS_KEY_TYPE_WIDTH		3
+#define RTL_FE_CLS_KEY_VALID_BIT		347
+#define RTL_FE_CLS_KEY_VALID_WIDTH		4
+#define RTL_FE_CLS_RSLT_DEFAULT			0
+
+#define RTL_FE_CLS_MDATA_PKT_TYPE_MASK		0xefffU
+#define RTL_FE_CLS_MDATA_PKT_TYPE_SHIFT		16
+#define RTL_FE_CLS_MDATA_PKT_TYPE_DSLITE	0x9U
+#define RTL_FE_CLS_MDATA_PKT_TYPE_6RD		0xaU
+
+#define RTL_FE_CLS_IPV4_BITS			32
+#define RTL_FE_CLS_IPV6_BITS			128
+
+/* KEY6 (ip_v4_6rd) bit positions inside 352-bit EVEN / ODD CAM words. */
+#define RTL_FE_CLS_K6_FRAG_MSK_BIT		53
+#define RTL_FE_CLS_K6_FRAG_VAL_BIT		54
+#define RTL_FE_CLS_K6_OPT_MSK_BIT		55
+#define RTL_FE_CLS_K6_OPT_VAL_BIT		56
+#define RTL_FE_CLS_K6_IP_DA_MSK_BIT		61
+#define RTL_FE_CLS_K6_IP_DA_BIT			70
+#define RTL_FE_CLS_K6_IP_SA_MSK_BIT		198
+#define RTL_FE_CLS_K6_IP_SA_BIT			207
+#define RTL_FE_CLS_K6_IP_MASK_WIDTH		9
+#define RTL_FE_CLS_K6_IP_ADDR_CTRL_BIT		335
+#define RTL_FE_CLS_K6_IP_ADDR_CTRL_WIDTH	2
+#define RTL_FE_CLS_K6_ADDR_CTRL_DIP_SIP		0
+#define RTL_FE_CLS_K6_EVEN_W1_MASK_BITS		20
+#define RTL_FE_CLS_K6_EVEN_W1_HIGH_SHIFT	25
+#define RTL_FE_CLS_K6_EVEN_W1_HIGH_MASK		0xfU
+#define RTL_FE_CLS_K6_ODD_W8_BITS		27
+#define RTL_FE_CLS_K6_ODD_MDATA_MSK_BIT		178
+#define RTL_FE_CLS_K6_ODD_MDATA_BIT		226
+
+/* KEY7 (dslite) bit positions inside 352-bit EVEN / ODD CAM words. */
+#define RTL_FE_CLS_K7_FRAG_MSK_BIT		93
+#define RTL_FE_CLS_K7_FRAG_VAL_BIT		94
+#define RTL_FE_CLS_K7_OPT_MSK_BIT		95
+#define RTL_FE_CLS_K7_OPT_VAL_BIT		96
+#define RTL_FE_CLS_K7_IP_ADDR_TYPE_BIT		118
+#define RTL_FE_CLS_K7_IP_ADDR_DIP		0
+#define RTL_FE_CLS_K7_IP_ADDR_SIP		1
+#define RTL_FE_CLS_K7_IP_ADDR_MSK_BIT		119
+#define RTL_FE_CLS_K7_IP_ADDR_MSK_WIDTH		9
+#define RTL_FE_CLS_K7_IP_VER_MSK_BIT		279
+#define RTL_FE_CLS_K7_IP_VER_BIT		280
+#define RTL_FE_CLS_K7_EVEN_W2_CLR_MASK		(0xfU << 4)
+#define RTL_FE_CLS_K7_EVEN_W3_BITS		22
+#define RTL_FE_CLS_K7_EVEN_W9_BITS		17
+#define RTL_FE_CLS_K7_ODD_W8_BITS		21
+#define RTL_FE_CLS_K7_ODD_MDATA_MSK_BIT		183
+#define RTL_FE_CLS_K7_ODD_MDATA_ID1_BIT		215
+#define RTL_FE_CLS_K7_ODD_MDATA_BIT		231
+
+#define RTL_FE_CLS_FIB_IGR_IF_VLD_BIT		189
+#define RTL_FE_CLS_FIB_IGR_IF_BIT		190
+#define RTL_FE_CLS_FIB_IGR_IF_WIDTH		6
+#define RTL_FE_CLS_FIB_LSPID_VLD_BIT		208
+
+static u32 rtl_fe_be32_read(const u8 bytes[4])
+{
+	return ((u32)bytes[0] << 24) | ((u32)bytes[1] << 16) |
+	       ((u32)bytes[2] << 8) | bytes[3];
+}
+
 int rtl_fe_classifier_read(struct rtl_fe *fe, unsigned int index,
 			   u32 words[RTL_FE_CLASSIFIER_WORDS])
 {
@@ -594,6 +761,295 @@ int rtl_fe_classifier_write(struct rtl_fe *fe, unsigned int index,
 	return rtl_fe_table_write(fe, RTL_FE_CLASSIFIER_CMD, index,
 				  RTL_FE_CLASSIFIER_DATA, words,
 				  RTL_FE_CLASSIFIER_WORDS);
+}
+
+int rtl_fe_cls_key_read(struct rtl_fe *fe, unsigned int index,
+			u32 words[RTL_FE_CLS_KEY_WORDS])
+{
+	if (index >= RTL_FE_CLS_KEY_ENTRIES)
+		return -EINVAL;
+
+	return rtl_fe_table_read(fe, RTL_FE_CLS_KEY_CMD, index,
+				 RTL_FE_CLS_KEY_DATA, words,
+				 RTL_FE_CLS_KEY_WORDS);
+}
+
+int rtl_fe_cls_key_write(struct rtl_fe *fe, unsigned int index,
+			 const u32 words[RTL_FE_CLS_KEY_WORDS])
+{
+	if (index >= RTL_FE_CLS_KEY_ENTRIES)
+		return -EINVAL;
+
+	return rtl_fe_table_write(fe, RTL_FE_CLS_KEY_CMD, index,
+				  RTL_FE_CLS_KEY_DATA, words,
+				  RTL_FE_CLS_KEY_WORDS);
+}
+
+/*
+ * KEY6 (6RD) and KEY7 (DS-Lite) occupy an even/odd key row pair and map to
+ * FIB0/FIB1 at ((key_index >> 1) << 3) | 4 per ca-ne.ko __l3_cls_fib_idx_get.
+ */
+unsigned int rtl_fe_cls_dual_fib_index(unsigned int key_index)
+{
+	return ((key_index >> 1) << 3) | RTL_FE_CLS_DUAL_FIB_BASE;
+}
+
+static void rtl_fe_cls_pack_header(u32 even[RTL_FE_CLS_KEY_WORDS],
+				   unsigned int key_type)
+{
+	rtl_fe_bits_set(even, RTL_FE_CLS_KEY_PRI_BIT,
+			RTL_FE_CLS_KEY_PRI_WIDTH, RTL_FE_CLS_PRI_TUNNEL);
+	rtl_fe_bits_set(even, RTL_FE_CLS_KEY_RSLT_BIT,
+			RTL_FE_CLS_KEY_RSLT_WIDTH, RTL_FE_CLS_RSLT_DEFAULT);
+	rtl_fe_bits_set(even, RTL_FE_CLS_KEY_TYPE_BIT,
+			RTL_FE_CLS_KEY_TYPE_WIDTH, key_type);
+	rtl_fe_bits_set(even, RTL_FE_CLS_KEY_VALID_BIT,
+			RTL_FE_CLS_KEY_VALID_WIDTH, BIT(0));
+}
+
+void rtl_fe_cls_pack_6rd(u32 even[RTL_FE_CLS_KEY_WORDS],
+			 u32 odd[RTL_FE_CLS_KEY_WORDS],
+			 const u8 outer_sa[4], const u8 outer_da[4])
+{
+	unsigned int i;
+
+	memset(even, 0, RTL_FE_CLS_KEY_WORDS * sizeof(*even));
+	memset(odd, 0, RTL_FE_CLS_KEY_WORDS * sizeof(*odd));
+
+	/* Initialize KEY6 wildcard masks ("don't-care" = 1) per ca-ne.ko. */
+	even[0] = ~0U;
+	even[1] = RTL_FE_CLS_LOW_MASK(RTL_FE_CLS_K6_EVEN_W1_MASK_BITS) |
+		  (RTL_FE_CLS_K6_EVEN_W1_HIGH_MASK <<
+		   RTL_FE_CLS_K6_EVEN_W1_HIGH_SHIFT);
+	for (i = 0; i < 8; i++)
+		odd[i] = ~0U;
+	odd[8] = RTL_FE_CLS_LOW_MASK(RTL_FE_CLS_K6_ODD_W8_BITS);
+
+	/* Require non-fragmented, non-option outer IPv4 packets. */
+	rtl_fe_bits_set(even, RTL_FE_CLS_K6_FRAG_MSK_BIT, 1, 0);
+	rtl_fe_bits_set(even, RTL_FE_CLS_K6_FRAG_VAL_BIT, 1, 0);
+	rtl_fe_bits_set(even, RTL_FE_CLS_K6_OPT_MSK_BIT, 1, 0);
+	rtl_fe_bits_set(even, RTL_FE_CLS_K6_OPT_VAL_BIT, 1, 0);
+
+	rtl_fe_bits_set(even, RTL_FE_CLS_K6_IP_DA_MSK_BIT,
+			RTL_FE_CLS_K6_IP_MASK_WIDTH, RTL_FE_CLS_IPV4_BITS);
+	rtl_fe_bits_set(even, RTL_FE_CLS_K6_IP_DA_BIT, RTL_FE_CLS_IPV4_BITS,
+			rtl_fe_be32_read(outer_da));
+	rtl_fe_bits_set(even, RTL_FE_CLS_K6_IP_SA_MSK_BIT,
+			RTL_FE_CLS_K6_IP_MASK_WIDTH, RTL_FE_CLS_IPV4_BITS);
+	rtl_fe_bits_set(even, RTL_FE_CLS_K6_IP_SA_BIT, RTL_FE_CLS_IPV4_BITS,
+			rtl_fe_be32_read(outer_sa));
+	rtl_fe_bits_set(even, RTL_FE_CLS_K6_IP_ADDR_CTRL_BIT,
+			RTL_FE_CLS_K6_IP_ADDR_CTRL_WIDTH,
+			RTL_FE_CLS_K6_ADDR_CTRL_DIP_SIP);
+	rtl_fe_cls_pack_header(even, RTL_FE_CLS_KEY_TYPE_6RD);
+
+	rtl_fe_bits_set(odd, RTL_FE_CLS_K6_ODD_MDATA_MSK_BIT, 16,
+			RTL_FE_CLS_MDATA_PKT_TYPE_MASK);
+	rtl_fe_bits_set(odd, RTL_FE_CLS_K6_ODD_MDATA_BIT, 32,
+			RTL_FE_CLS_MDATA_PKT_TYPE_6RD <<
+			RTL_FE_CLS_MDATA_PKT_TYPE_SHIFT);
+}
+
+static void rtl_fe_cls_pack_key7_tunnel(u32 even[RTL_FE_CLS_KEY_WORDS],
+					u32 odd[RTL_FE_CLS_KEY_WORDS],
+					bool is_dip, bool is_ipv6,
+					const u8 *addr, u16 mdata_mask,
+					u16 id1, u16 id2, u8 pkt_type)
+{
+	unsigned int i;
+
+	memset(even, 0, RTL_FE_CLS_KEY_WORDS * sizeof(*even));
+	memset(odd, 0, RTL_FE_CLS_KEY_WORDS * sizeof(*odd));
+
+	/* Initialize KEY7 wildcard masks ("don't-care" = 1) per ca-ne.ko. */
+	even[0] = ~0U;
+	even[1] = ~0U;
+	even[2] = ~RTL_FE_CLS_K7_EVEN_W2_CLR_MASK;
+	even[3] = RTL_FE_CLS_LOW_MASK(RTL_FE_CLS_K7_EVEN_W3_BITS);
+	even[8] = ~0U;
+	even[9] = RTL_FE_CLS_LOW_MASK(RTL_FE_CLS_K7_EVEN_W9_BITS);
+	for (i = 0; i < 8; i++)
+		odd[i] = ~0U;
+	odd[8] = RTL_FE_CLS_LOW_MASK(RTL_FE_CLS_K7_ODD_W8_BITS);
+
+	/* Require non-fragmented, non-option outer IP packets. */
+	rtl_fe_bits_set(even, RTL_FE_CLS_K7_FRAG_MSK_BIT, 1, 0);
+	rtl_fe_bits_set(even, RTL_FE_CLS_K7_FRAG_VAL_BIT, 1, 0);
+	rtl_fe_bits_set(even, RTL_FE_CLS_K7_OPT_MSK_BIT, 1, 0);
+	rtl_fe_bits_set(even, RTL_FE_CLS_K7_OPT_VAL_BIT, 1, 0);
+	rtl_fe_bits_set(even, RTL_FE_CLS_K7_IP_ADDR_TYPE_BIT, 1,
+			is_dip ? RTL_FE_CLS_K7_IP_ADDR_DIP :
+				 RTL_FE_CLS_K7_IP_ADDR_SIP);
+	rtl_fe_bits_set(even, RTL_FE_CLS_K7_IP_ADDR_MSK_BIT,
+			RTL_FE_CLS_K7_IP_ADDR_MSK_WIDTH,
+			is_ipv6 ? RTL_FE_CLS_IPV6_BITS : RTL_FE_CLS_IPV4_BITS);
+
+	if (is_ipv6) {
+		even[4] = rtl_fe_be32_read(addr + 12);
+		even[5] = rtl_fe_be32_read(addr + 8);
+		even[6] = rtl_fe_be32_read(addr + 4);
+		even[7] = rtl_fe_be32_read(addr);
+	} else {
+		even[4] = rtl_fe_be32_read(addr);
+		rtl_fe_bits_set(even, RTL_FE_CLS_K7_IP_VER_MSK_BIT, 1, 0);
+		rtl_fe_bits_set(even, RTL_FE_CLS_K7_IP_VER_BIT, 1, 0);
+	}
+	rtl_fe_cls_pack_header(even, RTL_FE_CLS_KEY_TYPE_DSLITE);
+
+	rtl_fe_bits_set(odd, RTL_FE_CLS_K7_ODD_MDATA_MSK_BIT, 16, mdata_mask);
+	if ((mdata_mask & 0x00f0U) != 0x00f0U)
+		rtl_fe_bits_set(odd, RTL_FE_CLS_K7_ODD_MDATA_ID1_BIT, 16, id1);
+	rtl_fe_bits_set(odd, RTL_FE_CLS_K7_ODD_MDATA_BIT, 32,
+			((u32)pkt_type << RTL_FE_CLS_MDATA_PKT_TYPE_SHIFT) |
+			id2);
+}
+
+void rtl_fe_cls_pack_dslite(u32 even[RTL_FE_CLS_KEY_WORDS],
+			    u32 odd[RTL_FE_CLS_KEY_WORDS],
+			    const u8 outer_sa[16])
+{
+	rtl_fe_cls_pack_key7_tunnel(even, odd, false, true, outer_sa,
+				    RTL_FE_CLS_MDATA_PKT_TYPE_MASK, 0, 0,
+				    RTL_FE_CLS_MDATA_PKT_TYPE_DSLITE);
+}
+
+void rtl_fe_cls_pack_dual_fib(u32 fib0[RTL_FE_CLASSIFIER_WORDS],
+			      u32 fib1[RTL_FE_CLASSIFIER_WORDS],
+			      unsigned int igr_l3_if_idx)
+{
+	rtl_fe_classify_hash(fib0, 0, 0);
+	/* Keep incoming lspid intact while binding the dual-header IGR EIF. */
+	rtl_fe_bits_set(fib0, RTL_FE_CLS_FIB_LSPID_VLD_BIT, 1, 0);
+	rtl_fe_bits_set(fib0, RTL_FE_CLS_FIB_IGR_IF_VLD_BIT, 1, 1);
+	rtl_fe_bits_set(fib0, RTL_FE_CLS_FIB_IGR_IF_BIT,
+			RTL_FE_CLS_FIB_IGR_IF_WIDTH, igr_l3_if_idx);
+	memset(fib1, 0, RTL_FE_CLASSIFIER_WORDS * sizeof(*fib1));
+}
+
+static int rtl_fe_cls_write_pair(struct rtl_fe *fe, unsigned int key_index,
+				 const u32 even[RTL_FE_CLS_KEY_WORDS],
+				 const u32 odd[RTL_FE_CLS_KEY_WORDS],
+				 const u32 fib0[RTL_FE_CLASSIFIER_WORDS],
+				 const u32 fib1[RTL_FE_CLASSIFIER_WORDS])
+{
+	unsigned int fib_index;
+	u32 zero_key[RTL_FE_CLS_KEY_WORDS] = { 0 };
+	int ret;
+
+	if ((key_index & 1U) || key_index + 1 >= RTL_FE_CLS_KEY_ENTRIES)
+		return -EINVAL;
+
+	fib_index = rtl_fe_cls_dual_fib_index(key_index);
+
+	/* Write FIB rows before arming key_valid so traffic never sees stale FIB0. */
+	ret = rtl_fe_classifier_write(fe, fib_index, fib0);
+	if (ret)
+		return ret;
+	ret = rtl_fe_classifier_write(fe, fib_index + 1, fib1);
+	if (ret)
+		return ret;
+	ret = rtl_fe_cls_key_write(fe, key_index + 1, odd);
+	if (ret)
+		return ret;
+	ret = rtl_fe_cls_key_write(fe, key_index, even);
+	if (ret) {
+		rtl_fe_cls_key_write(fe, key_index + 1, zero_key);
+		return ret;
+	}
+	return 0;
+}
+
+int rtl_fe_cls_write_6rd(struct rtl_fe *fe, unsigned int key_index,
+			 const u8 outer_sa[4], const u8 outer_da[4],
+			 unsigned int igr_l3_if_idx)
+{
+	u32 even[RTL_FE_CLS_KEY_WORDS];
+	u32 odd[RTL_FE_CLS_KEY_WORDS];
+	u32 fib0[RTL_FE_CLASSIFIER_WORDS];
+	u32 fib1[RTL_FE_CLASSIFIER_WORDS];
+
+	rtl_fe_cls_pack_6rd(even, odd, outer_sa, outer_da);
+	rtl_fe_cls_pack_dual_fib(fib0, fib1, igr_l3_if_idx);
+	return rtl_fe_cls_write_pair(fe, key_index, even, odd, fib0, fib1);
+}
+
+static int rtl_fe_cls_write_key7_tunnel(struct rtl_fe *fe,
+					unsigned int key_index,
+					bool is_dip, bool is_ipv6,
+					const u8 *addr, u16 mdata_mask,
+					u16 id1, u16 id2, u8 pkt_type,
+					unsigned int igr_l3_if_idx)
+{
+	u32 even[RTL_FE_CLS_KEY_WORDS];
+	u32 odd[RTL_FE_CLS_KEY_WORDS];
+	u32 fib0[RTL_FE_CLASSIFIER_WORDS];
+	u32 fib1[RTL_FE_CLASSIFIER_WORDS];
+
+	rtl_fe_cls_pack_key7_tunnel(even, odd, is_dip, is_ipv6, addr,
+				    mdata_mask, id1, id2, pkt_type);
+	rtl_fe_cls_pack_dual_fib(fib0, fib1, igr_l3_if_idx);
+	return rtl_fe_cls_write_pair(fe, key_index, even, odd, fib0, fib1);
+}
+
+int rtl_fe_cls_write_dslite(struct rtl_fe *fe, unsigned int key_index,
+			    const u8 outer_sa[16], unsigned int igr_l3_if_idx)
+{
+	return rtl_fe_cls_write_key7_tunnel(fe, key_index, false, true,
+					    outer_sa,
+					    RTL_FE_CLS_MDATA_PKT_TYPE_MASK,
+					    0, 0,
+					    RTL_FE_CLS_MDATA_PKT_TYPE_DSLITE,
+					    igr_l3_if_idx);
+}
+
+int rtl_fe_cls_write_l2tp(struct rtl_fe *fe, unsigned int key_index,
+			  bool is_ipv6, const u8 outer_da[16],
+			  u16 tid, u16 sid, unsigned int igr_l3_if_idx)
+{
+	return rtl_fe_cls_write_key7_tunnel(fe, key_index, true, is_ipv6,
+					    outer_da,
+					    RTL_FE_CLS_MDATA_L2TP_MASK,
+					    tid, sid,
+					    RTL_FE_CLS_MDATA_PKT_TYPE_L2TP,
+					    igr_l3_if_idx);
+}
+
+int rtl_fe_cls_write_pptp(struct rtl_fe *fe, unsigned int key_index,
+			  bool is_ipv6, const u8 outer_da[16],
+			  u16 call_id, unsigned int igr_l3_if_idx)
+{
+	return rtl_fe_cls_write_key7_tunnel(fe, key_index, true, is_ipv6,
+					    outer_da,
+					    RTL_FE_CLS_MDATA_PPTP_MASK,
+					    call_id, 0,
+					    RTL_FE_CLS_MDATA_PKT_TYPE_PPTP,
+					    igr_l3_if_idx);
+}
+
+int rtl_fe_cls_clear_pair(struct rtl_fe *fe, unsigned int key_index)
+{
+	u32 zero_key[RTL_FE_CLS_KEY_WORDS] = { 0 };
+	u32 zero_fib[RTL_FE_CLASSIFIER_WORDS] = { 0 };
+	unsigned int fib_index;
+	int ret;
+
+	if ((key_index & 1U) || key_index + 1 >= RTL_FE_CLS_KEY_ENTRIES)
+		return -EINVAL;
+
+	/* Disarm the active EVEN CAM word first before zeroing ODD and FIB rows. */
+	ret = rtl_fe_cls_key_write(fe, key_index, zero_key);
+	if (ret)
+		return ret;
+	ret = rtl_fe_cls_key_write(fe, key_index + 1, zero_key);
+	if (ret)
+		return ret;
+
+	fib_index = rtl_fe_cls_dual_fib_index(key_index);
+	ret = rtl_fe_classifier_write(fe, fib_index, zero_fib);
+	if (ret)
+		return ret;
+	return rtl_fe_classifier_write(fe, fib_index + 1, zero_fib);
 }
 
 int rtl_fe_smac_read(struct rtl_fe *fe, unsigned int index,

@@ -216,8 +216,8 @@ static void taurus_trng_setup(struct taurus_trng_ctrl *t)
 	writel(0x0000000f, t->reg + TAURUS_RNG_INT_EN);
 }
 
-static ssize_t taurus_trng_mode_show(struct device *dev,
-				     struct device_attribute *attr, char *buf)
+static ssize_t mode_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
 {
 	struct taurus_trng_ctrl *trng = dev_get_drvdata(dev);
 	ssize_t ret = 0;
@@ -233,15 +233,25 @@ static ssize_t taurus_trng_mode_show(struct device *dev,
 	return ret;
 }
 
-static ssize_t taurus_trng_mode_store(struct device *dev,
-				      struct device_attribute *attr,
-				      const char *buf, size_t count)
+static ssize_t mode_store(struct device *dev, struct device_attribute *attr,
+			  const char *buf, size_t count)
 {
-	dev_info(dev, "mode setting via sysfs is not yet implemented\n");
+	struct taurus_trng_ctrl *trng = dev_get_drvdata(dev);
+
+	if (sysfs_streq(buf, "self-test") || sysfs_streq(buf, "self-test on") ||
+	    sysfs_streq(buf, "1")) {
+		trng->is_self_test_en = 1;
+	} else if (sysfs_streq(buf, "self-test off") || sysfs_streq(buf, "0")) {
+		trng->is_self_test_en = 0;
+	} else {
+		return -EINVAL;
+	}
+
+	taurus_trng_setup(trng);
 
 	return count;
 }
-static DEVICE_ATTR(mode, 0664, taurus_trng_mode_show, taurus_trng_mode_store);
+static DEVICE_ATTR_RW(mode);
 
 static int taurus_trng_data_get(struct taurus_trng_ctrl *trng, u32 *data)
 {
@@ -269,8 +279,8 @@ static int taurus_trng_data_get(struct taurus_trng_ctrl *trng, u32 *data)
 	return 0;
 }
 
-static ssize_t taurus_trng_data_show(struct device *dev,
-				     struct device_attribute *attr, char *buf)
+static ssize_t data_show(struct device *dev, struct device_attribute *attr,
+			 char *buf)
 {
 	struct taurus_trng_ctrl *trng = dev_get_drvdata(dev);
 	ssize_t cnt = 0;
@@ -285,7 +295,7 @@ static ssize_t taurus_trng_data_show(struct device *dev,
 
 	return cnt;
 }
-static DEVICE_ATTR(data, 0444, taurus_trng_data_show, NULL);
+static DEVICE_ATTR_RO(data);
 
 static struct attribute *taurus_trng_attributes[] = {
 	&dev_attr_mode.attr,

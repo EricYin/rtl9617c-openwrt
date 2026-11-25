@@ -1,8 +1,0 @@
-{
-  "admin/system/cpu": {
-    "title": "CPU 频率",
-    "order": 15,
-    "action": {"type": "view", "path": "system/rtl9617c-cpu"},
-    "depends": {"acl": ["luci-rtl9617c-cpu"]}
-  }
-}

@@ -7,6 +7,7 @@
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
+#include <linux/rcupdate.h>
 #include <linux/regmap.h>
 #include <linux/rhashtable.h>
 #include <linux/workqueue.h>
@@ -16,11 +17,13 @@
 #include "fe.h"
 #include "fe_hw.h"
 
-/* Physical EIF rows: RTL9617C L3FE_GLB_EGRESS_L3_IF_TBL_ACCESS.addr[4:0].
+/*
+ * Physical EIF rows: RTL9617C L3FE_GLB_EGRESS_L3_IF_TBL_ACCESS.addr[4:0].
  * ca-ne.ko fe_l3e_if_tbl_table @0x27cec0 declares 0x20 rows.
  * GPL rtk_8277c_asicDriver.c hashIntfIdx2HwIntfIdx_mapping maps hash
  * indices 32..63 to physical rows 16..31 with dual-header semantics;
- * they are not additional physical EIF rows. */
+ * they are not additional physical EIF rows.
+ */
 #define FE_INTERFACES			32
 #define FE_COUNTERS			32
 #define FE_SOURCE_MACS			15
@@ -33,7 +36,11 @@
 #define FE_SOURCE_PON			7
 
 struct rtl_fe_bridge;
+struct rtl_fe_mcast;
+struct rtl_fe_napt6;
+struct rtl_fe_tunnel;
 struct rtl_itu_paths;
+struct rtl_te_flow;
 
 struct rtl_fe_cam_protocol {
 	u32 saved[RTL_FE_CAM_WORDS];
@@ -59,6 +66,16 @@ struct rtl_fe_mac {
 	u8 address[ETH_ALEN];
 };
 
+struct rtl_fe_dest_mac {
+	struct list_head list;
+	unsigned int users;
+	unsigned int index;
+	u32 saved[RTL_FE_FDB_WORDS];
+	u8 address[ETH_ALEN];
+	bool created;
+	bool ready;
+};
+
 struct rtl_fe_interface {
 	unsigned int users;
 	u32 saved;
@@ -81,27 +98,33 @@ struct rtl_fe_bridge_tag {
 struct rtl_fe_flow {
 	struct rhash_head node;
 	struct list_head list;
+	struct list_head retry;
+	struct list_head bridge_list;
+	struct rcu_head rcu;
 	unsigned long cookie;
 	unsigned long lastused;
 	struct rtl_fe_port *input;
 	struct rtl_fe_port *output;
+	struct rtl_fe_dest_mac *dest_mac;
 	enum rtl_fe_rule_kind kind;
 	unsigned int hash_index;
 	unsigned int counter;
 	unsigned int source_mac;
 	unsigned int destination_index;
-	u32 destination_saved[RTL_FE_FDB_WORDS];
 	unsigned int pppoe;
 	unsigned int mtu_index;
 	unsigned int ingress_session;
 	u16 crc16;
 	u16 ethernet_protocol;
 	u8 ethernet_bytes;
+	u8 cos;
+	u8 protocol;
 	u8 ethernet_source[ETH_ALEN];
 	u8 destination[ETH_ALEN];
 	u64 bytes;
 	u32 packets;
 	bool learned;
+	bool cos_set;
 	unsigned int bridge_index;
 	unsigned int bridge_ingress;
 	unsigned int bridge_egress;
@@ -109,11 +132,24 @@ struct rtl_fe_flow {
 	u16 bridge_ppp_protocol;
 	u8 bridge_tags;
 	struct rtl_fe_bridge_tag bridge_tag[2];
-	bool destination_created;
-	bool destination_owned;
 	bool source_owned;
 	bool interface_owned;
 	bool mtu_owned;
+	/* L3TE policer slot handed out by rtl_te_policer_alloc(); pol_owned is
+	 * the single source of truth for the slot lifecycle.
+	 */
+	u8 pol_slot;
+	bool pol_owned;
+	/* Host Policing binding: pol_slot belongs to a MAC table entry, so this
+	 * flow only points POL_ID at it and must never free it (pol_owned stays
+	 * false).  pol_bound means the action carries a POL_ID at all (owned or
+	 * borrowed) and drives the debugfs dump; pol_host marks the borrowed case.
+	 */
+	bool pol_host;
+	bool pol_bound;
+	bool tunnel_owned;
+	u8 dual_index;
+	u16 l2tp_alt_sport;
 	bool counted;
 	bool hashed;
 	bool published;
@@ -130,6 +166,8 @@ struct rtl_fe_rule {
 	struct rtl_fe_vlan vlan[2];
 	u8 vlan_count;
 	bool vlan_exact;
+	bool cos_set;
+	u8 protocol;
 	u16 ingress_tci[2];
 	u8 ppp_protocol_slot;
 	u16 ethernet_protocol;
@@ -137,6 +175,33 @@ struct rtl_fe_rule {
 	unsigned int pppoe_session;
 	unsigned int egress_pppoe;
 	unsigned int mtu;
+	/* FLOW_ACTION_POLICE, already reduced by rtl_fe_police_encode() to the
+	 * one shape the L3TE profile can express (kbps rate, 12 bit burst).
+	 */
+	u32 police_kbps;
+	u32 police_burst;
+	bool police;
+	/* DS-Lite / 6RD / L2TP / PPTP tunnel request parsed from
+	 * FLOW_DISSECTOR_KEY_ENC_* and FLOW_ACTION_TUNNEL_ENCAP/DECAP.
+	 * tunnel_type is an enum rtl_fe_dual_type; zero means an ordinary
+	 * flow.  Addresses are in network byte order (16 bytes for IPv6,
+	 * first 4 bytes for IPv4).
+	 */
+	u8 tunnel_type;
+	bool tunnel_decap;
+	u8 tunnel_af;
+	u8 tunnel_ppp_len;
+	u8 tunnel_flags;
+	u16 tunnel_sport;
+	u16 tunnel_dport;
+	u16 tunnel_tid;
+	u16 tunnel_sid;
+	u16 tunnel_peer_tid;
+	u16 tunnel_peer_sid;
+	u32 tunnel_gre_seq;
+	u32 tunnel_gre_ack;
+	u8 tunnel_src[16];
+	u8 tunnel_dst[16];
 	u8 ethernet_bytes;
 	u8 source[ETH_ALEN];
 	u8 destination[ETH_ALEN];
@@ -145,11 +210,19 @@ struct rtl_fe_rule {
 struct rtl_fe {
 	struct device *dev;
 	struct regmap *regs;
+	/* L3TE flow policer register layer (&struct rtl9617c_ni::te).  NULL when
+	 * the NI side did not hand one over; FLOW_ACTION_POLICE is then refused
+	 * with -EOPNOTSUPP instead of being silently ignored.
+	 */
+	struct rtl_te_flow *te;
 	void __iomem *axi;
 	struct mutex lock;
 	struct delayed_work cleanup_work;
 	struct list_head ports;
 	struct list_head flows;
+	struct list_head retries;
+	struct list_head bridge_flows;
+	struct list_head dest_macs;
 	struct list_head blocks;
 	struct rhashtable cookies;
 	void *memory;
@@ -159,7 +232,14 @@ struct rtl_fe {
 	bool pon_attached;
 	bool enabled;
 	bool prepared;
+	bool napt6_active;
+	bool dual_hdr_active;
 	bool lan_deepq;
+	bool mirror_enabled;
+	u8 mirror_arg0;
+	u8 mirror_arg1;
+	u8 mirror_arg2;
+	u16 mirror_len;
 	int error;
 	u64 installs;
 	u64 deletes;
@@ -172,6 +252,11 @@ struct rtl_fe {
 	u32 lan_saved[FE_LAN_PORTS];
 	u32 xge_saved;
 	u32 classifier_saved[FE_LPB_ENTRIES][RTL_FE_CLASSIFIER_WORDS];
+	u32 lpb3_saved[RTL_FE_LPB_WORDS];
+	u32 dual_dos_saved;
+	u32 l2tp_sport_saved;
+	u16 l2tp_alt_sport;
+	unsigned int l2tp_alt_refs;
 	u32 map_saved[FE_LPB_ENTRIES][4];
 	struct rtl_fe_mac source_macs[FE_SOURCE_MACS];
 	struct rtl_fe_interface interfaces[FE_INTERFACES];
@@ -179,6 +264,9 @@ struct rtl_fe {
 	struct rtl_itu_paths *itu_paths;
 	struct net_device *itu_netdev;
 	struct rtl_fe_bridge *bridge;
+	struct rtl_fe_mcast *mcast;
+	struct rtl_fe_napt6 *napt6;
+	struct rtl_fe_tunnel *tunnel;
 	struct dentry *debugfs;
 	DECLARE_BITMAP(hashes, RTL_FE_HASH_ENTRIES);
 	DECLARE_BITMAP(counters, FE_INTERFACES);
@@ -210,6 +298,11 @@ static inline bool rtl_fe_has_bindings(struct rtl_fe *fe)
 	return READ_ONCE(fe->bindings);
 }
 
+static inline bool rtl_fe_is_lan_dest(unsigned int dest)
+{
+	return dest < FE_LAN_PORTS || dest == FE_SOURCE_P6;
+}
+
 static inline bool rtl_fe_use_deep_queue(const struct rtl_fe *fe,
 					 const struct rtl_fe_port *in,
 					 const struct rtl_fe_port *out)
@@ -217,7 +310,7 @@ static inline bool rtl_fe_use_deep_queue(const struct rtl_fe *fe,
 	if (out->destination >= FE_DEEPQ_DEST)
 		return true;
 	return fe->lan_deepq && in->source == FE_SOURCE_PON &&
-	       out->destination == FE_SOURCE_P6;
+	       rtl_fe_is_lan_dest(out->destination);
 }
 
 struct rtl_fe_port *rtl_fe_port_find(struct rtl_fe *fe, struct net_device *netdev);
@@ -225,6 +318,7 @@ int rtl_fe_vlan_tpid(__be16 protocol);
 int rtl_fe_install(struct rtl_fe_port *port, struct rtl_fe_rule *rule,
 		   unsigned long cookie, struct rtl_fe_flow **out);
 int rtl_fe_delete(struct rtl_fe *fe, struct rtl_fe_flow *flow);
+int rtl_fe_napt6_reload(struct rtl_fe *fe);
 
 int rtl_fe_itu_rule(struct rtl_fe_rule *rule);
 int rtl_fe_itu_learn(struct rtl_fe_rule *rule, unsigned int gem, u64 generation);

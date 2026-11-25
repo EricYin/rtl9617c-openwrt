@@ -660,15 +660,11 @@ static void rtl_ni_port_destroy(struct rtl9617c_ni_port *port)
 }
 
 /*
- * Advertise the TX offloads from the module parameters (see ni_dma.c).  Every
- * parameter defaults to 0, so an unmodified boot advertises exactly what it did
- * before: RXCSUM only.
- *
- * TSO is dropped by the core unless NETIF_F_SG and a CSUM feature are present
- * as well (netdev_fix_features(), net/core/dev.c); this driver linearises every
- * frame with skb_copy_bits(), so consuming scatter-gather skbs is safe.  A
- * super-packet is capped at RTL_NI_TX_GSO_MAX so that it still fits one 2048-byte
- * descriptor buffer, i.e. the hardware gets 1-2 MSS-sized segments per frame.
+ * Advertise TX offloads from the module parameters in ni_dma.c (tx_csum,
+ * tso, tso_v6, tx_sg, tx_multivp).  When tx_sg=1 (default), multi-descriptor
+ * DMA LSO handles true scatter-gather super-packets up to 65500 B across 4
+ * per-CPU DMA VPs; when tx_sg=0, super-packets are capped at RTL_NI_TX_GSO_MAX
+ * (2032 B) for the single-descriptor linear bounce path.
  */
 static void rtl_ni_port_offload(struct net_device *dev)
 {

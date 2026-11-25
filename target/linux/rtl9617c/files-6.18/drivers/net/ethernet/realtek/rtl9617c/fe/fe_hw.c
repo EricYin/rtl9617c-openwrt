@@ -200,7 +200,10 @@ static void rtl_fe_action_pack(u32 *words, unsigned int word_count,
 	rtl_fe_action_set_mode(words, RTL_FE_IP_MTU_ENC, action->mtu_index,
 			       napt6);
 
-	if (action->gem_set) {
+	if (action->mcast) {
+		rtl_fe_action_set_mode(words, RTL_FE_MC, 1, napt6);
+		rtl_fe_action_set_mode(words, RTL_FE_DEEPQ, 0, napt6);
+	} else if (action->gem_set) {
 		rtl_fe_action_set_mode(words, RTL_FE_MCGID, action->gem_index,
 				       napt6);
 		rtl_fe_action_set_mode(words, RTL_FE_MC, 1, napt6);
@@ -443,6 +446,14 @@ void rtl_fe_classify_hash(u32 words[RTL_FE_CLASSIFIER_WORDS],
 			  unsigned int profile, unsigned int source)
 {
 	memset(words, 0, RTL_FE_CLASSIFIER_WORDS * sizeof(*words));
+	/*
+	 * ip_ecn_vld (bit 107) and ip_ecn_en (bit 108) from cli-drv.ko
+	 * __cli_aal_l3_cls_fib_0_entry_ip_ecn_{vld,en}_set: pass IP ECN
+	 * capability to L3TE (CE marking remains gated by L3TE WRED_ECN_EN +
+	 * MARK_ECN_EN and L2FE ARB IP_ECN_EN).
+	 */
+	rtl_fe_bits_set(words, 107, 1, 1);
+	rtl_fe_bits_set(words, 108, 1, 1);
 	rtl_fe_bits_set(words, 203, 1, 1);
 	rtl_fe_bits_set(words, 204, 4, profile);
 	rtl_fe_bits_set(words, 186, 1, 1);

@@ -15,8 +15,7 @@
  *    idle sentinel (ca-ne.ko aal_l3_te_policer_flow_cfg_set @0x6f6c0 and
  *    fc_mgr rtk_8277c_l3_flow_policer_mode_set @0xc63b4).
  *
- * Fields whose meaning is still unknown are preserved through
- * read-modify-write and never guessed; see the TODO(U*) markers.
+ * Unassigned register bits are preserved through read-modify-write.
  */
 #include <linux/bitfield.h>
 #include <linux/bitmap.h>

@@ -374,6 +374,9 @@ static int rtl_fe_prepare(struct rtl_fe *fe)
 	}
 
 	rtl_fe_rmw(fe, RTL_NI_GLB_NIRX_L3FE_DEMUX_CFG0, 0, GENMASK(13, 0));
+	ret = rtl_fe_mcast_prepare(fe);
+	if (ret)
+		return ret;
 	rtl_fe_cache_start(fe);
 	rtl_fe_rmw(fe, RTL_FE_CONTROL, 0, FE_CONTROL_ENABLE);
 	return 0;
@@ -2871,14 +2874,18 @@ static int rtl_fe_flows_show(struct seq_file *s, void *unused)
 	struct rtl_fe_flow *flow;
 
 	mutex_lock(&fe->lock);
-	list_for_each_entry(flow, &fe->flows, list)
-		seq_printf(s, "%s cookie=%lx in=%s out=%s hash=%u counter=%u cos=%u cos_set=%u proto=%u packets=%u bytes=%llu learned=%u deleting=%u pol=%d host=%u\n",
+	list_for_each_entry(flow, &fe->flows, list) {
+		seq_printf(s, "%s cookie=%lx in=%s out=%s hash=%u counter=%u cos=%u cos_set=%u proto=%u packets=%u bytes=%llu learned=%u deleting=%u pol=%d host=%u",
 			   kind[flow->kind], flow->cookie,
 			   flow->input->netdev->name, flow->output->netdev->name,
 			   flow->hash_index, flow->counter, flow->cos,
 			   flow->cos_set, flow->protocol, flow->packets,
 			   flow->bytes, flow->learned, flow->deleting,
 			   rtl_fe_flow_pol_id(flow), flow->pol_host);
+		if (flow->mcast)
+			seq_printf(s, " mce=%u", flow->mcast_hw_index);
+		seq_putc(s, '\n');
+	}
 	mutex_unlock(&fe->lock);
 	return 0;
 }

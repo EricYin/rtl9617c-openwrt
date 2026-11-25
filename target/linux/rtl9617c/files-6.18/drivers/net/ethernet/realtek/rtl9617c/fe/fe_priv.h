@@ -133,6 +133,8 @@ struct rtl_fe_flow {
 	u16 bridge_ppp_protocol;
 	u8 bridge_tags;
 	struct rtl_fe_bridge_tag bridge_tag[2];
+	bool mcast;
+	u16 mcast_hw_index;
 	bool source_owned;
 	bool interface_owned;
 	bool mtu_owned;

@@ -750,9 +750,9 @@
 			reg = <0 0xf4325000 0 0x400>,
 			      <0 0xa0000000 0 0x1000>,
 			      <0 0xa0001000 0 0x2000>,
-			      <0 0xa0300000 0 0x80000>,
+			      <0 0xa0300000 0 0x100000>,
 			      <0 0xf4333000 0 0x2000>;
-			reg-names = "glbl_regs", "dbi", "config", "atu",
+			reg-names = "glbl_regs", "dbi", "config", "iatu",
 				    "serdes_phy";
 			phys = <&s0_pcie_phy0>,
 			       <&s0_pcie_phy1>;
@@ -885,9 +885,9 @@
 			reg = <0 0xf4326000 0 0x400>,
 			      <0 0xb0000000 0 0x1000>,
 			      <0 0xb0001000 0 0x2000>,
-			      <0 0xb0300000 0 0x80000>,
+			      <0 0xb0300000 0 0x100000>,
 			      <0 0xf4335000 0 0x2000>;
-			reg-names = "glbl_regs", "dbi", "config", "atu",
+			reg-names = "glbl_regs", "dbi", "config", "iatu",
 				    "serdes_phy";
 			phys = <&s1_pcie_phy0>,
 			       <&s1_pcie_phy1>;
@@ -1020,9 +1020,9 @@
 			reg = <0 0xf4327000 0 0x400>,
 			      <0 0xc0000000 0 0x1000>,
 			      <0 0xc0001000 0 0x2000>,
-			      <0 0xc0300000 0 0x80000>,
+			      <0 0xc0300000 0 0x100000>,
 			      <0 0xf4337000 0 0x1000>;
-			reg-names = "glbl_regs", "dbi", "config", "atu",
+			reg-names = "glbl_regs", "dbi", "config", "iatu",
 				    "serdes_phy";
 			phys = <&s2_pcie_phy0>;
 			phy-names = "pcie-phy0";

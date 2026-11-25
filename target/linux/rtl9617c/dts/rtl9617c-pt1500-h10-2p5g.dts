@@ -301,6 +301,10 @@
 	status = "okay";
 };
 
+&vsfc {
+	status = "okay";
+};
+
 &watchdog {
 	reset-on-timeout;
 	delay-reset = <134>;

@@ -10,11 +10,13 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/pci.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
+#include <linux/sizes.h>
 #include <linux/soc/realtek/taurus-soc.h>
 #include <linux/spinlock.h>
 
@@ -44,6 +46,9 @@ struct taurus_pcie {
 
 	phys_addr_t iatu_unroll_start;
 	void __iomem *iatu_unroll_base;
+	void __iomem *coherent_atu;
+	u32 coherent_hi_addr;
+	bool dma_coherent;
 
 	struct reset_control *core_reset;
 	struct reset_control *phy_reset;
@@ -98,6 +103,39 @@ struct taurus_pcie {
 #define PCIE_GLBL_PCIE_CONTR_IATU_BASE_ADDR			0x48
 #define RC_IATU_BASE_ADDR_MASK					0xFFF80000
 #define PCIE_MSI_INTERRUPT_ENABLE_0				0x1a4
+
+#define TAURUS_ATU_CTRL						0x00
+#define TAURUS_ATU_CTRL_IDX_MASK				GENMASK(29, 24)
+#define TAURUS_ATU_CTRL_R					BIT(30)
+#define TAURUS_ATU_CTRL_W					BIT(31)
+#define TAURUS_ATU_INPUT					0x04
+#define TAURUS_ATU_MASK						0x08
+#define TAURUS_ATU_OUTPUT					0x0c
+#define TAURUS_ATU_ACE_CFG					0x10
+#define TAURUS_ATU_AXI_ARUSER					0x14
+#define TAURUS_ATU_AXI_AWUSER					0x18
+
+#define TAURUS_ATU_ACE_ARPROT_NS				FIELD_PREP(GENMASK(2, 0), 2)
+#define TAURUS_ATU_ACE_AWPROT_NS				FIELD_PREP(GENMASK(6, 4), 2)
+#define TAURUS_ATU_ACE_ARCACHE_WB_RWA				FIELD_PREP(GENMASK(19, 16), 0xf)
+#define TAURUS_ATU_ACE_AWCACHE_WB_RWA				FIELD_PREP(GENMASK(23, 20), 0xf)
+#define TAURUS_ATU_ACE_USER_EN					BIT(24)
+#define TAURUS_ATU_ACE_PROT_EN					BIT(25)
+#define TAURUS_ATU_ACE_CACHE_EN					BIT(26)
+#define TAURUS_ATU_ACE_COHERENT_CFG				(TAURUS_ATU_ACE_ARPROT_NS | \
+								 TAURUS_ATU_ACE_AWPROT_NS | \
+								 TAURUS_ATU_ACE_ARCACHE_WB_RWA | \
+								 TAURUS_ATU_ACE_AWCACHE_WB_RWA | \
+								 TAURUS_ATU_ACE_USER_EN | \
+								 TAURUS_ATU_ACE_PROT_EN | \
+								 TAURUS_ATU_ACE_CACHE_EN)
+#define TAURUS_ATU_AXUSER_OUTER_SHAREABLE			FIELD_PREP(GENMASK(7, 6), 2)
+
+#define TAURUS_ATU_TLB_COUNT					8
+#define TAURUS_ATU_DDR_LOW_INPUT				0x00000
+#define TAURUS_ATU_DDR_HIGH_INPUT				0x18000
+#define TAURUS_ATU_DDR_WINDOW_PAGES				(SZ_2G / SZ_64K)
+#define TAURUS_ATU_DEFAULT_HI_ADDR				0x4
 
 static const char * const taurus_pcie_ltssm_names[] = {
 	"DETECT_QUIET",
@@ -793,6 +831,98 @@ static int taurus_pcie_host_reset(struct taurus_pcie *pcie)
 	return 0;
 }
 
+static int taurus_pcie_atu_write_ctrl(struct taurus_pcie *pcie, u32 idx,
+				      bool enable)
+{
+	u32 ctrl, val;
+
+	ctrl = readl(pcie->coherent_atu + TAURUS_ATU_CTRL);
+	ctrl &= ~(TAURUS_ATU_CTRL_IDX_MASK | TAURUS_ATU_CTRL_R);
+	if (enable)
+		ctrl |= BIT(idx);
+	else
+		ctrl &= ~BIT(idx);
+	ctrl |= FIELD_PREP(TAURUS_ATU_CTRL_IDX_MASK, idx) | TAURUS_ATU_CTRL_W;
+	writel(ctrl, pcie->coherent_atu + TAURUS_ATU_CTRL);
+
+	return readl_poll_timeout(pcie->coherent_atu + TAURUS_ATU_CTRL, val,
+				  !(val & TAURUS_ATU_CTRL_W), 1, 100000);
+}
+
+static int taurus_pcie_atu_clear(struct taurus_pcie *pcie)
+{
+	u32 idx;
+	int ret;
+
+	if (!pcie->coherent_atu)
+		return 0;
+
+	for (idx = 0; idx < TAURUS_ATU_TLB_COUNT; idx++) {
+		writel(0, pcie->coherent_atu + TAURUS_ATU_INPUT);
+		writel(0, pcie->coherent_atu + TAURUS_ATU_MASK);
+		writel(0, pcie->coherent_atu + TAURUS_ATU_OUTPUT);
+		writel(0, pcie->coherent_atu + TAURUS_ATU_ACE_CFG);
+		writel(0, pcie->coherent_atu + TAURUS_ATU_AXI_ARUSER);
+		writel(0, pcie->coherent_atu + TAURUS_ATU_AXI_AWUSER);
+
+		ret = taurus_pcie_atu_write_ctrl(pcie, idx, false);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int taurus_pcie_atu_set_entry(struct taurus_pcie *pcie, u32 idx,
+				     u32 input, u32 pages, u32 output)
+{
+	writel(input, pcie->coherent_atu + TAURUS_ATU_INPUT);
+	writel(~(pages - 1), pcie->coherent_atu + TAURUS_ATU_MASK);
+	writel(output, pcie->coherent_atu + TAURUS_ATU_OUTPUT);
+	writel(TAURUS_ATU_ACE_COHERENT_CFG,
+	       pcie->coherent_atu + TAURUS_ATU_ACE_CFG);
+	writel(TAURUS_ATU_AXUSER_OUTER_SHAREABLE,
+	       pcie->coherent_atu + TAURUS_ATU_AXI_ARUSER);
+	writel(TAURUS_ATU_AXUSER_OUTER_SHAREABLE,
+	       pcie->coherent_atu + TAURUS_ATU_AXI_AWUSER);
+
+	return taurus_pcie_atu_write_ctrl(pcie, idx, true);
+}
+
+static int taurus_pcie_atu_init(struct taurus_pcie *pcie)
+{
+	u32 hi_offset;
+	int ret;
+
+	if (!pcie->coherent_atu)
+		return 0;
+
+	ret = taurus_pcie_atu_clear(pcie);
+	if (ret)
+		return ret;
+
+	if (!pcie->dma_coherent)
+		return 0;
+
+	hi_offset = pcie->coherent_hi_addr << 16;
+
+	ret = taurus_pcie_atu_set_entry(pcie, 0, TAURUS_ATU_DDR_LOW_INPUT,
+					TAURUS_ATU_DDR_WINDOW_PAGES, hi_offset);
+	if (ret)
+		return ret;
+
+	ret = taurus_pcie_atu_set_entry(pcie, 1, TAURUS_ATU_DDR_HIGH_INPUT,
+					TAURUS_ATU_DDR_WINDOW_PAGES,
+					TAURUS_ATU_DDR_HIGH_INPUT + hi_offset);
+	if (ret)
+		return ret;
+
+	dev_info(pcie->pci->dev, "coherent ATU enabled (hi_addr 0x%x)\n",
+		 pcie->coherent_hi_addr);
+
+	return 0;
+}
+
 static void taurus_pcie_host_setup(struct taurus_pcie *pcie)
 {
 	u32 base_addr = (u32)pcie->iatu_unroll_start & RC_IATU_BASE_ADDR_MASK;
@@ -866,7 +996,7 @@ static irqreturn_t taurus_pcie_irq_handler(int irq, void *arg)
 	if (!val)
 		return IRQ_NONE;
 
-	if (val & INT_MSI_CTR_INT)
+	if ((val & INT_MSI_CTR_INT) && pp->irq_domain)
 		dw_handle_msi_irq(pp);
 
 	if (pcie->intx_domain) {
@@ -942,8 +1072,15 @@ static int taurus_pcie_host_init(struct dw_pcie_rp *pp)
 	int ret;
 
 	taurus_pcie_writel(pcie, 0, PCIE_GLBL_INTERRUPT_ENABLE_0);
+	taurus_pcie_writel(pcie,
+			   taurus_pcie_readl(pcie, PCIE_GLBL_INTERRUPT_0),
+			   PCIE_GLBL_INTERRUPT_0);
 
 	ret = taurus_pcie_host_reset(pcie);
+	if (ret)
+		return ret;
+
+	ret = taurus_pcie_atu_init(pcie);
 	if (ret)
 		return ret;
 
@@ -977,6 +1114,7 @@ static void taurus_pcie_host_deinit(struct dw_pcie_rp *pp)
 
 	taurus_pcie_writel(pcie, 0, PCIE_GLBL_INTERRUPT_ENABLE_0);
 	taurus_pcie_perst_assert(pcie);
+	taurus_pcie_atu_clear(pcie);
 	reset_control_assert(pcie->core_reset);
 	reset_control_assert(pcie->phy_reset);
 	taurus_pcie_phy_power_off(pcie);
@@ -1024,8 +1162,8 @@ static int taurus_pcie_add_port(struct taurus_pcie *pcie,
 
 	taurus_pcie_writel(pcie, 0, PCIE_GLBL_INTERRUPT_ENABLE_0);
 
-	ret = devm_request_irq(dev, pp->irq, taurus_pcie_irq_handler, 0,
-			       dev_name(dev), pcie);
+	ret = devm_request_irq(dev, pp->irq, taurus_pcie_irq_handler,
+			       IRQF_NO_THREAD, dev_name(dev), pcie);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to request IRQ\n");
 
@@ -1260,6 +1398,22 @@ static int taurus_pcie_probe(struct platform_device *pdev)
 	if (IS_ERR(pcie->serdes_base))
 		return PTR_ERR(pcie->serdes_base);
 	pcie->serdes_size = resource_size(res);
+
+	pcie->dma_coherent = of_dma_is_coherent(np);
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+					   "coherent-atu");
+	if (res) {
+		pcie->coherent_atu = devm_ioremap_resource(dev, res);
+		if (IS_ERR(pcie->coherent_atu))
+			return PTR_ERR(pcie->coherent_atu);
+	} else if (pcie->dma_coherent) {
+		return dev_err_probe(dev, -EINVAL,
+				     "dma-coherent requires coherent-atu resource\n");
+	}
+
+	if (of_property_read_u32(np, "realtek,coherent-hi-addr",
+				 &pcie->coherent_hi_addr))
+		pcie->coherent_hi_addr = TAURUS_ATU_DEFAULT_HI_ADDR;
 
 	ret = taurus_pcie_serdes_parse(dev, np, pcie);
 	if (ret)

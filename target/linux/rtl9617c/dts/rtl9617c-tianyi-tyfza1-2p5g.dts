@@ -233,6 +233,7 @@
 
 &pcie0 {
 	reset-gpios = <&gpio_bank3 5 GPIO_ACTIVE_LOW>;
+	irq-affinity = <1>;
 	status = "okay";
 };
 
@@ -250,6 +251,7 @@
 
 &pcie1 {
 	reset-gpios = <&gpio_bank3 6 GPIO_ACTIVE_LOW>;
+	irq-affinity = <2>;
 	status = "okay";
 };
 

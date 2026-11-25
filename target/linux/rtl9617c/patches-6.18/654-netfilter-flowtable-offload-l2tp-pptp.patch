@@ -155,7 +155,7 @@
  
  #include <linux/uaccess.h>
  
-@@ -608,9 +614,91 @@ static int pptp_ppp_ioctl(struct ppp_cha
+@@ -608,9 +614,92 @@ static int pptp_ppp_ioctl(struct ppp_cha
  	return err;
  }
  
@@ -173,7 +173,8 @@
 +	u8 ha[ETH_ALEN];
 +	__be32 gw;
 +
-+	if (!sk || sk->sk_state != PPPOX_CONNECTED || sock_flag(sk, SOCK_DEAD))
++	if (!sk || !(sk->sk_state & PPPOX_CONNECTED) ||
++	    (sk->sk_state & PPPOX_DEAD) || sock_flag(sk, SOCK_DEAD))
 +		return -ENODEV;
 +
 +	po = pppox_sk(sk);
@@ -268,7 +269,7 @@
  
  #include <asm/byteorder.h>
  #include <linux/atomic.h>
-@@ -123,8 +131,131 @@ struct pppol2tp_session {
+@@ -123,8 +131,132 @@ struct pppol2tp_session {
  
  static int pppol2tp_xmit(struct ppp_channel *chan, struct sk_buff *skb);
  
@@ -292,7 +293,8 @@
 +	int err = -EOPNOTSUPP;
 +	__be32 gw;
 +
-+	if (!sk || sk->sk_state != PPPOX_CONNECTED || sock_flag(sk, SOCK_DEAD))
++	if (!sk || !(sk->sk_state & PPPOX_CONNECTED) ||
++	    (sk->sk_state & PPPOX_DEAD) || sock_flag(sk, SOCK_DEAD))
 +		return -ENODEV;
 +
 +	session = pppol2tp_sock_to_session(sk);

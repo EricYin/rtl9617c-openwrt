@@ -330,7 +330,8 @@ static int rtl_fe_prepare(struct rtl_fe *fe)
 
 	rtl_fe_write(fe, RTL_FE_PPP_PROTOCOL0, 0x11);
 	rtl_fe_write(fe, RTL_FE_PPP_PROTOCOL1, PPP_IP | PPP_IPV6 << 16);
-	rtl_fe_rmw(fe, RTL_FE_TABLE_CFG0, 0, BIT(31));
+	rtl_fe_rmw(fe, RTL_FE_TABLE_CFG0, GENMASK(17, 12),
+		   BIT(31) | (RTL_FE_DUAL_HASH_EIF_BASE << 12));
 	rtl_fe_rmw(fe, RTL_FE_CONTROL, FE_CONTROL_FIELDS, FE_CONTROL_INIT);
 	rtl_fe_rmw(fe, RTL_FE_PPP_CONFIG, 0, 0x1f00);
 	rtl_fe_rmw(fe, RTL_FE_TABLE_CFG1, GENMASK(11, 0), 0xf21);
@@ -550,12 +551,21 @@ static int rtl_fe_interface_bind_slot(struct rtl_fe *fe,
 
 static int rtl_fe_interface_get(struct rtl_fe *fe, struct rtl_fe_flow *flow)
 {
+	unsigned int limit = (rtl_fe_vpn_offload_enabled() ||
+			      rtl_fe_tunnel_flow_enabled()) ?
+			     FE_INTERFACES - FE_TUNNEL_EIF_RESERVE :
+			     FE_INTERFACES;
 	unsigned int index = FE_INTERFACES;
 	struct rtl_fe_interface *intf;
 	unsigned int i;
 
-	/* Prefer exclusive rows 0..15 and skip rows held by tunnel slots. */
-	for (i = 0; i < FE_INTERFACES; i++) {
+	/*
+	 * Prefer exclusive rows 0..15, skip rows held by tunnel slots, and
+	 * reserve the top FE_TUNNEL_EIF_RESERVE aliasable rows when tunnel
+	 * offload is active so ordinary counted flows cannot starve dual-header
+	 * sessions out of physical EIF rows 16..31.
+	 */
+	for (i = 0; i < limit; i++) {
 		if (!test_bit(i, fe->counters) &&
 		    !rtl_fe_tunnel_phys_busy(fe, i)) {
 			index = i;
@@ -564,7 +574,7 @@ static int rtl_fe_interface_get(struct rtl_fe *fe, struct rtl_fe_flow *flow)
 	}
 
 	if (index == FE_INTERFACES) {
-		for (i = 0; i < FE_INTERFACES; i++) {
+		for (i = 0; i < limit; i++) {
 			intf = &fe->interfaces[i];
 			if (intf->source_mac == flow->source_mac &&
 			    intf->pppoe == flow->pppoe &&
@@ -1250,6 +1260,7 @@ static int rtl_fe_parse_tunnel(struct flow_rule *rule,
 	if (data->tunnel_type == RTL_FE_DUAL_TYPE_IP4INIP6) {
 		if (data->kind != RTL_FE_RULE_IPV4)
 			return -EOPNOTSUPP;
+		data->tunnel_af = AF_INET6;
 		if (decap) {
 			ret = rtl_fe_tunnel_copy_ipv6(rule, data->tunnel_src,
 						      data->tunnel_dst);
@@ -1262,6 +1273,7 @@ static int rtl_fe_parse_tunnel(struct flow_rule *rule,
 	} else {
 		if (data->kind != RTL_FE_RULE_IPV6)
 			return -EOPNOTSUPP;
+		data->tunnel_af = AF_INET;
 		if (decap) {
 			ret = rtl_fe_tunnel_copy_ipv4(rule, data->tunnel_src,
 						      data->tunnel_dst);
@@ -2245,6 +2257,11 @@ int rtl_fe_install(struct rtl_fe_port *port, struct rtl_fe_rule *data,
 	data->action.ingress_interface =
 		flow->tunnel_owned && data->tunnel_decap ?
 		tunnel.hash_eif : 0;
+	if (flow->tunnel_owned && !data->tunnel_decap &&
+	    data->tunnel_type == RTL_FE_DUAL_TYPE_IP4INIP6) {
+		data->action.dip_remap_vld = 1;
+		data->action.dip_remap = RTL_FE_DUAL_FMR_NONE;
+	}
 	data->action.mirror = READ_ONCE(fe->mirror_enabled);
 	rtl_fe_action_build_mode(action, &data->action, fe->napt6_active);
 	rtl_fe_action_set_mode(action, RTL_FE_L3_IF_COUNTER_EN, flow->counted,
@@ -2884,6 +2901,8 @@ static int rtl_fe_flows_show(struct seq_file *s, void *unused)
 			   rtl_fe_flow_pol_id(flow), flow->pol_host);
 		if (flow->mcast)
 			seq_printf(s, " mce=%u", flow->mcast_hw_index);
+		if (flow->tunnel_owned)
+			seq_printf(s, " dual=%u", flow->dual_index);
 		seq_putc(s, '\n');
 	}
 	mutex_unlock(&fe->lock);
@@ -3221,10 +3240,10 @@ struct rtl_fe *rtl_fe_create(struct device *dev, struct regmap *regs,
 	if (ret)
 		dev_warn(dev, "dual-header table manager unavailable: %d\n",
 			 ret);
-	/* NAPTV6 is raw/debugfs only; a failed allocation must not block FE. */
+	/* NAPT6 action/NPTv6 prefix manager; a failed allocation must not block FE. */
 	ret = rtl_fe_napt6_init(fe);
 	if (ret)
-		dev_warn(dev, "NAPT6 debugfs manager unavailable: %d\n", ret);
+		dev_warn(dev, "NAPT6 manager unavailable: %d\n", ret);
 	rtl_fe_debugfs_init(fe);
 	return fe;
 

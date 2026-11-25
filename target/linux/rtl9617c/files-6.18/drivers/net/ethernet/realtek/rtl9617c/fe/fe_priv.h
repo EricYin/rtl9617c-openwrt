@@ -26,6 +26,7 @@
  */
 #define FE_INTERFACES			32
 #define FE_COUNTERS			32
+#define FE_TUNNEL_EIF_RESERVE		8
 #define FE_SOURCE_MACS			15
 #define FE_LAN_PORTS			5
 #define FE_MTUS				16

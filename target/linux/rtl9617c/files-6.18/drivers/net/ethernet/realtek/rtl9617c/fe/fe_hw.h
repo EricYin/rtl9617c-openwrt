@@ -270,6 +270,8 @@ struct rtl_fe_action {
 	u8 pppoe_pop;
 	u8 mtu_set;
 	u8 mtu_index;
+	u8 dip_remap_vld;
+	u8 dip_remap;
 	u8 gem_set;
 	u8 gem_index;
 	u8 bridge;

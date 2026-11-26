@@ -18,9 +18,11 @@ atomically claim NF_FLOW_PENDING and leave it set through retirement so
 neither a late submitter nor a concurrent GC pass can race with
 flow_offload_del().
 ---
+diff --git a/net/netfilter/nf_flow_table_core.c b/net/netfilter/nf_flow_table_core.c
+index 099d751..ba1a8ab 100644
 --- a/net/netfilter/nf_flow_table_core.c
 +++ b/net/netfilter/nf_flow_table_core.c
-@@ -375,7 +375,8 @@ void flow_offload_refresh(struct nf_flow
+@@ -371,7 +371,8 @@ void flow_offload_refresh(struct nf_flowtable *flow_table,
  		return;
  
  	if (likely(!nf_flowtable_hw_offload(flow_table)) ||
@@ -30,7 +32,7 @@ flow_offload_del().
  		return;
  
  	nf_flow_offload_add(flow_table, flow);
-@@ -608,7 +609,8 @@ static void nf_flow_offload_gc_step(stru
+@@ -570,7 +571,8 @@ static void nf_flow_offload_gc_step(struct nf_flowtable *flow_table,
  {
  	bool teardown;
  
@@ -40,7 +42,7 @@ flow_offload_del().
  		return;
  
  	teardown = test_bit(NF_FLOW_TEARDOWN, &flow->flags);
-@@ -628,16 +630,24 @@ static void nf_flow_offload_gc_step(stru
+@@ -588,8 +590,15 @@ static void nf_flow_offload_gc_step(struct nf_flowtable *flow_table,
  		if (test_bit(NF_FLOW_HW, &flow->flags)) {
  			if (!test_bit(NF_FLOW_HW_DYING, &flow->flags))
  				nf_flow_offload_del(flow_table, flow);
@@ -57,7 +59,7 @@ flow_offload_del().
  		} else {
  			flow_offload_del(flow_table, flow);
  		}
- 	} else if (test_bit(NF_FLOW_CLOSING, &flow->flags) &&
+@@ -597,7 +606,8 @@ static void nf_flow_offload_gc_step(struct nf_flowtable *flow_table,
  		   test_bit(NF_FLOW_HW, &flow->flags) &&
  		   !test_bit(NF_FLOW_HW_DYING, &flow->flags)) {
  		nf_flow_offload_del(flow_table, flow);
@@ -67,9 +69,11 @@ flow_offload_del().
  		nf_flow_offload_stats(flow_table, flow);
  	}
  }
+diff --git a/net/netfilter/nf_flow_table_offload.c b/net/netfilter/nf_flow_table_offload.c
+index 497c51b..81a7f64 100644
 --- a/net/netfilter/nf_flow_table_offload.c
 +++ b/net/netfilter/nf_flow_table_offload.c
-@@ -1198,8 +1198,11 @@ static void flow_offload_work_handler(st
+@@ -1185,8 +1185,11 @@ static void flow_offload_work_handler(struct work_struct *work)
  		default:
  			WARN_ON_ONCE(1);
  	}
@@ -83,7 +87,7 @@ flow_offload_del().
  
  	kfree(offload);
  }
-@@ -1229,9 +1232,15 @@ nf_flow_offload_work_alloc(struct nf_flo
+@@ -1216,9 +1219,15 @@ nf_flow_offload_work_alloc(struct nf_flowtable *flowtable,
  	if (test_and_set_bit(NF_FLOW_PENDING, &flow->flags))
  		return NULL;
  

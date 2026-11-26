@@ -1,14 +1,16 @@
+diff --git a/include/linux/netdevice.h b/include/linux/netdevice.h
+index 278e0bd..0cf6804 100644
 --- a/include/linux/netdevice.h
 +++ b/include/linux/netdevice.h
-@@ -880,6 +880,7 @@ enum net_device_path_type {
+@@ -879,6 +879,7 @@ enum net_device_path_type {
+ 	DEV_PATH_DSA,
  	DEV_PATH_MTK_WDMA,
- 	DEV_PATH_IEEE80211,
  	DEV_PATH_PPP_TUNNEL,
 +	DEV_PATH_IP_TUNNEL,
  };
  
  #define NETDEV_PPP_TUN_F_SEQ	BIT(0)
-@@ -918,6 +919,22 @@ struct net_device_ppp_tunnel {
+@@ -917,6 +918,22 @@ struct net_device_ppp_tunnel {
  	};
  };
  
@@ -31,7 +33,7 @@
  struct net_device_path {
  	enum net_device_path_type	type;
  	const struct net_device		*dev;
-@@ -949,6 +966,7 @@ struct net_device_path {
+@@ -948,6 +965,7 @@ struct net_device_path {
  			u8 amsdu;
  		} mtk_wdma;
  		struct net_device_ppp_tunnel ppp_tunnel;
@@ -39,11 +41,13 @@
  	};
  };
  
+diff --git a/include/net/netfilter/nf_flow_table.h b/include/net/netfilter/nf_flow_table.h
+index c7504d8..a03613d 100644
 --- a/include/net/netfilter/nf_flow_table.h
 +++ b/include/net/netfilter/nf_flow_table.h
-@@ -146,7 +146,8 @@ struct flow_offload_tuple {
- 					bridge_vlan:1,
- 					port_vlans:2,
+@@ -143,7 +143,8 @@ struct flow_offload_tuple {
+ 					xmit_type:3,
+ 					encap_num:2,
  					in_vlan_ingress:2,
 -					has_ppp_tun:1;
 +					has_ppp_tun:1,
@@ -51,7 +55,7 @@
  	u16				mtu;
  	union {
  		struct {
-@@ -164,7 +165,10 @@ struct flow_offload_tuple {
+@@ -161,7 +162,10 @@ struct flow_offload_tuple {
  			u32		iifidx;
  		} tc;
  	};
@@ -63,7 +67,7 @@
  };
  
  struct flow_offload_tuple_rhash {
-@@ -222,7 +226,11 @@ struct nf_flow_route {
+@@ -218,7 +222,11 @@ struct nf_flow_route {
  			u8			num_encaps:2,
  						ingress_vlans:2;
  			bool			has_ppp_tun;
@@ -76,6 +80,8 @@
  		} in;
  		struct {
  			u32			ifindex;
+diff --git a/net/ipv6/ip6_tunnel.c b/net/ipv6/ip6_tunnel.c
+index e9a2fdb..ec6f09c 100644
 --- a/net/ipv6/ip6_tunnel.c
 +++ b/net/ipv6/ip6_tunnel.c
 @@ -48,6 +48,8 @@
@@ -87,7 +93,7 @@
  #include <net/addrconf.h>
  #include <net/ip6_tunnel.h>
  #include <net/xfrm.h>
-@@ -2002,6 +2004,82 @@ int ip6_tnl_encap_setup(struct ip6_tnl *
+@@ -2002,6 +2004,82 @@ int ip6_tnl_encap_setup(struct ip6_tnl *t,
  }
  EXPORT_SYMBOL_GPL(ip6_tnl_encap_setup);
  
@@ -170,7 +176,7 @@
  static const struct net_device_ops ip6_tnl_netdev_ops = {
  	.ndo_init	= ip6_tnl_dev_init,
  	.ndo_uninit	= ip6_tnl_dev_uninit,
-@@ -2010,6 +2082,7 @@ static const struct net_device_ops ip6_t
+@@ -2010,6 +2088,7 @@ static const struct net_device_ops ip6_tnl_netdev_ops = {
  	.ndo_change_mtu = ip6_tnl_change_mtu,
  	.ndo_get_stats64 = dev_get_tstats64,
  	.ndo_get_iflink = ip6_tnl_get_iflink,
@@ -178,6 +184,8 @@
  };
  
  #define IPXIPX_FEATURES (NETIF_F_SG |		\
+diff --git a/net/ipv6/sit.c b/net/ipv6/sit.c
+index ae39e4c..f5bced1 100644
 --- a/net/ipv6/sit.c
 +++ b/net/ipv6/sit.c
 @@ -31,6 +31,7 @@
@@ -197,7 +205,7 @@
  #include <net/udp.h>
  #include <net/icmp.h>
  #include <net/ip_tunnels.h>
-@@ -1391,6 +1394,81 @@ static int ipip6_tunnel_siocdevprivate(s
+@@ -1391,6 +1394,81 @@ ipip6_tunnel_siocdevprivate(struct net_device *dev, struct ifreq *ifr,
  	}
  }
  
@@ -279,7 +287,7 @@
  static const struct net_device_ops ipip6_netdev_ops = {
  	.ndo_init	= ipip6_tunnel_init,
  	.ndo_uninit	= ipip6_tunnel_uninit,
-@@ -1398,6 +1471,7 @@ static const struct net_device_ops ipip6
+@@ -1398,6 +1476,7 @@ static const struct net_device_ops ipip6_netdev_ops = {
  	.ndo_siocdevprivate = ipip6_tunnel_siocdevprivate,
  	.ndo_get_iflink = ip_tunnel_get_iflink,
  	.ndo_tunnel_ctl = ipip6_tunnel_ctl,
@@ -287,9 +295,11 @@
  };
  
  static void ipip6_dev_free(struct net_device *dev)
+diff --git a/net/netfilter/nf_flow_table_core.c b/net/netfilter/nf_flow_table_core.c
+index ba1a8ab..8a4e8d6 100644
 --- a/net/netfilter/nf_flow_table_core.c
 +++ b/net/netfilter/nf_flow_table_core.c
-@@ -120,7 +120,11 @@ static int flow_offload_fill_route(struc
+@@ -119,7 +119,11 @@ static int flow_offload_fill_route(struct flow_offload *flow,
  	}
  	flow_tuple->encap_num = route->tuple[dir].in.num_encaps;
  	flow_tuple->has_ppp_tun = route->tuple[dir].in.has_ppp_tun;
@@ -302,68 +312,37 @@
  
  	switch (route->tuple[dir].xmit_type) {
  	case FLOW_OFFLOAD_XMIT_DIRECT:
---- a/net/netfilter/nf_flow_table_path.c
-+++ b/net/netfilter/nf_flow_table_path.c
-@@ -96,7 +96,11 @@ struct nft_forward_info {
- 	   bridge_vlan:1,
- 	   port_vlans:2;
- 	bool has_ppp_tun;
--	struct net_device_ppp_tunnel ppp_tun;
-+	bool has_ip_tun;
-+	union {
-+		struct net_device_ppp_tunnel ppp_tun;
-+		struct net_device_ip_tunnel ip_tun;
-+	};
- 	enum flow_offload_xmit_type xmit_type;
- };
+diff --git a/net/netfilter/nf_flow_table_ip.c b/net/netfilter/nf_flow_table_ip.c
+index a8da998..379509e 100644
+--- a/net/netfilter/nf_flow_table_ip.c
++++ b/net/netfilter/nf_flow_table_ip.c
+@@ -446,7 +446,9 @@ nf_flow_offload_ip_hook(void *priv, struct sk_buff *skb,
+ 	dir = tuplehash->tuple.dir;
+ 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
+ 	if (unlikely(tuplehash->tuple.has_ppp_tun ||
+-		     flow->tuplehash[!dir].tuple.has_ppp_tun))
++		     flow->tuplehash[!dir].tuple.has_ppp_tun ||
++		     tuplehash->tuple.has_ip_tun ||
++		     flow->tuplehash[!dir].tuple.has_ip_tun))
+ 		return NF_ACCEPT;
  
-@@ -182,7 +186,7 @@ static int nft_dev_path_info(const struc
- 			info->xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
- 			break;
- 		case DEV_PATH_PPP_TUNNEL:
--			if (info->has_ppp_tun)
-+			if (info->has_ppp_tun || info->has_ip_tun)
- 				return -1;
- 			info->has_ppp_tun = true;
- 			info->ppp_tun = path->ppp_tunnel;
-@@ -192,6 +196,17 @@ static int nft_dev_path_info(const struc
- 				info->xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
- 			}
- 			break;
-+		case DEV_PATH_IP_TUNNEL:
-+			if (info->has_ppp_tun || info->has_ip_tun)
-+				return -1;
-+			info->has_ip_tun = true;
-+			info->ip_tun = path->ip_tunnel;
-+			if (is_valid_ether_addr(path->ip_tunnel.h_dest)) {
-+				memcpy(info->h_dest, path->ip_tunnel.h_dest,
-+				       ETH_ALEN);
-+				info->xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
-+			}
-+			break;
- 		default:
- 			return -1;
- 		}
-@@ -254,11 +269,15 @@ static int nft_dev_forward_path(struct n
- 	route->tuple[!dir].in.num_encaps = info.num_encaps;
- 	route->tuple[!dir].in.ingress_vlans = info.ingress_vlans;
+ 	ret = nf_flow_offload_forward(&ctx, flow_table, tuplehash, skb);
+@@ -754,7 +756,9 @@ nf_flow_offload_ipv6_hook(void *priv, struct sk_buff *skb,
+ 	dir = tuplehash->tuple.dir;
+ 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
+ 	if (unlikely(tuplehash->tuple.has_ppp_tun ||
+-		     flow->tuplehash[!dir].tuple.has_ppp_tun))
++		     flow->tuplehash[!dir].tuple.has_ppp_tun ||
++		     tuplehash->tuple.has_ip_tun ||
++		     flow->tuplehash[!dir].tuple.has_ip_tun))
+ 		return NF_ACCEPT;
  
--	if (info.has_ppp_tun && !nf_flowtable_hw_offload(&ft->data))
-+	if ((info.has_ppp_tun || info.has_ip_tun) &&
-+	    !nf_flowtable_hw_offload(&ft->data))
- 		return -1;
- 	route->tuple[!dir].in.has_ppp_tun = info.has_ppp_tun;
-+	route->tuple[!dir].in.has_ip_tun = info.has_ip_tun;
- 	if (info.has_ppp_tun)
- 		route->tuple[!dir].in.ppp_tun = info.ppp_tun;
-+	else if (info.has_ip_tun)
-+		route->tuple[!dir].in.ip_tun = info.ip_tun;
- 
- 	if (info.xmit_type == FLOW_OFFLOAD_XMIT_DIRECT) {
- 		memcpy(route->tuple[dir].out.h_source, info.h_source, ETH_ALEN);
+ 	ret = nf_flow_offload_ipv6_forward(&ctx, flow_table, tuplehash, skb);
+diff --git a/net/netfilter/nf_flow_table_offload.c b/net/netfilter/nf_flow_table_offload.c
+index 81a7f64..dcbf2a9 100644
 --- a/net/netfilter/nf_flow_table_offload.c
 +++ b/net/netfilter/nf_flow_table_offload.c
-@@ -166,6 +166,40 @@ static int nf_flow_rule_match(struct nf_
+@@ -166,6 +166,40 @@ static int nf_flow_rule_match(struct nf_flow_match *match,
  		match->dissector.used_keys |= enc_keys;
  	}
  
@@ -404,7 +383,7 @@
  	if (tuple->xmit_type == FLOW_OFFLOAD_XMIT_TC)
  		key->meta.ingress_ifindex = tuple->tc.iifidx;
  	else
-@@ -233,6 +266,10 @@ static int nf_flow_rule_match(struct nf_
+@@ -231,6 +265,10 @@ static int nf_flow_rule_match(struct nf_flow_match *match,
  			key->pppoe.ppp_proto = htons(tuple->ppp_tun.addr_family ==
  						     AF_INET ? PPP_IP :
  							       PPP_IPV6);
@@ -415,7 +394,7 @@
  		else
  			key->pppoe.ppp_proto = htons(tuple->l3proto == AF_INET ?
  						     PPP_IP : PPP_IPV6);
-@@ -722,6 +759,22 @@ nf_flow_fill_ppp_encap_tunnel(struct ip_
+@@ -720,6 +758,22 @@ nf_flow_fill_ppp_encap_tunnel(struct ip_tunnel_info *info,
  	ip_tunnel_info_opts_set(info, &tun->opts, sizeof(tun->opts), opt_flags);
  }
  
@@ -438,7 +417,7 @@
  static int flow_offload_encap_tunnel(const struct flow_offload *flow,
  				     enum flow_offload_tuple_dir dir,
  				     struct nf_flow_rule *flow_rule)
-@@ -744,6 +798,18 @@ static int flow_offload_encap_tunnel(con
+@@ -742,6 +796,18 @@ static int flow_offload_encap_tunnel(const struct flow_offload *flow,
  		entry->tunnel = info;
  		return 0;
  	}
@@ -457,7 +436,7 @@
  	if (this_tuple->xmit_type == FLOW_OFFLOAD_XMIT_DIRECT)
  		return 0;
  
-@@ -773,7 +839,7 @@ static int flow_offload_decap_tunnel(con
+@@ -771,7 +837,7 @@ static int flow_offload_decap_tunnel(const struct flow_offload *flow,
  	struct dst_entry *dst;
  
  	this_tuple = &flow->tuplehash[dir].tuple;
@@ -466,7 +445,7 @@
  		entry = flow_action_entry_next(flow_rule);
  		if (!entry)
  			return -E2BIG;
-@@ -1111,7 +1177,9 @@ static void flow_offload_work_add(struct
+@@ -1098,7 +1164,9 @@ static void flow_offload_work_add(struct flow_offload_work *offload)
  	err = nf_flow_offload_alloc(offload, flow_rule);
  	if (err < 0) {
  		if (offload->flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.has_ppp_tun ||
@@ -477,7 +456,7 @@
  			flow_offload_teardown(offload->flow);
  		return;
  	}
-@@ -1119,7 +1187,9 @@ static void flow_offload_work_add(struct
+@@ -1106,7 +1174,9 @@ static void flow_offload_work_add(struct flow_offload_work *offload)
  	err = flow_offload_rule_add(offload, flow_rule);
  	if (err < 0) {
  		if (offload->flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple.has_ppp_tun ||
@@ -488,27 +467,67 @@
  			flow_offload_teardown(offload->flow);
  		goto out;
  	}
---- a/net/netfilter/nf_flow_table_ip.c
-+++ b/net/netfilter/nf_flow_table_ip.c
-@@ -452,7 +452,9 @@ nf_flow_offload_ip_hook(void *priv, stru
- 	dir = tuplehash->tuple.dir;
- 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
- 	if (unlikely(tuplehash->tuple.has_ppp_tun ||
--		     flow->tuplehash[!dir].tuple.has_ppp_tun))
-+		     flow->tuplehash[!dir].tuple.has_ppp_tun ||
-+		     tuplehash->tuple.has_ip_tun ||
-+		     flow->tuplehash[!dir].tuple.has_ip_tun))
- 		return NF_ACCEPT;
+diff --git a/net/netfilter/nf_flow_table_path.c b/net/netfilter/nf_flow_table_path.c
+index 5021ae1..7983099 100644
+--- a/net/netfilter/nf_flow_table_path.c
++++ b/net/netfilter/nf_flow_table_path.c
+@@ -87,7 +87,11 @@ struct nft_forward_info {
+ 	u8 h_source[ETH_ALEN];
+ 	u8 h_dest[ETH_ALEN];
+ 	bool has_ppp_tun;
+-	struct net_device_ppp_tunnel ppp_tun;
++	bool has_ip_tun;
++	union {
++		struct net_device_ppp_tunnel ppp_tun;
++		struct net_device_ip_tunnel ip_tun;
++	};
+ 	enum flow_offload_xmit_type xmit_type;
+ };
  
- 	ret = nf_flow_offload_forward(&ctx, flow_table, tuplehash, skb);
-@@ -763,7 +765,9 @@ nf_flow_offload_ipv6_hook(void *priv, st
- 	dir = tuplehash->tuple.dir;
- 	flow = container_of(tuplehash, struct flow_offload, tuplehash[dir]);
- 	if (unlikely(tuplehash->tuple.has_ppp_tun ||
--		     flow->tuplehash[!dir].tuple.has_ppp_tun))
-+		     flow->tuplehash[!dir].tuple.has_ppp_tun ||
-+		     tuplehash->tuple.has_ip_tun ||
-+		     flow->tuplehash[!dir].tuple.has_ip_tun))
- 		return NF_ACCEPT;
+@@ -161,7 +165,7 @@ static void nft_dev_path_info(const struct net_device_path_stack *stack,
+ 			info->xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
+ 			break;
+ 		case DEV_PATH_PPP_TUNNEL:
+-			if (info->has_ppp_tun) {
++			if (info->has_ppp_tun || info->has_ip_tun) {
+ 				info->indev = NULL;
+ 				i = stack->num_paths;
+ 				break;
+@@ -174,6 +178,20 @@ static void nft_dev_path_info(const struct net_device_path_stack *stack,
+ 				info->xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
+ 			}
+ 			break;
++		case DEV_PATH_IP_TUNNEL:
++			if (info->has_ppp_tun || info->has_ip_tun) {
++				info->indev = NULL;
++				i = stack->num_paths;
++				break;
++			}
++			info->has_ip_tun = true;
++			info->ip_tun = path->ip_tunnel;
++			if (is_valid_ether_addr(path->ip_tunnel.h_dest)) {
++				memcpy(info->h_dest, path->ip_tunnel.h_dest,
++				       ETH_ALEN);
++				info->xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
++			}
++			break;
+ 		default:
+ 			info->indev = NULL;
+ 			break;
+@@ -236,11 +254,15 @@ static void nft_dev_forward_path(struct nf_flow_route *route,
+ 	route->tuple[!dir].in.num_encaps = info.num_encaps;
+ 	route->tuple[!dir].in.ingress_vlans = info.ingress_vlans;
  
- 	ret = nf_flow_offload_ipv6_forward(&ctx, flow_table, tuplehash, skb);
+-	if (info.has_ppp_tun && !nf_flowtable_hw_offload(&ft->data))
++	if ((info.has_ppp_tun || info.has_ip_tun) &&
++	    !nf_flowtable_hw_offload(&ft->data))
+ 		return;
+ 	route->tuple[!dir].in.has_ppp_tun = info.has_ppp_tun;
++	route->tuple[!dir].in.has_ip_tun = info.has_ip_tun;
+ 	if (info.has_ppp_tun)
+ 		route->tuple[!dir].in.ppp_tun = info.ppp_tun;
++	else if (info.has_ip_tun)
++		route->tuple[!dir].in.ip_tun = info.ip_tun;
+ 
+ 	if (info.xmit_type == FLOW_OFFLOAD_XMIT_DIRECT) {
+ 		memcpy(route->tuple[dir].out.h_source, info.h_source, ETH_ALEN);

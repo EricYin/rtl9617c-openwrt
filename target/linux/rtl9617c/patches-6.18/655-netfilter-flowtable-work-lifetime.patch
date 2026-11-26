@@ -70,10 +70,10 @@ index 099d751..ba1a8ab 100644
  	}
  }
 diff --git a/net/netfilter/nf_flow_table_offload.c b/net/netfilter/nf_flow_table_offload.c
-index 497c51b..81a7f64 100644
+index cb794b4..80f787c 100644
 --- a/net/netfilter/nf_flow_table_offload.c
 +++ b/net/netfilter/nf_flow_table_offload.c
-@@ -1185,8 +1185,11 @@ static void flow_offload_work_handler(struct work_struct *work)
+@@ -1196,8 +1196,11 @@ static void flow_offload_work_handler(struct work_struct *work)
  		default:
  			WARN_ON_ONCE(1);
  	}
@@ -87,7 +87,7 @@ index 497c51b..81a7f64 100644
  
  	kfree(offload);
  }
-@@ -1216,9 +1219,15 @@ nf_flow_offload_work_alloc(struct nf_flowtable *flowtable,
+@@ -1227,9 +1230,15 @@ nf_flow_offload_work_alloc(struct nf_flowtable *flowtable,
  	if (test_and_set_bit(NF_FLOW_PENDING, &flow->flags))
  		return NULL;
  

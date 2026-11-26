@@ -13,7 +13,9 @@ firmware has no management frame protection offload.
 
 Apply the devicetree ieee80211-freq-limit property, and drop the 6 GHz
 band when it leaves no usable 6 GHz channel, so that boards without a
-6 GHz front-end do not register the band.
+6 GHz front-end do not register the band. The band's sband, channels,
+bitrates and iftype_data are devm allocations, so release them with
+devm_kfree() instead of kfree().
 
 Signed-off-by: lyq1996 <lyq123233@163.com>
 ---
@@ -1322,6 +1324,19 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/regd.c
  	if (skip_acpi_dsm)
  		goto bottom;
  
+@@ -642,8 +659,10 @@ static void rtw89_regd_setup_6ghz(struct
+ 		return;
+ 
+ 	wiphy->bands[NL80211_BAND_6GHZ] = NULL;
+-	kfree((__force void *)sband->iftype_data);
+-	kfree(sband);
++	devm_kfree(rtwdev->dev, (__force void *)sband->iftype_data);
++	devm_kfree(rtwdev->dev, sband->channels);
++	devm_kfree(rtwdev->dev, sband->bitrates);
++	devm_kfree(rtwdev->dev, sband);
+ }
+ 
+ #define RTW89_DEF_REGD_STR(regd) \
 Index: backports-7.2/drivers/net/wireless/realtek/rtw89/coex.c
 ===================================================================
 --- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/coex.c

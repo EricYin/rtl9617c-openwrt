@@ -3,7 +3,7 @@ Subject: [PATCH] wifi: rtw89: add RTL8192XBE support
 
 Add the RTL8192XB PCIe 2.4 GHz chip driven by the access point firmware,
 including per-RFE parameter and TX power tables, AP PLE/HFC quotas, RFE
-GPIO routing, and RCK/DACK/RX_DCK/IQK RF calibrations.
+GPIO routing, and RCK/DACK/RX_DCK/TXGAPK/IQK/TSSI/DPK/OP5K RF calibrations.
 
 Signed-off-by: lyq1996 <lyq123233@163.com>
 ---
@@ -52,11 +52,47 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/Makefile
  rtw89_core-$(CPTCFG_RTW89_DEBUG) += debug.o
  
  obj-$(CPTCFG_RTW89_PCI) += rtw89_pci.o
+Index: backports-7.2/drivers/net/wireless/realtek/rtw89/core.h
+===================================================================
+--- backports-7.2.orig/drivers/net/wireless/realtek/rtw89/core.h
++++ backports-7.2/drivers/net/wireless/realtek/rtw89/core.h
+@@ -5552,6 +5552,23 @@
+ 	u8 thermal[RF_PATH_MAX];
+ };
+ 
++#define RTW89_OP5K_AVG_THERMAL_NUM 2
++#define RTW89_OP5K_RESET_CNT_DATA 16
++struct rtw89_op5k_info {
++	u32 rst_cnt[RF_PATH_MAX][RTW89_OP5K_RESET_CNT_DATA];
++	u32 rst_cnt_zero[RF_PATH_MAX][2];
++	u32 rst_cnt_final[RF_PATH_MAX];
++	u32 op5k_default[RF_PATH_MAX];
++	u32 op5k_backup[RF_PATH_MAX];
++	u8 thermal_op5k[RF_PATH_MAX];
++	u8 thermal_base_op5k[RF_PATH_MAX];
++	u8 thermal_op5k_avg[RF_PATH_MAX][RTW89_OP5K_AVG_THERMAL_NUM];
++	u8 thermal_op5k_avg_index;
++	bool op5k_progress;
++	bool op5k_ther_chk;
++	bool op5k_set_ch_chk;
++};
++
+ struct rtw89_iqk_info {
+ 	bool lok_cor_fail[RTW89_IQK_CHS_NR][RTW89_IQK_PATH_NR];
+ 	bool lok_fin_fail[RTW89_IQK_CHS_NR][RTW89_IQK_PATH_NR];
+@@ -6520,6 +6537,7 @@
+ 	struct rtw89_rfk_mcc_info rfk_mcc;
+ 	struct rtw89_lck_info lck;
+ 	struct rtw89_rx_dck_info rx_dck;
++	struct rtw89_op5k_info op5k;
+ 	bool is_tssi_mode[RF_PATH_MAX];
+ 	bool is_bt_iqk_timeout;
+ 
 Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 ===================================================================
 --- /dev/null
 +++ backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
-@@ -0,0 +1,2964 @@
+@@ -0,0 +1,3092 @@
 +// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 +/* Copyright(c) 2019-2022  Realtek Corporation
 + */
@@ -595,6 +631,33 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 +}
 +
 +
++static bool rtw8192xb_is_efem(struct rtw89_dev *rtwdev)
++{
++	u8 rfe_type = rtwdev->efuse.rfe_type;
++
++	return (rfe_type > 50 && rfe_type < 90) || rfe_type >= 100;
++}
++
++static void rtw8192xb_efuse_parsing_tssi(struct rtw89_dev *rtwdev,
++					 struct rtw8192xb_efuse *map)
++{
++	struct rtw89_tssi_info *tssi = &rtwdev->tssi;
++	struct rtw8192xb_tssi_offset *ofst[] = {&map->path_a_tssi, &map->path_b_tssi};
++	u8 i;
++
++	tssi->thermal[RF_PATH_A] = map->path_a_therm;
++	tssi->thermal[RF_PATH_B] = map->path_b_therm;
++
++	for (i = 0; i < RF_PATH_NUM_8192XB; i++) {
++		memcpy(tssi->tssi_cck[i], ofst[i]->cck_tssi,
++		       sizeof(ofst[i]->cck_tssi));
++		memcpy(tssi->tssi_mcs[i], ofst[i]->bw40_tssi,
++		       sizeof(ofst[i]->bw40_tssi));
++		memcpy(tssi->tssi_mcs[i] + TSSI_MCS_2G_CH_GROUP_NUM,
++		       ofst[i]->bw40_1s_tssi_5g, sizeof(ofst[i]->bw40_1s_tssi_5g));
++	}
++}
++
 +static int rtw8192xb_read_efuse(struct rtw89_dev *rtwdev, u8 *log_map,
 +				enum rtw89_efuse_block block)
 +{
@@ -607,6 +670,7 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 +	rtw89_factory_fill_rfe(rtwdev);
 +	efuse->xtal_cap = map->xtal_k;
 +	efuse->valid = is_valid_ether_addr(efuse->addr);
++	rtw8192xb_efuse_parsing_tssi(rtwdev, map);
 +
 +	cal = rtw89_factory_cal_get(rtwdev);
 +	if (cal) {
@@ -621,13 +685,96 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 +	return 0;
 +}
 +
++static void rtw8192xb_phycap_parsing_tssi(struct rtw89_dev *rtwdev, u8 *phycap_map)
++{
++	struct rtw89_tssi_info *tssi = &rtwdev->tssi;
++	static const u32 tssi_trim_addr[RF_PATH_NUM_8192XB] = {0x5d6, 0x5ab};
++	u32 addr = rtwdev->chip->phycap_addr;
++	bool pg = false;
++	u32 ofst;
++	u8 i, j;
++
++	for (i = 0; i < RF_PATH_NUM_8192XB; i++) {
++		for (j = 0; j < TSSI_TRIM_CH_GROUP_NUM; j++) {
++			ofst = tssi_trim_addr[i] - addr - j;
++			tssi->tssi_trim[i][j] = phycap_map[ofst];
++			if (phycap_map[ofst] != 0xff)
++				pg = true;
++		}
++	}
++
++	if (!pg)
++		memset(tssi->tssi_trim, 0, sizeof(tssi->tssi_trim));
++}
++
++static void rtw8192xb_phycap_parsing_thermal_trim(struct rtw89_dev *rtwdev,
++						  u8 *phycap_map)
++{
++	struct rtw89_power_trim_info *info = &rtwdev->pwr_trim;
++	static const u32 thm_trim_addr[RF_PATH_NUM_8192XB] = {0x5df, 0x5dc};
++	u32 addr = rtwdev->chip->phycap_addr;
++	u8 i;
++
++	for (i = 0; i < RF_PATH_NUM_8192XB; i++) {
++		info->thermal_trim[i] = phycap_map[thm_trim_addr[i] - addr];
++		if (info->thermal_trim[i] != 0xff)
++			info->pg_thermal_trim = true;
++	}
++}
++
++static void rtw8192xb_phycap_parsing_pa_bias_trim(struct rtw89_dev *rtwdev,
++						  u8 *phycap_map)
++{
++	struct rtw89_power_trim_info *info = &rtwdev->pwr_trim;
++	static const u32 pabias_trim_addr[RF_PATH_NUM_8192XB] = {0x5de, 0x5db};
++	u32 addr = rtwdev->chip->phycap_addr;
++	u8 i;
++
++	for (i = 0; i < RF_PATH_NUM_8192XB; i++) {
++		info->pa_bias_trim[i] = phycap_map[pabias_trim_addr[i] - addr];
++		if (info->pa_bias_trim[i] != 0xff)
++			info->pg_pa_bias_trim = true;
++	}
++}
++
 +static int rtw8192xb_read_phycap(struct rtw89_dev *rtwdev, u8 *phycap_map)
 +{
++	rtw8192xb_phycap_parsing_tssi(rtwdev, phycap_map);
++	rtw8192xb_phycap_parsing_thermal_trim(rtwdev, phycap_map);
++	rtw8192xb_phycap_parsing_pa_bias_trim(rtwdev, phycap_map);
++
 +	return 0;
 +}
 +
 +static void rtw8192xb_power_trim(struct rtw89_dev *rtwdev)
 +{
++	struct rtw89_power_trim_info *info = &rtwdev->pwr_trim;
++	u8 i, val;
++
++	if (info->pg_thermal_trim) {
++		for (i = 0; i < RF_PATH_NUM_8192XB; i++) {
++			val = ((info->thermal_trim[i] & BIT(0)) << 3) |
++			      ((info->thermal_trim[i] & GENMASK(3, 1)) >> 1);
++			rtw89_write_rf(rtwdev, i, RR_TM2, RR_TM2_OFF, val);
++		}
++	}
++
++	if (info->pg_pa_bias_trim) {
++		for (i = 0; i < RF_PATH_NUM_8192XB; i++) {
++			val = u8_get_bits(info->pa_bias_trim[i], GENMASK(3, 0));
++			rtw89_write_rf(rtwdev, i, RR_BIASA, RR_BIASA_TXG, val);
++		}
++	}
++}
++
++static void rtw8192xb_fem_setup(struct rtw89_dev *rtwdev)
++{
++	struct rtw89_fem_info *fem = &rtwdev->fem;
++
++	if (rtw8192xb_is_efem(rtwdev)) {
++		fem->epa_2g = true;
++		fem->elna_2g = true;
++	}
 +}
 +
 +static void rtw8192xb_set_channel_mac(struct rtw89_dev *rtwdev,
@@ -808,6 +955,9 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 +			rtw89_write_rf(rtwdev, path, addrs[bank], RFREG_MASK, rf_reg18);
 +		}
 +	}
++
++	rtw8192xb_set_rxbb_bw(rtwdev, chan->band_width, phy_idx);
++	rtw8192xb_op5k_bw_setting(rtwdev);
 +}
 +
 +struct rtw8192xb_bb_gain {
@@ -895,11 +1045,6 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 +	.reg_tia1_lna6 = {0x4694, 0x4778},
 +	.mask_tia1_lna6 = 0xff00,
 +};
-+
-+static bool rtw8192xb_is_efem(struct rtw89_dev *rtwdev)
-+{
-+	return rtwdev->efuse.rfe_type >= 51;
-+}
 +
 +static void rtw8192xb_set_gain_efem(struct rtw89_dev *rtwdev, u8 gain_band,
 +				    enum rtw89_rf_path path)
@@ -1747,6 +1892,7 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 +				       RTW89_SCH_TX_SEL_ALL);
 +		rtw89_mac_cfg_ppdu_status(rtwdev, mac_idx, false);
 +		rtw8192xb_dfs_en(rtwdev, false);
++		rtw8192xb_tssi_cont_en_phyidx(rtwdev, false, phy_idx, chan);
 +		rtw8192xb_adc_en(rtwdev, false);
 +		fsleep(40);
 +		rtw8192xb_bb_reset_en(rtwdev, chan->band_type, phy_idx, false);
@@ -1754,6 +1900,7 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 +		rtw89_mac_cfg_ppdu_status(rtwdev, mac_idx, true);
 +		rtw8192xb_adc_en(rtwdev, true);
 +		rtw8192xb_dfs_en(rtwdev, true);
++		rtw8192xb_tssi_cont_en_phyidx(rtwdev, true, phy_idx, chan);
 +		rtw8192xb_bb_reset_en(rtwdev, chan->band_type, phy_idx, true);
 +		rtw89_chip_resume_sch_tx(rtwdev, mac_idx, p->tx_en);
 +	}
@@ -1763,6 +1910,12 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 +
 +static void rtw8192xb_rfk_init(struct rtw89_dev *rtwdev)
 +{
++	rtwdev->is_tssi_mode[RF_PATH_A] = false;
++	rtwdev->is_tssi_mode[RF_PATH_B] = false;
++	rtw8192xb_dpk_init(rtwdev);
++	rtw8192xb_txgapk_init(rtwdev);
++	rtw8192xb_op5k_init(rtwdev);
++
 +	rtw8192xb_rfk_rck(rtwdev);
 +	rtw8192xb_rfk_dack(rtwdev);
 +	rtw8192xb_rfk_rx_dck(rtwdev);
@@ -1771,31 +1924,42 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 +static void rtw8192xb_rfk_channel(struct rtw89_dev *rtwdev,
 +				  struct rtw89_vif_link *rtwvif_link)
 +{
++	enum rtw89_chanctx_idx chanctx_idx = rtwvif_link->chanctx_idx;
++	enum rtw89_phy_idx phy_idx = rtwvif_link->phy_idx;
++
 +	rtw8192xb_rfk_rx_dck(rtwdev);
-+	rtw8192xb_rfk_iqk(rtwdev, rtwvif_link->phy_idx);
++	rtw8192xb_txgapk(rtwdev, phy_idx);
++	rtw8192xb_rfk_iqk(rtwdev, phy_idx);
++	rtw8192xb_tssi(rtwdev, phy_idx, chanctx_idx);
++	rtw8192xb_dpk(rtwdev, phy_idx, chanctx_idx);
 +}
 +
 +static void rtw8192xb_rfk_band_changed(struct rtw89_dev *rtwdev,
 +				       enum rtw89_phy_idx phy_idx,
 +				       const struct rtw89_chan *chan)
 +{
++	rtw8192xb_tssi_scan(rtwdev, phy_idx, chan);
 +}
 +
 +static void rtw8192xb_rfk_scan(struct rtw89_dev *rtwdev,
 +			       struct rtw89_vif_link *rtwvif_link,
 +			       bool start)
 +{
++	rtw8192xb_wifi_scan_notify(rtwdev, start, rtwvif_link->phy_idx);
 +}
 +
 +static void rtw8192xb_rfk_track(struct rtw89_dev *rtwdev)
 +{
++	rtw8192xb_dpk_track(rtwdev);
++	rtw8192xb_tssi_track(rtwdev);
++	rtw8192xb_op5k_track(rtwdev);
 +}
 +
 +static u32 rtw8192xb_bb_cal_txpwr_ref(struct rtw89_dev *rtwdev,
 +				     enum rtw89_phy_idx phy_idx,
 +				     s16 ref, u16 pwr_ofst_decrease)
 +{
-+	u8 base_cw_0db = 0x27;
++	u8 base_cw_0db = rtw8192xb_is_efem(rtwdev) ? 0x21 : 0x27;
 +	u16 tssi_16dbm_cw = 0x12c;
 +	s16 pwr_s10_3 = 0;
 +	s16 rf_pwr_cw = 0;
@@ -2809,7 +2973,7 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 +	.set_channel_help	= rtw8192xb_set_channel_help,
 +	.read_efuse		= rtw8192xb_read_efuse,
 +	.read_phycap		= rtw8192xb_read_phycap,
-+	.fem_setup		= NULL,
++	.fem_setup		= rtw8192xb_fem_setup,
 +	.rfe_gpio		= rtw8192xb_rfe_gpio,
 +	.rfk_hw_init		= NULL,
 +	.rfk_init		= rtw8192xb_rfk_init,
@@ -2958,8 +3122,8 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.c
 +	.dav_phy_efuse_size	= 0,
 +	.dav_log_efuse_size	= 0,
 +	.efuse_blocks		= NULL,
-+	.phycap_addr		= 0x210,
-+	.phycap_size		= 0xd0,
++	.phycap_addr		= 0x5a0,
++	.phycap_size		= 0x40,
 +	.para_ver		= 0x0,
 +	.wlcx_desired		= 0x06000000,
 +	.scbd			= 0x1,
@@ -3025,7 +3189,7 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.h
 ===================================================================
 --- /dev/null
 +++ backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.h
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,53 @@
 +// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 +
 +#ifndef __RTW89_8192XB_H__
@@ -3036,20 +3200,31 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.h
 +#define RF_PATH_NUM_8192XB 2
 +#define BB_PATH_NUM_8192XB 2
 +
++struct rtw8192xb_tssi_offset {
++	u8 cck_tssi[TSSI_CCK_CH_GROUP_NUM];
++	u8 bw40_tssi[TSSI_MCS_2G_CH_GROUP_NUM];
++	u8 rsvd[7];
++	u8 bw40_1s_tssi_5g[TSSI_MCS_5G_CH_GROUP_NUM];
++} __packed;
++
 +struct rtw8192xb_efuse {
 +	u8 rsvd[0x38];
 +	u8 mac_addr[ETH_ALEN];
-+	u8 rsvd1[0x27a];
++	u8 rsvd1[0x1d2];
++	struct rtw8192xb_tssi_offset path_a_tssi;
++	u8 rsvd2[10];
++	struct rtw8192xb_tssi_offset path_b_tssi;
++	u8 rsvd3[0x5e];
 +	u8 channel_plan;
 +	u8 xtal_k;
-+	u8 rsvd2[0x10];
++	u8 rsvd4[0x10];
 +	u8 rfe_type;
-+	u8 rsvd3[5];
++	u8 rsvd5[5];
 +	u8 path_a_therm;
 +	u8 path_b_therm;
-+	u8 rsvd4[2];
++	u8 rsvd6[2];
 +	u8 rx_gain_2g_ofdm;
-+	u8 rsvd5;
++	u8 rsvd7;
 +	u8 rx_gain_2g_cck;
 +} __packed;
 +
@@ -3061,6 +3236,7 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb.h
 +extern const struct rtw89_phy_table rtw89_8192xb_phy_nctl_table;
 +extern const struct rtw89_txpwr_table rtw89_8192xb_byr_table;
 +extern const struct rtw89_phy_tssi_dbw_table rtw89_8192xb_tssi_dbw_table;
++extern const struct rtw89_txpwr_track_cfg rtw89_8192xb_trk_cfg;
 +extern const struct rtw89_rfe_parms rtw89_8192xb_dflt_parms;
 +
 +extern const struct rtw89_chip_info rtw8192xb_chip_info;
@@ -3071,19 +3247,37 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb_rfk.c
 ===================================================================
 --- /dev/null
 +++ backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb_rfk.c
-@@ -0,0 +1,666 @@
+@@ -0,0 +1,1717 @@
 +// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 +
 +#include <linux/iopoll.h>
 +
 +#include "debug.h"
++#include "mac.h"
 +#include "phy.h"
 +#include "reg.h"
++#include "rtw8192xb.h"
 +#include "rtw8192xb_rfk.h"
 +
 +#define RTW8192XB_ADC_960M	2
 +#define RTW8192XB_ADC_1920M	3
 +#define RTW8192XB_RFK_POLL_US	10000
++#define RTW8192XB_OP5K_THER_TH	6
++#define RTW8192XB_OP5K_THER_BASE	26
++#define RTW8192XB_OP5K_DIFF	5
++#define RTW8192XB_TSSI_DE_MASK	GENMASK(21, 12)
++#define RTW8192XB_TSSI_EXTRA_BIT	BIT(31)
++#define RTW8192XB_TSSI_EXTRA_GROUP(idx)	(RTW8192XB_TSSI_EXTRA_BIT | (idx))
++#define RTW8192XB_IS_TSSI_EXTRA(g)	((g) & RTW8192XB_TSSI_EXTRA_BIT)
++#define RTW8192XB_TSSI_EXTRA_IDX1(g)	((g) & ~RTW8192XB_TSSI_EXTRA_BIT)
++#define RTW8192XB_TSSI_EXTRA_IDX2(g)	(RTW8192XB_TSSI_EXTRA_IDX1(g) + 1)
++
++static bool rtw8192xb_rfk_is_efem(struct rtw89_dev *rtwdev)
++{
++	u8 rfe_type = rtwdev->efuse.rfe_type;
++
++	return (rfe_type > 50 && rfe_type < 90) || rfe_type >= 100;
++}
 +
 +struct rtw8192xb_adc_ck {
 +	u8 val[6];
@@ -3466,10 +3660,17 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb_rfk.c
 +	rtw89_phy_write32(rtwdev, 0x8080, 0x4);
 +
 +	for (path = RF_PATH_A; path <= RF_PATH_B; path++) {
++		if (rtwdev->is_tssi_mode[path])
++			rtw89_phy_write32_mask(rtwdev, 0x5818 + (path << 13),
++					       BIT(30), 0x1);
 +		rtw89_write_rf(rtwdev, path, RR_RSV1, RFREG_MASK, 0);
 +		rtw89_write_rf(rtwdev, path, RR_MOD, RR_MOD_MASK, RR_MOD_V_RX);
++		rtw89_write_rf(rtwdev, path, 0x93, 0xf, 0x8);
 +		rtw8192xb_rx_dck_path(rtwdev, path);
 +		rtw89_write_rf(rtwdev, path, RR_RSV1, RFREG_MASK, 1);
++		if (rtwdev->is_tssi_mode[path])
++			rtw89_phy_write32_mask(rtwdev, 0x5818 + (path << 13),
++					       BIT(30), 0x0);
 +	}
 +
 +	rtw89_phy_write32(rtwdev, 0x8080, 0);
@@ -3738,11 +3939,1037 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb_rfk.c
 +		rtw89_write_rf(rtwdev, path, RR_RSV1, RFREG_MASK, 1);
 +	}
 +}
++
++void rtw8192xb_set_rxbb_bw(struct rtw89_dev *rtwdev, enum rtw89_bandwidth bw,
++			   enum rtw89_phy_idx phy_idx)
++{
++	u32 val;
++	u8 path;
++
++	switch (bw) {
++	case RTW89_CHANNEL_WIDTH_20:
++	case RTW89_CHANNEL_WIDTH_10:
++	case RTW89_CHANNEL_WIDTH_5:
++		val = 0x1b;
++		break;
++	case RTW89_CHANNEL_WIDTH_40:
++		val = 0x13;
++		break;
++	case RTW89_CHANNEL_WIDTH_80:
++		val = 0x0b;
++		break;
++	case RTW89_CHANNEL_WIDTH_160:
++		val = 0x03;
++		break;
++	default:
++		val = 0x1b;
++		break;
++	}
++
++	for (path = RF_PATH_A; path < RF_PATH_NUM_8192XB; path++) {
++		if (rtwdev->dbcc_en && phy_idx == RTW89_PHY_0 && path == RF_PATH_B)
++			continue;
++		if (rtwdev->dbcc_en && phy_idx == RTW89_PHY_1 && path == RF_PATH_A)
++			continue;
++
++		rtw89_write_rf(rtwdev, path, 0xee, BIT(2), 0x1);
++		rtw89_write_rf(rtwdev, path, 0x33, GENMASK(4, 0), 0x0a);
++		rtw89_write_rf(rtwdev, path, 0x3f, GENMASK(5, 0), val);
++		rtw89_write_rf(rtwdev, path, 0xee, BIT(2), 0x0);
++	}
++}
++
++void rtw8192xb_txgapk_init(struct rtw89_dev *rtwdev)
++{
++	rtw89_write_rf(rtwdev, RF_PATH_A, 0x10055, BIT(19), 0x0);
++	rtw89_write_rf(rtwdev, RF_PATH_B, 0x10055, BIT(19), 0x0);
++}
++
++void rtw8192xb_txgapk(struct rtw89_dev *rtwdev, enum rtw89_phy_idx phy_idx)
++{
++	if (rtwdev->efuse.rfe_type > 50)
++		return;
++
++	rtw8192xb_txgapk_init(rtwdev);
++}
++
++static void rtw8192xb_tssi_disable(struct rtw89_dev *rtwdev)
++{
++	rtw89_phy_write32_mask(rtwdev, 0x5820, BIT(31), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x5818, BIT(28), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x58e4, BIT(14), 0x1);
++
++	rtw89_phy_write32_mask(rtwdev, 0x7820, BIT(31), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x7818, BIT(28), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x78e4, BIT(14), 0x1);
++
++	rtwdev->is_tssi_mode[RF_PATH_A] = false;
++	rtwdev->is_tssi_mode[RF_PATH_B] = false;
++}
++
++static void rtw8192xb_tssi_set_sys(struct rtw89_dev *rtwdev,
++				   enum rtw89_rf_path path)
++{
++	rtw89_phy_write32_mask(rtwdev, 0x12bc, 0x000ffff0, 0xb5b5);
++	rtw89_phy_write32_mask(rtwdev, 0x32bc, 0x000ffff0, 0xb5b5);
++	rtw89_phy_write32_mask(rtwdev, 0x0300, 0xff000000, 0x16);
++	rtw89_phy_write32_mask(rtwdev, 0x0304, 0x0000ffff, 0x1f19);
++	rtw89_phy_write32_mask(rtwdev, 0x0308, 0xff000000, 0x1c);
++	rtw89_phy_write32_mask(rtwdev, 0x0314, 0xffff0000, 0x2041);
++	rtw89_phy_write32(rtwdev, 0x0318, 0x20012041);
++	rtw89_phy_write32_mask(rtwdev, 0x0324, 0xffff0000, 0x2001);
++	rtw89_phy_write32_mask(rtwdev, 0x0020, 0x00006000, 0x3);
++	rtw89_phy_write32_mask(rtwdev, 0x0024, 0x00006000, 0x3);
++	rtw89_phy_write32_mask(rtwdev, 0x0704, 0xffff0000, 0x601e);
++	rtw89_phy_write32_mask(rtwdev, 0x2704, 0xffff0000, 0x601e);
++	rtw89_phy_write32_mask(rtwdev, 0x0700, 0xf0000000, 0x4);
++	rtw89_phy_write32_mask(rtwdev, 0x2700, 0xf0000000, 0x4);
++	rtw89_phy_write32_mask(rtwdev, 0x0650, 0x3c000000, 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x2650, 0x3c000000, 0x0);
++
++	if (path == RF_PATH_A) {
++		rtw89_phy_write32_mask(rtwdev, 0x120c, 0x000000ff, 0x33);
++		rtw89_phy_write32_mask(rtwdev, 0x12c0, 0x0ff00000, 0x33);
++		rtw89_phy_write32_mask(rtwdev, 0x58f8, BIT(30), 0x1);
++	} else {
++		rtw89_phy_write32_mask(rtwdev, 0x320c, 0x000000ff, 0x33);
++		rtw89_phy_write32_mask(rtwdev, 0x32c0, 0x0ff00000, 0x33);
++		rtw89_phy_write32_mask(rtwdev, 0x78f8, BIT(30), 0x1);
++	}
++}
++
++static void rtw8192xb_tssi_ini_txpwr_ctrl_bb(struct rtw89_dev *rtwdev,
++					     enum rtw89_rf_path path)
++{
++	bool is_ifem = !rtw8192xb_rfk_is_efem(rtwdev);
++	u32 p13 = path << 13;
++
++	rtw89_phy_write32_mask(rtwdev, 0x566c, BIT(12), 0x0);
++	rtw89_phy_write32(rtwdev, 0x5800 + p13, 0x003f807f);
++	rtw89_phy_write32_mask(rtwdev, 0x580c + p13, 0x0000007f, 0x40);
++	rtw89_phy_write32_mask(rtwdev, 0x580c + p13, 0x0fffff00, 0x00040);
++	rtw89_phy_write32(rtwdev, 0x5810 + p13, 0x59010000);
++
++	if (is_ifem) {
++		rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, 0x01ffffff, 0x026d000);
++		rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, 0xf8000000, 0x00);
++	}
++
++	rtw89_phy_write32(rtwdev, 0x5818 + p13, 0x002c1800);
++
++	if (is_ifem)
++		rtw89_phy_write32_mask(rtwdev, 0x581c + p13, 0x3fffffff, 0x3dc80280);
++
++	rtw89_phy_write32(rtwdev, 0x5820 + p13, 0x00000080);
++	rtw89_phy_write32_mask(rtwdev, 0x58e8 + p13, 0x0000003f, 0x03);
++
++	if (is_ifem) {
++		rtw89_phy_write32_mask(rtwdev, 0x580c + p13, BIT(28), 0x1);
++		rtw89_phy_write32_mask(rtwdev, 0x580c + p13, BIT(30), 0x1);
++		rtw89_phy_write32_mask(rtwdev, 0x5834 + p13, 0x3fffffff, 0x000115f2);
++		rtw89_phy_write32_mask(rtwdev, 0x5838 + p13, 0x7fffffff, 0x0000121);
++		rtw89_phy_write32_mask(rtwdev, 0x5854 + p13, 0x3fffffff, 0x000115f2);
++		rtw89_phy_write32_mask(rtwdev, 0x5858 + p13, 0x7fffffff, 0x0000121);
++	}
++
++	rtw89_phy_write32_mask(rtwdev, 0x5860 + p13, BIT(31), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x5864 + p13, 0x07ffffff, 0x00801ff);
++	rtw89_phy_write32(rtwdev, 0x5898 + p13, 0x00000000);
++	rtw89_phy_write32(rtwdev, 0x589c + p13, 0x00000000);
++	rtw89_phy_write32_mask(rtwdev, 0x58a4 + p13, 0x000000ff, 0x16);
++	rtw89_phy_write32(rtwdev, 0x58b0 + p13, 0x00000000);
++	rtw89_phy_write32_mask(rtwdev, 0x58b4 + p13, 0x7fffffff, 0x0a002000);
++	rtw89_phy_write32_mask(rtwdev, 0x58b8 + p13, 0x7fffffff, 0x00007628);
++	rtw89_phy_write32_mask(rtwdev, 0x58bc + p13, 0x07ffffff, 0x7f7807f);
++	rtw89_phy_write32_mask(rtwdev, 0x58c0 + p13, 0xfffe0000, 0x003f);
++	rtw89_phy_write32(rtwdev, 0x58c4 + p13, 0x0003ffff);
++	rtw89_phy_write32_mask(rtwdev, 0x58c8 + p13, 0x00ffffff, 0x000000);
++	rtw89_phy_write32_mask(rtwdev, 0x58c8 + p13, 0xf0000000, 0x0);
++	rtw89_phy_write32(rtwdev, 0x58cc + p13, 0x00000000);
++	rtw89_phy_write32_mask(rtwdev, 0x58d0 + p13, 0x07ffffff, 0x2008101);
++	rtw89_phy_write32_mask(rtwdev, 0x58d4 + p13, 0x000000ff, 0x00);
++	rtw89_phy_write32_mask(rtwdev, 0x58d4 + p13, 0x0003fe00, 0x0ff);
++	rtw89_phy_write32_mask(rtwdev, 0x58d4 + p13, 0x07fc0000, 0x100);
++
++	if (is_ifem)
++		rtw89_phy_write32(rtwdev, 0x58d8 + p13, 0x8008016c);
++
++	rtw89_phy_write32_mask(rtwdev, 0x58dc + p13, 0x0001ffff, 0x0807f);
++	rtw89_phy_write32_mask(rtwdev, 0x58dc + p13, 0xfff00000, 0x800);
++	rtw89_phy_write32_mask(rtwdev, 0x58f0 + p13, 0x0003ffff, 0x001ff);
++	rtw89_phy_write32_mask(rtwdev, 0x58f4 + p13, 0x000fffff, 0x000);
++	rtw89_phy_write32_mask(rtwdev, 0x58f8 + p13, 0x000fffff, 0x000);
++}
++
++static void rtw8192xb_tssi_ini_txpwr_ctrl_bb_he_tb(struct rtw89_dev *rtwdev,
++						   enum rtw89_rf_path path)
++{
++	u32 p13 = path << 13;
++
++	rtw89_phy_write32(rtwdev, 0x58a0 + p13, 0x000000fe);
++	rtw89_phy_write32_mask(rtwdev, 0x58e4 + p13, 0x0000007f, 0x1f);
++}
++
++static void rtw8192xb_tssi_set_dck(struct rtw89_dev *rtwdev,
++				   enum rtw89_rf_path path)
++{
++	bool is_ifem = !rtw8192xb_rfk_is_efem(rtwdev);
++	u32 p13 = path << 13;
++
++	rtw89_phy_write32_mask(rtwdev, 0x580c + p13, 0x0fff0000, 0x000);
++	rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, BIT(12), 0x1);
++	if (is_ifem)
++		rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, BIT(13), 0x1);
++	rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, BIT(14), 0x1);
++	rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, 0x00038000, 0x5);
++	if (is_ifem)
++		rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, 0x003c0000, 0x6);
++	rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, 0x18000000, 0x0);
++}
++
++static void rtw8192xb_tssi_set_bbgain_split(struct rtw89_dev *rtwdev,
++					    enum rtw89_rf_path path)
++{
++	u32 p13 = path << 13;
++
++	rtw89_phy_write32_mask(rtwdev, 0x5818 + p13, BIT(27), 0x1);
++	rtw89_phy_write32_mask(rtwdev, 0x58d4 + p13, 0xf0000000, 0x7);
++	rtw89_phy_write32_mask(rtwdev, 0x58f0 + p13, 0x000c0000, 0x1);
++	rtw89_phy_write32_mask(rtwdev, 0x58f0 + p13, 0xfff00000, 0x400);
++}
++
++static void rtw8192xb_tssi_set_tmeter_tbl(struct rtw89_dev *rtwdev,
++					  enum rtw89_rf_path path,
++					  const struct rtw89_chan *chan)
++{
++	const struct rtw89_phy_rfe_table_set *set = rtw89_phy_find_rfe_tables(rtwdev);
++	const struct rtw89_txpwr_track_cfg *trk_cfg =
++		(set && set->trk_cfg) ? set->trk_cfg : &rtw89_8192xb_trk_cfg;
++	struct rtw89_tssi_info *tssi_info = &rtwdev->tssi;
++	const s8 *thm_up;
++	const s8 *thm_down;
++	s8 thm_ofst[64] = {0};
++	u32 p13 = path << 13;
++	u8 thermal;
++	u32 tmp;
++	int i, j;
++
++	switch (chan->subband_type) {
++	case RTW89_CH_5G_BAND_1:
++		thm_up = path == RF_PATH_A ? trk_cfg->delta_swingidx_5ga_p[0] :
++					     trk_cfg->delta_swingidx_5gb_p[0];
++		thm_down = path == RF_PATH_A ? trk_cfg->delta_swingidx_5ga_n[0] :
++					       trk_cfg->delta_swingidx_5gb_n[0];
++		break;
++	case RTW89_CH_5G_BAND_3:
++		thm_up = path == RF_PATH_A ? trk_cfg->delta_swingidx_5ga_p[1] :
++					     trk_cfg->delta_swingidx_5gb_p[1];
++		thm_down = path == RF_PATH_A ? trk_cfg->delta_swingidx_5ga_n[1] :
++					       trk_cfg->delta_swingidx_5gb_n[1];
++		break;
++	case RTW89_CH_5G_BAND_4:
++		thm_up = path == RF_PATH_A ? trk_cfg->delta_swingidx_5ga_p[2] :
++					     trk_cfg->delta_swingidx_5gb_p[2];
++		thm_down = path == RF_PATH_A ? trk_cfg->delta_swingidx_5ga_n[2] :
++					       trk_cfg->delta_swingidx_5gb_n[2];
++		break;
++	case RTW89_CH_2G:
++	default:
++		thm_up = path == RF_PATH_A ? trk_cfg->delta_swingidx_2ga_p :
++					     trk_cfg->delta_swingidx_2gb_p;
++		thm_down = path == RF_PATH_A ? trk_cfg->delta_swingidx_2ga_n :
++					       trk_cfg->delta_swingidx_2gb_n;
++		break;
++	}
++
++	thermal = tssi_info->thermal[path];
++
++	rtw89_phy_write32_mask(rtwdev, 0x5810 + p13, BIT(16), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x5810 + p13, BIT(24), 0x1);
++
++	if (thermal == 0xff) {
++		rtw89_phy_write32_mask(rtwdev, 0x5810 + p13, 0x0000fc00, 32);
++		rtw89_phy_write32_mask(rtwdev, 0x5864 + p13, 0x03f00000, 32);
++
++		for (i = 0; i < 64; i += 4)
++			rtw89_phy_write32(rtwdev, 0x5c00 + p13 + i, 0x0);
++	} else {
++		rtw89_phy_write32_mask(rtwdev, 0x5810 + p13, 0x0000fc00,
++				       thermal & 0x3f);
++		rtw89_phy_write32_mask(rtwdev, 0x5864 + p13, 0x03f00000,
++				       thermal & 0x3f);
++
++		i = 0;
++		for (j = 0; j < 32; j++) {
++			if (i < DELTA_SWINGIDX_SIZE)
++				thm_ofst[j] = -thm_down[i++];
++			else
++				thm_ofst[j] = -thm_down[DELTA_SWINGIDX_SIZE - 1];
++		}
++
++		i = 1;
++		for (j = 63; j >= 32; j--) {
++			if (i < DELTA_SWINGIDX_SIZE)
++				thm_ofst[j] = thm_up[i++];
++			else
++				thm_ofst[j] = thm_up[DELTA_SWINGIDX_SIZE - 1];
++		}
++
++		for (i = 0; i < 64; i += 4) {
++			tmp = (thm_ofst[i] & 0xff) |
++			      ((thm_ofst[i + 1] & 0xff) << 8) |
++			      ((thm_ofst[i + 2] & 0xff) << 16) |
++			      ((thm_ofst[i + 3] & 0xff) << 24);
++			rtw89_phy_write32(rtwdev, 0x5c00 + p13 + i, tmp);
++		}
++	}
++
++	rtw89_phy_write32_mask(rtwdev, 0x5864 + p13, BIT(26), 0x1);
++	rtw89_phy_write32_mask(rtwdev, 0x5864 + p13, BIT(26), 0x0);
++}
++
++static void rtw8192xb_tssi_slope_cal_org(struct rtw89_dev *rtwdev,
++					 enum rtw89_rf_path path)
++{
++	u32 p13 = path << 13;
++
++	rtw89_phy_write32_mask(rtwdev, 0x5608 + p13, 0x07ffffff, 0x00201008);
++	rtw89_phy_write32_mask(rtwdev, 0x560c + p13, 0x07ffffff, 0x00201008);
++	rtw89_phy_write32_mask(rtwdev, 0x5610 + p13, 0x07ffffff, 0x00201008);
++	rtw89_phy_write32_mask(rtwdev, 0x5614 + p13, 0x07ffffff, 0x00201008);
++	rtw89_phy_write32_mask(rtwdev, 0x5618 + p13, 0x07ffffff, 0x00201008);
++	rtw89_phy_write32_mask(rtwdev, 0x561c + p13, 0x000001ff, 0x00000008);
++	rtw89_phy_write32_mask(rtwdev, 0x561c + p13, 0xffff0000, 0x00000808);
++	rtw89_phy_write32(rtwdev, 0x5620 + p13, 0x08080808);
++	rtw89_phy_write32(rtwdev, 0x5624 + p13, 0x08080808);
++	rtw89_phy_write32(rtwdev, 0x5628 + p13, 0x08080808);
++	rtw89_phy_write32_mask(rtwdev, 0x562c + p13, 0x0000ffff, 0x00000808);
++	rtw89_phy_write32_mask(rtwdev, 0x581c + p13, BIT(20), 0x0);
++}
++
++static void rtw8192xb_tssi_set_alignment_default(struct rtw89_dev *rtwdev,
++						 enum rtw89_rf_path path)
++{
++	bool is_ifem = !rtw8192xb_rfk_is_efem(rtwdev);
++	u32 p13 = path << 13;
++
++	rtw89_phy_write32_mask(rtwdev, 0x5604 + p13, BIT(31), 0x1);
++	rtw89_phy_write32_mask(rtwdev, 0x5600 + p13, 0x3fffffff, 0x00000000);
++	rtw89_phy_write32_mask(rtwdev, 0x5604 + p13, 0x003fffff, 0x002d2721);
++	rtw89_phy_write32_mask(rtwdev, 0x5630 + p13, 0x3fffffff, 0x00000000);
++	rtw89_phy_write32_mask(rtwdev, 0x5634 + p13, 0x000003ff, 0x000);
++
++	if (is_ifem) {
++		u32 v0 = path == RF_PATH_A ? 0x006 : 0x005;
++		u32 v1 = path == RF_PATH_A ? 0x01e : 0x01d;
++		u32 v2 = path == RF_PATH_A ? 0x02c : 0x02b;
++		u32 v3 = path == RF_PATH_A ? 0x09b : 0x0a0;
++
++		rtw89_phy_write32_mask(rtwdev, 0x5634 + p13, 0x000ffc00, v0);
++		rtw89_phy_write32_mask(rtwdev, 0x5634 + p13, 0x3ff00000, v1);
++		rtw89_phy_write32_mask(rtwdev, 0x5638 + p13, 0x000003ff, v2);
++		rtw89_phy_write32_mask(rtwdev, 0x5638 + p13, 0x000ffc00, v3);
++		rtw89_phy_write32_mask(rtwdev, 0x563c + p13, 0x3fffffff, 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5640 + p13, 0x000003ff, 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5640 + p13, 0x000ffc00, v0);
++		rtw89_phy_write32_mask(rtwdev, 0x5640 + p13, 0x3ff00000, v1);
++		rtw89_phy_write32_mask(rtwdev, 0x5644 + p13, 0x000003ff, v2);
++		rtw89_phy_write32_mask(rtwdev, 0x5644 + p13, 0x000ffc00, v3);
++	} else {
++		rtw89_phy_write32_mask(rtwdev, 0x5634 + p13, 0x000ffc00, 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5634 + p13, 0x3ff00000, 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5638 + p13, 0x000003ff, 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5638 + p13, 0x000ffc00, 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x563c + p13, 0x3fffffff, 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5640 + p13, 0x000003ff, 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5640 + p13, 0x000ffc00, 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5640 + p13, 0x3ff00000, 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5644 + p13, 0x000003ff, 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5644 + p13, 0x000ffc00, 0x0);
++	}
++}
++
++static void rtw8192xb_tssi_set_slope(struct rtw89_dev *rtwdev,
++				     enum rtw89_rf_path path)
++{
++	static const u32 slope_regs[] = {
++		0x5834, 0x5854, 0x5824, 0x582c,
++		0x583c, 0x5844, 0x584c, 0x585c,
++	};
++	bool is_efem = rtw8192xb_rfk_is_efem(rtwdev);
++	u8 rfe_type = rtwdev->efuse.rfe_type;
++	u32 p13 = path << 13;
++	int i;
++
++	rtw89_phy_write32_mask(rtwdev, 0x5820 + p13, BIT(31), 0x0);
++
++	if (is_efem) {
++		if (rfe_type == 51 || rfe_type == 53 || rfe_type == 55)
++			rtw89_phy_write32_mask(rtwdev, 0x5820 + p13, BIT(30), 0x1);
++		else
++			rtw89_phy_write32_mask(rtwdev, 0x5820 + p13, BIT(30), 0x0);
++	}
++
++	rtw89_phy_write32_mask(rtwdev, 0x5818 + p13, BIT(28), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, BIT(11), 0x1);
++	rtw89_phy_write32_mask(rtwdev, 0x581c + p13, BIT(29), 0x1);
++	rtw89_phy_write32_mask(rtwdev, 0x58e8 + p13, 0x0000003f, 0x0f);
++	rtw89_phy_write32_mask(rtwdev, 0x581c + p13, 0x000003ff, 0x280);
++	rtw89_phy_write32_mask(rtwdev, 0x581c + p13, 0x000ffc00, 0x200);
++	rtw89_phy_write32_mask(rtwdev, 0x58b8 + p13, 0x007f0000, 0x00);
++	rtw89_phy_write32_mask(rtwdev, 0x58b8 + p13, 0x7f000000, 0x00);
++	rtw89_phy_write32_mask(rtwdev, 0x58b4 + p13, 0x7f000000, 0x0a);
++	rtw89_phy_write32_mask(rtwdev, 0x58b8 + p13, 0x0000007f, 0x28);
++	rtw89_phy_write32_mask(rtwdev, 0x58b8 + p13, 0x00007f00, 0x76);
++	rtw89_phy_write32_mask(rtwdev, 0x5810 + p13, BIT(29), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, BIT(29), 0x1);
++
++	if (!is_efem) {
++		rtw89_phy_write32_mask(rtwdev, 0x580c + p13, BIT(28), 0x1);
++		rtw89_phy_write32_mask(rtwdev, 0x580c + p13, BIT(30), 0x1);
++		for (i = 0; i < ARRAY_SIZE(slope_regs); i++) {
++			u32 r0 = slope_regs[i] + p13;
++			u32 r1 = r0 + 4;
++
++			rtw89_phy_write32_mask(rtwdev, r0, 0x0003ffff, 0x115f2);
++			rtw89_phy_write32_mask(rtwdev, r0, 0x3ffc0000, 0x000);
++			rtw89_phy_write32_mask(rtwdev, r1, 0x00000fff, 0x121);
++			rtw89_phy_write32_mask(rtwdev, r1, 0x003ff000, 0x000);
++		}
++	} else {
++		rtw89_phy_write32_mask(rtwdev, 0x580c + p13, BIT(28), 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x580c + p13, BIT(30), 0x0);
++	}
++}
++
++static void rtw8192xb_tssi_run_slope(struct rtw89_dev *rtwdev,
++				     enum rtw89_rf_path path)
++{
++	u32 p13 = path << 13;
++
++	rtw89_phy_write32_mask(rtwdev, 0x5820 + p13, BIT(31), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x5820 + p13, BIT(31), 0x1);
++}
++
++static void rtw8192xb_tssi_set_tssi_track(struct rtw89_dev *rtwdev,
++					  enum rtw89_rf_path path)
++{
++	u32 p13 = path << 13;
++
++	rtw89_phy_write32_mask(rtwdev, 0x5820 + p13, BIT(31), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x5818 + p13, BIT(28), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, BIT(11), 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x581c + p13, BIT(29), 0x1);
++	rtw89_phy_write32_mask(rtwdev, 0x5864 + p13, 0x000003ff, 0x1ff);
++	rtw89_phy_write32_mask(rtwdev, 0x5864 + p13, 0x000ffc00, 0x200);
++	rtw89_phy_write32_mask(rtwdev, 0x5820 + p13, 0x00000fff, 0x080);
++	rtw89_phy_write32_mask(rtwdev, 0x5814 + p13, BIT(24), 0x0);
++}
++
++static void rtw8192xb_tssi_set_txagc_offset_mv_avg(struct rtw89_dev *rtwdev,
++						   enum rtw89_rf_path path)
++{
++	bool is_efem = rtw8192xb_rfk_is_efem(rtwdev);
++	u32 p13 = path << 13;
++
++	rtw89_phy_write32_mask(rtwdev, 0x58e4 + p13, 0x00003800, 0x1);
++	rtw89_phy_write32_mask(rtwdev, 0x58e4 + p13, 0x00004000, 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x58e4 + p13, 0x00008000, 0x1);
++	rtw89_phy_write32_mask(rtwdev, 0x58e4 + p13, 0x000f0000, 0x0);
++	rtw89_phy_write32_mask(rtwdev, 0x58e8 + p13, 0x0000003f,
++			       is_efem ? 0x04 : 0x07);
++}
++
++static void rtw8192xb_tssi_enable(struct rtw89_dev *rtwdev)
++{
++	u8 path;
++
++	for (path = RF_PATH_A; path < RF_PATH_NUM_8192XB; path++) {
++		u32 p13 = path << 13;
++
++		rtw8192xb_tssi_set_tssi_track(rtwdev, path);
++		rtw8192xb_tssi_set_txagc_offset_mv_avg(rtwdev, path);
++
++		rtw89_phy_write32_mask(rtwdev, 0x58e4 + p13, BIT(14), 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5820 + p13, BIT(31), 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5820 + p13, BIT(31), 0x1);
++		rtw89_write_rf(rtwdev, path, 0x10055, BIT(7), 0x1);
++		rtw89_phy_write32_mask(rtwdev, 0x5818 + p13, BIT(28), 0x1);
++		rtwdev->is_tssi_mode[path] = true;
++	}
++}
++
++static u32 rtw8192xb_tssi_get_cck_group(u8 ch)
++{
++	switch (ch) {
++	case 1 ... 2:
++		return 0;
++	case 3 ... 5:
++		return 1;
++	case 6 ... 8:
++		return 2;
++	case 9 ... 11:
++		return 3;
++	case 12 ... 13:
++		return 4;
++	case 14:
++		return 5;
++	default:
++		return 0;
++	}
++}
++
++static u32 rtw8192xb_tssi_get_ofdm_group(u8 ch)
++{
++	switch (ch) {
++	case 1 ... 2:
++		return 0;
++	case 3 ... 5:
++		return 1;
++	case 6 ... 8:
++		return 2;
++	case 9 ... 11:
++		return 3;
++	case 12 ... 14:
++		return 4;
++	case 36 ... 40:
++		return 5;
++	case 41 ... 43:
++		return RTW8192XB_TSSI_EXTRA_GROUP(5);
++	case 44 ... 48:
++		return 6;
++	case 49 ... 51:
++		return RTW8192XB_TSSI_EXTRA_GROUP(6);
++	case 52 ... 56:
++		return 7;
++	case 57 ... 59:
++		return RTW8192XB_TSSI_EXTRA_GROUP(7);
++	case 60 ... 64:
++		return 8;
++	case 100 ... 104:
++		return 9;
++	case 105 ... 107:
++		return RTW8192XB_TSSI_EXTRA_GROUP(9);
++	case 108 ... 112:
++		return 10;
++	case 113 ... 115:
++		return RTW8192XB_TSSI_EXTRA_GROUP(10);
++	case 116 ... 120:
++		return 11;
++	case 121 ... 123:
++		return RTW8192XB_TSSI_EXTRA_GROUP(11);
++	case 124 ... 128:
++		return 12;
++	case 129 ... 131:
++		return RTW8192XB_TSSI_EXTRA_GROUP(12);
++	case 132 ... 136:
++		return 13;
++	case 137 ... 139:
++		return RTW8192XB_TSSI_EXTRA_GROUP(13);
++	case 140 ... 144:
++		return 14;
++	case 149 ... 153:
++		return 15;
++	case 154 ... 156:
++		return RTW8192XB_TSSI_EXTRA_GROUP(15);
++	case 157 ... 161:
++		return 16;
++	case 162 ... 164:
++		return RTW8192XB_TSSI_EXTRA_GROUP(16);
++	case 165 ... 169:
++		return 17;
++	case 170 ... 172:
++		return RTW8192XB_TSSI_EXTRA_GROUP(17);
++	case 173 ... 177:
++		return 18;
++	default:
++		return 0;
++	}
++}
++
++static u32 rtw8192xb_tssi_get_trim_group(u8 ch)
++{
++	switch (ch) {
++	case 1 ... 8:
++		return 0;
++	case 9 ... 14:
++		return 1;
++	case 36 ... 48:
++		return 2;
++	case 49 ... 51:
++		return RTW8192XB_TSSI_EXTRA_GROUP(2);
++	case 52 ... 64:
++		return 3;
++	case 100 ... 112:
++		return 4;
++	case 113 ... 115:
++		return RTW8192XB_TSSI_EXTRA_GROUP(4);
++	case 116 ... 128:
++		return 5;
++	case 132 ... 144:
++		return 6;
++	case 149 ... 177:
++		return 7;
++	default:
++		return 0;
++	}
++}
++
++static s8 rtw8192xb_tssi_get_ofdm_de(struct rtw89_dev *rtwdev,
++				     enum rtw89_rf_path path, u8 ch)
++{
++	struct rtw89_tssi_info *tssi_info = &rtwdev->tssi;
++	u32 gidx = rtw8192xb_tssi_get_ofdm_group(ch);
++
++	if (RTW8192XB_IS_TSSI_EXTRA(gidx)) {
++		u32 idx1 = RTW8192XB_TSSI_EXTRA_IDX1(gidx);
++		u32 idx2 = RTW8192XB_TSSI_EXTRA_IDX2(gidx);
++
++		return (tssi_info->tssi_mcs[path][idx1] +
++			tssi_info->tssi_mcs[path][idx2]) / 2;
++	}
++
++	return tssi_info->tssi_mcs[path][gidx];
++}
++
++static s8 rtw8192xb_tssi_get_trim_de(struct rtw89_dev *rtwdev,
++				     enum rtw89_rf_path path, u8 ch)
++{
++	struct rtw89_tssi_info *tssi_info = &rtwdev->tssi;
++	u32 gidx = rtw8192xb_tssi_get_trim_group(ch);
++
++	if (RTW8192XB_IS_TSSI_EXTRA(gidx)) {
++		u32 idx1 = RTW8192XB_TSSI_EXTRA_IDX1(gidx);
++		u32 idx2 = RTW8192XB_TSSI_EXTRA_IDX2(gidx);
++
++		return (tssi_info->tssi_trim[path][idx1] +
++			tssi_info->tssi_trim[path][idx2]) / 2;
++	}
++
++	return tssi_info->tssi_trim[path][gidx];
++}
++
++static void rtw8192xb_tssi_set_efuse_to_de(struct rtw89_dev *rtwdev,
++					   const struct rtw89_chan *chan)
++{
++	struct rtw89_tssi_info *tssi_info = &rtwdev->tssi;
++	u8 ch = chan->channel;
++	u32 cck_gidx = rtw8192xb_tssi_get_cck_group(ch);
++	u8 path;
++
++	for (path = RF_PATH_A; path < RF_PATH_NUM_8192XB; path++) {
++		u32 p13 = path << 13;
++		s8 trim_de = rtw8192xb_tssi_get_trim_de(rtwdev, path, ch);
++		s32 cck_val = tssi_info->tssi_cck[path][cck_gidx] + trim_de;
++		s32 ofdm_val = rtw8192xb_tssi_get_ofdm_de(rtwdev, path, ch) + trim_de;
++		u32 cck_reg = (u32)(cck_val & 0x3ff);
++		u32 ofdm_reg = (u32)(ofdm_val & 0x3ff);
++
++		rtw89_phy_write32_mask(rtwdev, 0x5858 + p13, RTW8192XB_TSSI_DE_MASK, cck_reg);
++		rtw89_phy_write32_mask(rtwdev, 0x5860 + p13, RTW8192XB_TSSI_DE_MASK, cck_reg);
++
++		rtw89_phy_write32_mask(rtwdev, 0x5838 + p13, RTW8192XB_TSSI_DE_MASK, ofdm_reg);
++		rtw89_phy_write32_mask(rtwdev, 0x5840 + p13, RTW8192XB_TSSI_DE_MASK, ofdm_reg);
++		rtw89_phy_write32_mask(rtwdev, 0x5848 + p13, RTW8192XB_TSSI_DE_MASK, ofdm_reg);
++		rtw89_phy_write32_mask(rtwdev, 0x5850 + p13, RTW8192XB_TSSI_DE_MASK, ofdm_reg);
++		rtw89_phy_write32_mask(rtwdev, 0x5828 + p13, RTW8192XB_TSSI_DE_MASK, ofdm_reg);
++		rtw89_phy_write32_mask(rtwdev, 0x5830 + p13, RTW8192XB_TSSI_DE_MASK, ofdm_reg);
++	}
++}
++
++void rtw8192xb_tssi(struct rtw89_dev *rtwdev, enum rtw89_phy_idx phy_idx,
++		    enum rtw89_chanctx_idx chanctx_idx)
++{
++	const struct rtw89_chan *chan = rtw89_chan_get(rtwdev, chanctx_idx);
++	u8 path;
++
++	rtw8192xb_tssi_disable(rtwdev);
++
++	for (path = RF_PATH_A; path < RF_PATH_NUM_8192XB; path++) {
++		rtw8192xb_tssi_set_sys(rtwdev, path);
++		rtw8192xb_tssi_ini_txpwr_ctrl_bb(rtwdev, path);
++		rtw8192xb_tssi_ini_txpwr_ctrl_bb_he_tb(rtwdev, path);
++		rtw8192xb_tssi_set_dck(rtwdev, path);
++		rtw8192xb_tssi_set_bbgain_split(rtwdev, path);
++		rtw8192xb_tssi_set_tmeter_tbl(rtwdev, path, chan);
++		rtw8192xb_tssi_slope_cal_org(rtwdev, path);
++		rtw8192xb_tssi_set_alignment_default(rtwdev, path);
++		rtw8192xb_tssi_set_slope(rtwdev, path);
++		rtw8192xb_tssi_run_slope(rtwdev, path);
++	}
++
++	rtw8192xb_tssi_enable(rtwdev);
++	rtw8192xb_tssi_set_efuse_to_de(rtwdev, chan);
++}
++
++void rtw8192xb_tssi_scan(struct rtw89_dev *rtwdev, enum rtw89_phy_idx phy_idx,
++			 const struct rtw89_chan *chan)
++{
++	u8 path;
++
++	if (!rtwdev->is_tssi_mode[RF_PATH_A] && !rtwdev->is_tssi_mode[RF_PATH_B])
++		return;
++
++	rtw8192xb_tssi_set_efuse_to_de(rtwdev, chan);
++
++	for (path = RF_PATH_A; path < RF_PATH_NUM_8192XB; path++) {
++		u32 p13 = path << 13;
++
++		rtw89_phy_write32_mask(rtwdev, 0x5820 + p13, BIT(31), 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5820 + p13, BIT(31), 0x1);
++		rtw89_phy_write32_mask(rtwdev, 0x5818 + p13, BIT(28), 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5818 + p13, BIT(28), 0x1);
++	}
++}
++
++void rtw8192xb_tssi_cont_en_phyidx(struct rtw89_dev *rtwdev, bool en,
++				   enum rtw89_phy_idx phy_idx,
++				   const struct rtw89_chan *chan)
++{
++	u8 path;
++
++	for (path = RF_PATH_A; path < RF_PATH_NUM_8192XB; path++) {
++		if (rtwdev->dbcc_en && phy_idx == RTW89_PHY_0 && path == RF_PATH_B)
++			continue;
++		if (rtwdev->dbcc_en && phy_idx == RTW89_PHY_1 && path == RF_PATH_A)
++			continue;
++
++		rtw89_phy_write32_mask(rtwdev, 0x5818 + (path << 13),
++				       BIT(30), en ? 0x0 : 0x1);
++	}
++
++	if (en && (rtwdev->is_tssi_mode[RF_PATH_A] || rtwdev->is_tssi_mode[RF_PATH_B]))
++		rtw8192xb_tssi_set_efuse_to_de(rtwdev, chan);
++}
++
++void rtw8192xb_tssi_track(struct rtw89_dev *rtwdev)
++{
++	if (!rtwdev->is_tssi_mode[RF_PATH_A] && !rtwdev->is_tssi_mode[RF_PATH_B])
++		return;
++
++	if (rtw89_phy_read32_mask(rtwdev, 0x1c60, 0xff000000) == 0x7f ||
++	    rtw89_phy_read32_mask(rtwdev, 0x3c60, 0xff000000) == 0x7f) {
++		rtw8192xb_tssi_disable(rtwdev);
++		rtw8192xb_tssi_enable(rtwdev);
++	}
++}
++
++void rtw8192xb_wifi_scan_notify(struct rtw89_dev *rtwdev, bool scan_start,
++				enum rtw89_phy_idx phy_idx)
++{
++	u8 path;
++
++	if (scan_start)
++		return;
++
++	if (!rtwdev->is_tssi_mode[RF_PATH_A] && !rtwdev->is_tssi_mode[RF_PATH_B])
++		return;
++
++	for (path = RF_PATH_A; path < RF_PATH_NUM_8192XB; path++) {
++		u32 p13 = path << 13;
++
++		rtw89_phy_write32_mask(rtwdev, 0x5818 + p13, BIT(28), 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x5818 + p13, BIT(28), 0x1);
++	}
++}
++
++void rtw8192xb_dpk_init(struct rtw89_dev *rtwdev)
++{
++	struct rtw89_dpk_info *dpk = &rtwdev->dpk;
++
++	memset(dpk, 0, sizeof(*dpk));
++	dpk->is_dpk_enable = true;
++	dpk->is_dpk_reload_en = false;
++
++	rtw89_mac_txpwr_write32_mask(rtwdev, RTW89_PHY_0, 0xd22c, 0x1f800000, 0x29);
++	rtw89_mac_txpwr_write32_mask(rtwdev, RTW89_PHY_0, 0xd230, 0x0003ffff, 0x24924);
++}
++
++static void rtw8192xb_dpk_onoff(struct rtw89_dev *rtwdev,
++				enum rtw89_rf_path path, bool off)
++{
++	struct rtw89_dpk_info *dpk = &rtwdev->dpk;
++	u8 kidx = dpk->cur_idx[path];
++	u8 val;
++
++	val = dpk->is_dpk_enable && !off && dpk->bp[path][kidx].path_ok;
++	rtw89_phy_write32_mask(rtwdev, 0x81bc + (path << 8) + (kidx << 2),
++			       0xf0000000, val);
++}
++
++static bool rtw8192xb_dpk_bypass_check(struct rtw89_dev *rtwdev,
++				       const struct rtw89_chan *chan)
++{
++	if (chan->band_type == RTW89_BAND_5G || rtwdev->fem.epa_2g ||
++	    rtw8192xb_rfk_is_efem(rtwdev))
++		return true;
++
++	return false;
++}
++
++void rtw8192xb_dpk(struct rtw89_dev *rtwdev, enum rtw89_phy_idx phy_idx,
++		   enum rtw89_chanctx_idx chanctx_idx)
++{
++	const struct rtw89_chan *chan = rtw89_chan_get(rtwdev, chanctx_idx);
++	u8 path;
++
++	if (rtw8192xb_dpk_bypass_check(rtwdev, chan)) {
++		for (path = RF_PATH_A; path < RF_PATH_NUM_8192XB; path++)
++			rtw8192xb_dpk_onoff(rtwdev, path, true);
++	}
++}
++
++void rtw8192xb_dpk_track(struct rtw89_dev *rtwdev)
++{
++	struct rtw89_dpk_info *dpk = &rtwdev->dpk;
++	u8 path, kidx, txagc_rf, cur_ther;
++	s8 delta_ther;
++
++	if (rtwdev->scanning)
++		return;
++
++	for (path = RF_PATH_A; path < RF_PATH_NUM_8192XB; path++) {
++		kidx = dpk->cur_idx[path];
++		if (!dpk->bp[path][kidx].path_ok)
++			continue;
++
++		txagc_rf = rtw89_phy_read32_mask(rtwdev, 0x1c60 + (path << 13), 0x3f);
++		if (!txagc_rf)
++			continue;
++
++		rtw89_phy_write32(rtwdev, 0x81d4 + (path << 8), 0xf0000);
++		cur_ther = rtw89_phy_read32_mask(rtwdev, 0x81fc + (path << 8), 0x3f);
++		delta_ther = (s8)(cur_ther - dpk->bp[path][kidx].ther_dpk) / 2;
++
++		if (rtw89_phy_read32_mask(rtwdev, 0x80f0, BIT(29)) == 0x0)
++			rtw89_phy_write32_mask(rtwdev,
++					       0x81b4 + (path << 8) + (kidx << 2),
++					       0x07fc0000, 0x76 - delta_ther);
++	}
++}
++
++void rtw8192xb_op5k_init(struct rtw89_dev *rtwdev)
++{
++	struct rtw89_op5k_info *op5k = &rtwdev->op5k;
++
++	memset(op5k, 0, sizeof(*op5k));
++	if (rtwdev->hal.cv == CHIP_CAV)
++		return;
++
++	op5k->thermal_base_op5k[RF_PATH_A] = RTW8192XB_OP5K_THER_BASE;
++	op5k->thermal_base_op5k[RF_PATH_B] = RTW8192XB_OP5K_THER_BASE;
++	op5k->thermal_op5k[RF_PATH_A] = RTW8192XB_OP5K_THER_BASE;
++	op5k->thermal_op5k[RF_PATH_B] = RTW8192XB_OP5K_THER_BASE;
++}
++
++void rtw8192xb_op5k_bw_setting(struct rtw89_dev *rtwdev)
++{
++	struct rtw89_op5k_info *op5k = &rtwdev->op5k;
++
++	if (rtwdev->hal.cv == CHIP_CAV)
++		return;
++
++	op5k->op5k_default[RF_PATH_A] = rtw89_phy_read32_mask(rtwdev, 0xc0d8, 0x000001e0);
++	op5k->op5k_default[RF_PATH_B] = rtw89_phy_read32_mask(rtwdev, 0xc1d8, 0x000001e0);
++	op5k->op5k_set_ch_chk = true;
++
++	if (op5k->op5k_ther_chk) {
++		rtw89_phy_write32_mask(rtwdev, 0xc0d8, 0x000001e0,
++				       op5k->rst_cnt_final[RF_PATH_A] & 0xf);
++		rtw89_phy_write32_mask(rtwdev, 0xc1d8, 0x000001e0,
++				       op5k->rst_cnt_final[RF_PATH_B] & 0xf);
++	}
++}
++
++static void rtw8192xb_op5k_reset_cnt(struct rtw89_dev *rtwdev)
++{
++	rtw89_phy_write32_mask(rtwdev, 0x030c, 0xff000000, 0xf);
++	udelay(1);
++	rtw89_phy_write32_mask(rtwdev, 0x030c, 0xff000000, 0x3);
++	rtw89_phy_write32_mask(rtwdev, 0x032c, 0xffff0000, 0x0);
++	udelay(1);
++	rtw89_phy_write32_mask(rtwdev, 0x032c, 0xffff0000, 0x40);
++	rtw89_phy_write32_mask(rtwdev, 0xc0f8, 0x00000006, 0x3);
++	rtw89_phy_write32_mask(rtwdev, 0xc1f8, 0x00000006, 0x3);
++	udelay(1);
++	rtw89_phy_write32_mask(rtwdev, 0xc0f8, 0x00000006, 0x2);
++	rtw89_phy_write32_mask(rtwdev, 0xc1f8, 0x00000006, 0x2);
++	udelay(1);
++}
++
++static void rtw8192xb_op5k_trigger(struct rtw89_dev *rtwdev)
++{
++	struct rtw89_op5k_info *op5k = &rtwdev->op5k;
++	u32 zero_rst_cnt[RF_PATH_NUM_8192XB][RTW89_OP5K_RESET_CNT_DATA];
++	u32 zero_start[RF_PATH_NUM_8192XB][RTW89_OP5K_RESET_CNT_DATA];
++	u32 zero_end[RF_PATH_NUM_8192XB][RTW89_OP5K_RESET_CNT_DATA];
++	u32 max_zero[RF_PATH_NUM_8192XB];
++	u32 max_zero_idx[RF_PATH_NUM_8192XB];
++	u32 retry[RF_PATH_NUM_8192XB] = {0};
++	u32 i, j, k;
++
++	if (rtwdev->hal.cv == CHIP_CAV || op5k->op5k_progress)
++		return;
++
++	op5k->op5k_progress = true;
++
++	while (retry[RF_PATH_A] < 2 || retry[RF_PATH_B] < 2) {
++		memset(op5k->rst_cnt, 0, sizeof(op5k->rst_cnt));
++		memset(op5k->rst_cnt_zero, 0, sizeof(op5k->rst_cnt_zero));
++		memset(op5k->rst_cnt_final, 0, sizeof(op5k->rst_cnt_final));
++		memset(op5k->op5k_backup, 0, sizeof(op5k->op5k_backup));
++		memset(zero_rst_cnt, 0, sizeof(zero_rst_cnt));
++		memset(zero_start, 0, sizeof(zero_start));
++		memset(zero_end, 0, sizeof(zero_end));
++		memset(max_zero, 0, sizeof(max_zero));
++		memset(max_zero_idx, 0, sizeof(max_zero_idx));
++
++		op5k->op5k_backup[RF_PATH_A] = rtw89_phy_read32_mask(rtwdev, 0xc0d8, 0x000001e0);
++		op5k->op5k_backup[RF_PATH_B] = rtw89_phy_read32_mask(rtwdev, 0xc1d8, 0x000001e0);
++
++		rtw89_phy_write32_mask(rtwdev, 0xc0d4, BIT(4), 0x1);
++		rtw89_phy_write32_mask(rtwdev, 0xc1d4, BIT(4), 0x1);
++		rtw89_phy_write32_mask(rtwdev, 0x12b8, BIT(30), 0x1);
++		rtw89_phy_write32_mask(rtwdev, 0x32b8, BIT(30), 0x1);
++		rtw8192xb_op5k_reset_cnt(rtwdev);
++
++		for (i = 0; i < RTW89_OP5K_RESET_CNT_DATA; i++) {
++			for (j = 0; j < RF_PATH_NUM_8192XB; j++) {
++				rtw89_phy_write32_mask(rtwdev, 0xc0d8 | (j << 8),
++						       0x000001e0, i);
++				op5k->rst_cnt[j][i] =
++					rtw89_phy_read32_mask(rtwdev, 0xc0fc | (j << 8),
++							      0x0ff00000);
++				rtw8192xb_op5k_reset_cnt(rtwdev);
++			}
++		}
++
++		for (j = 0; j < RF_PATH_NUM_8192XB; j++) {
++			for (i = 0, k = 0; i < RTW89_OP5K_RESET_CNT_DATA; i++) {
++				if (zero_rst_cnt[j][k] == 0 && op5k->rst_cnt[j][i] == 0) {
++					zero_rst_cnt[j][k]++;
++					zero_start[j][k] = i;
++					zero_end[j][k] = i;
++				} else if (i > 0 && op5k->rst_cnt[j][i - 1] == 0 &&
++					   op5k->rst_cnt[j][i] == 0) {
++					zero_rst_cnt[j][k]++;
++					zero_end[j][k] = i;
++				} else if (zero_rst_cnt[j][k] != 0 && op5k->rst_cnt[j][i] == 0) {
++					k++;
++					zero_rst_cnt[j][k]++;
++					zero_start[j][k] = i;
++					zero_end[j][k] = i;
++				}
++			}
++		}
++
++		for (j = 0; j < RF_PATH_NUM_8192XB; j++) {
++			s32 upper, lower, final_val;
++
++			for (k = 0; k < RTW89_OP5K_RESET_CNT_DATA; k++) {
++				if (zero_rst_cnt[j][k] > max_zero[j]) {
++					max_zero[j] = zero_rst_cnt[j][k];
++					max_zero_idx[j] = k;
++				}
++			}
++
++			op5k->rst_cnt_zero[j][0] = zero_start[j][max_zero_idx[j]];
++			op5k->rst_cnt_zero[j][1] = zero_end[j][max_zero_idx[j]];
++
++			upper = (s32)op5k->op5k_backup[j] + RTW8192XB_OP5K_DIFF;
++			lower = (s32)op5k->op5k_backup[j] - RTW8192XB_OP5K_DIFF;
++			final_val = (op5k->rst_cnt_zero[j][0] + op5k->rst_cnt_zero[j][1]) / 2;
++			op5k->rst_cnt_final[j] = final_val;
++
++			if (final_val <= upper && final_val >= lower &&
++			    zero_rst_cnt[j][max_zero_idx[j]] >= 3) {
++				rtw89_phy_write32_mask(rtwdev, 0xc0d8 | (j << 8),
++						       0x000001e0, final_val & 0xf);
++				retry[j] = 2;
++			} else {
++				rtw89_phy_write32_mask(rtwdev, 0xc0d8 | (j << 8),
++						       0x000001e0,
++						       op5k->op5k_backup[j] & 0xf);
++				op5k->rst_cnt_final[j] = op5k->op5k_backup[j];
++				retry[j]++;
++			}
++
++			op5k->thermal_op5k[j] = rtw89_chip_get_thermal(rtwdev, j);
++		}
++
++		rtw89_phy_write32_mask(rtwdev, 0xc0d4, BIT(4), 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0xc1d4, BIT(4), 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x12b8, BIT(30), 0x0);
++		rtw89_phy_write32_mask(rtwdev, 0x32b8, BIT(30), 0x0);
++	}
++
++	op5k->op5k_progress = false;
++}
++
++void rtw8192xb_op5k_track(struct rtw89_dev *rtwdev)
++{
++	struct rtw89_op5k_info *op5k = &rtwdev->op5k;
++	u8 thermal_val[RF_PATH_NUM_8192XB];
++	u32 thermal_avg[RF_PATH_NUM_8192XB] = {0};
++	s8 delta_op5k[RF_PATH_NUM_8192XB];
++	s8 delta_base[RF_PATH_NUM_8192XB];
++	u8 avg_cnt = 0;
++	u8 i, path;
++
++	if (rtwdev->hal.cv == CHIP_CAV || !op5k->op5k_set_ch_chk || rtwdev->scanning)
++		return;
++
++	for (path = RF_PATH_A; path < RF_PATH_NUM_8192XB; path++)
++		thermal_val[path] = rtw89_chip_get_thermal(rtwdev, path);
++
++	op5k->thermal_op5k_avg[RF_PATH_A][op5k->thermal_op5k_avg_index] =
++		thermal_val[RF_PATH_A];
++	op5k->thermal_op5k_avg[RF_PATH_B][op5k->thermal_op5k_avg_index] =
++		thermal_val[RF_PATH_B];
++	op5k->thermal_op5k_avg_index++;
++	if (op5k->thermal_op5k_avg_index == RTW89_OP5K_AVG_THERMAL_NUM)
++		op5k->thermal_op5k_avg_index = 0;
++
++	for (i = 0; i < RTW89_OP5K_AVG_THERMAL_NUM; i++) {
++		if (op5k->thermal_op5k_avg[RF_PATH_A][i] ||
++		    op5k->thermal_op5k_avg[RF_PATH_B][i]) {
++			thermal_avg[RF_PATH_A] += op5k->thermal_op5k_avg[RF_PATH_A][i];
++			thermal_avg[RF_PATH_B] += op5k->thermal_op5k_avg[RF_PATH_B][i];
++			avg_cnt++;
++		}
++	}
++
++	if (avg_cnt) {
++		thermal_val[RF_PATH_A] = thermal_avg[RF_PATH_A] / avg_cnt;
++		thermal_val[RF_PATH_B] = thermal_avg[RF_PATH_B] / avg_cnt;
++	}
++
++	for (path = RF_PATH_A; path < RF_PATH_NUM_8192XB; path++) {
++		delta_op5k[path] = thermal_val[path] - op5k->thermal_op5k[path];
++		delta_base[path] = thermal_val[path] - op5k->thermal_base_op5k[path];
++	}
++
++	if (delta_base[RF_PATH_A] < 0 || delta_base[RF_PATH_B] < 0) {
++		if (delta_op5k[RF_PATH_A] >= RTW8192XB_OP5K_THER_TH ||
++		    delta_op5k[RF_PATH_A] <= -RTW8192XB_OP5K_THER_TH ||
++		    delta_op5k[RF_PATH_B] >= RTW8192XB_OP5K_THER_TH ||
++		    delta_op5k[RF_PATH_B] <= -RTW8192XB_OP5K_THER_TH) {
++			rtw8192xb_op5k_trigger(rtwdev);
++			op5k->op5k_ther_chk = true;
++		}
++	} else if (op5k->op5k_ther_chk) {
++		rtw89_phy_write32_mask(rtwdev, 0xc0d8, 0x000001e0,
++				       op5k->op5k_default[RF_PATH_A] & 0xf);
++		rtw89_phy_write32_mask(rtwdev, 0xc1d8, 0x000001e0,
++				       op5k->op5k_default[RF_PATH_B] & 0xf);
++		op5k->op5k_ther_chk = false;
++	}
++}
 Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb_rfk.h
 ===================================================================
 --- /dev/null
 +++ backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb_rfk.h
-@@ -0,0 +1,13 @@
+@@ -0,0 +1,34 @@
 +/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 +
 +#ifndef __RTW89_8192XB_RFK_H__
@@ -3754,6 +4981,27 @@ Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb_rfk.h
 +void rtw8192xb_rfk_dack(struct rtw89_dev *rtwdev);
 +void rtw8192xb_rfk_rx_dck(struct rtw89_dev *rtwdev);
 +void rtw8192xb_rfk_iqk(struct rtw89_dev *rtwdev, enum rtw89_phy_idx phy_idx);
++void rtw8192xb_set_rxbb_bw(struct rtw89_dev *rtwdev, enum rtw89_bandwidth bw,
++			   enum rtw89_phy_idx phy_idx);
++void rtw8192xb_txgapk_init(struct rtw89_dev *rtwdev);
++void rtw8192xb_txgapk(struct rtw89_dev *rtwdev, enum rtw89_phy_idx phy_idx);
++void rtw8192xb_tssi(struct rtw89_dev *rtwdev, enum rtw89_phy_idx phy_idx,
++		    enum rtw89_chanctx_idx chanctx_idx);
++void rtw8192xb_tssi_scan(struct rtw89_dev *rtwdev, enum rtw89_phy_idx phy_idx,
++			 const struct rtw89_chan *chan);
++void rtw8192xb_tssi_cont_en_phyidx(struct rtw89_dev *rtwdev, bool en,
++				   enum rtw89_phy_idx phy_idx,
++				   const struct rtw89_chan *chan);
++void rtw8192xb_tssi_track(struct rtw89_dev *rtwdev);
++void rtw8192xb_wifi_scan_notify(struct rtw89_dev *rtwdev, bool scan_start,
++				enum rtw89_phy_idx phy_idx);
++void rtw8192xb_dpk_init(struct rtw89_dev *rtwdev);
++void rtw8192xb_dpk(struct rtw89_dev *rtwdev, enum rtw89_phy_idx phy_idx,
++		   enum rtw89_chanctx_idx chanctx_idx);
++void rtw8192xb_dpk_track(struct rtw89_dev *rtwdev);
++void rtw8192xb_op5k_init(struct rtw89_dev *rtwdev);
++void rtw8192xb_op5k_bw_setting(struct rtw89_dev *rtwdev);
++void rtw8192xb_op5k_track(struct rtw89_dev *rtwdev);
 +
 +#endif
 Index: backports-7.2/drivers/net/wireless/realtek/rtw89/rtw8192xb_table.c
